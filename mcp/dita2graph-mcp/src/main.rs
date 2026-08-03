@@ -14,7 +14,7 @@ mod bundle;
 mod tools;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -111,7 +111,7 @@ fn handle_message(request: &Value, bundle_root: &std::path::Path) -> Option<Valu
 mod tests {
     use super::*;
     use dita2graph_core::{
-        write_bundle, Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType,
+        Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
     };
 
     fn sample_bundle_root() -> tempfile::TempDir {

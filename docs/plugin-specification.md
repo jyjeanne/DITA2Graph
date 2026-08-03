@@ -54,11 +54,17 @@ key resolution, and OKF output are reproducible across environments:
 | DITA standard | **1.3** | OASIS DITA 1.3 (topic types, key scopes, `conkeyref`, branch filtering). The extraction layer targets 1.3 markup; DITA 2.0-only constructs are out of scope for the MVP. |
 | OKF standard | **v0.2** | [OKF v0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) — see §4.1 for how DITA2Graph maps onto it. |
 | MCP | 2024-11-05 protocol revision | JSON-RPC 2.0 over stdio (HTTP transport planned, §6.3/§13). |
+| Gradle | **9.0 minimum** (currently building against 9.6.x) | Required, not just recommended — `dita-ot-gradle` itself only reaches "full support" at 9.0+ (§8); older Gradle isn't a supported target. |
+| Java (toolkit + DITA2Graph's own Java code) | **25 (latest LTS)** | DITA-OT 4.4 itself only requires Java 17+; 25 is a floor DITA2Graph sets for its own code (`lib/dita2graph-core.jar`, once written) and for the Gradle build's toolchain, pinned in the repo-root `.java-version`. |
+| Rust (`dita2graph-core`, `dita2graph-mcp`) | **Latest stable** (currently 1.97.1) | Pinned exactly in the repo-root `rust-toolchain.toml`; edition 2024, `rust-version = "1.97"` in `Cargo.toml`. Rust has no LTS concept — "latest stable" means re-pinning periodically (§6.5's pinning discipline), not a one-time floor. |
 
 Pinning DITA-OT 4.4 and DITA 1.3 means the normalized model in §3.2 can
 assume 1.3 semantics for `conkeyref`, key scopes, and branch filtering
 (`ditaval` + `<data>`-based conditions) without version-sniffing the source
-map.
+map. The Gradle/Java/Rust rows are toolchain floors, not content-processing
+assumptions like the rows above them — they get bumped independently
+(e.g. re-pinning Rust every so often) without touching DITA-OT/DITA/OKF/MCP
+compatibility.
 
 **Compatibility policy:** `org.dita.dita2graph`, `dita2graph-core`, and
 `dita2graph-mcp` are versioned independently with semver, but released
@@ -908,12 +914,12 @@ DITA-OT/OKF baseline in §1.1.
 |---|---|
 | DITA processing | DITA-OT 4.4 |
 | DITA standard | DITA 1.3 |
-| Plugin (DITA-OT integration) | Java / Ant / Gradle |
-| Build automation | Gradle (via `dita-ot-gradle`, see section 8) |
-| Graph engine | Rust, built on `okf-rs` crates (`okf-dita`, `okf-core`, `okf-generator`, `okf-graph`, `okf-validator`, `okf-search`) |
+| Plugin (DITA-OT integration) | Java 25 (LTS) / Ant / Gradle 9.0+ |
+| Build automation | Gradle 9.0 minimum, currently building against 9.6.x (via `dita-ot-gradle`, see section 8) |
+| Graph engine | Rust (latest stable, currently 1.97.1, edition 2024) — own OKF bundle writer; reuses `okf-core` (config) and `okf-validator` (validation) from `okf-rs` as-is, not `okf-dita`/`okf-generator` (§3) |
 | Knowledge format | OKF v0.2 |
 | Agent interface | MCP (JSON-RPC 2.0, protocol rev. 2024-11-05), pattern from `okf-mcp` |
-| Storage | SQLite / RocksDB (derived index only — the bundle itself is markdown) |
+| Storage | SQLite / RocksDB (derived index only — the bundle itself is markdown; not yet implemented, §12 Phase 2 status) |
 | CLI | Rust (Clap) |
 | Serialization | Markdown + YAML frontmatter (bundle) / JSON (derived `graph.json`) |
 | MCP transport | stdio (local, default) / HTTP (remote, planned — requires auth, §6.3) |
@@ -930,6 +936,12 @@ itself: downloading it, installing plugins into it (including
 `org.dita.dita2graph`), validating content, and running transformations,
 all as ordinary Gradle tasks with up-to-date checking and configuration
 cache support.
+
+**Gradle 9.0 is a hard minimum** (§1.1), not just a recommendation: that's
+where `dita-ot-gradle` itself reaches full support, and it's the version
+this spec's examples are written and tested against (currently 9.6.x).
+Pin it via the Gradle wrapper (`./gradlew wrapper --gradle-version 9.6.1`)
+rather than relying on whatever Gradle happens to be on a machine's `PATH`.
 
 ### 8.1 Why use it
 
@@ -953,11 +965,18 @@ cache support.
 
 ### 8.2 Example `build.gradle`
 
-Pinned to DITA-OT **4.4**, matching the baseline in §1.1:
+Pinned to DITA-OT **4.4** and Java **25**, matching the baseline in §1.1
+(requires Gradle 9.0+, §8):
 
 ```groovy
 plugins {
     id 'io.github.jyjeanne.dita-ot-gradle' version '2.8.6'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
 }
 
 tasks.register('downloadDitaOt', com.github.jyjeanne.DitaOtDownloadTask) {

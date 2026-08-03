@@ -3,6 +3,7 @@ name = "dita2graph-mcp"
 description = "JSON-RPC-over-stdio MCP server exposing a DITA2Graph OKF bundle to AI agents."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

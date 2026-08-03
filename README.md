@@ -21,10 +21,17 @@ Early, in-progress implementation. What's real vs. not, briefly:
 | `sample-docs/` | A small fixture DITA project + a hand-authored stand-in for the normalized model DITA-OT extraction will eventually produce |
 | Gradle integration, CI, security hardening, Java extraction | Not started (Phase 1 backlog / Phase 4–5) |
 
+## Toolchain requirements
+
+Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
+(latest LTS)**, **Rust latest stable** (currently 1.97.1, pinned in
+`rust-toolchain.toml` — `rustup` picks it up automatically). `.java-version`
+at the repo root pins the Java requirement for tooling that reads it.
+
 ## Quickstart (what works today)
 
 ```bash
-# Build everything
+# Build everything (rustup will fetch the pinned toolchain automatically)
 cargo build --workspace
 
 # Run the core engine's and MCP server's test suites

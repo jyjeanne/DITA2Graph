@@ -13,4 +13,4 @@ pub mod model;
 pub mod okf;
 
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
-pub use okf::{write_bundle, BundleSummary};
+pub use okf::{BundleSummary, write_bundle};

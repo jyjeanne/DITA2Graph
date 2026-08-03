@@ -4,8 +4,8 @@
 //! generic graph/search calls for the DITA-relation-aware ones here.
 
 use crate::bundle::BundleReader;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::path::Path;
 
 pub fn list() -> Vec<Value> {

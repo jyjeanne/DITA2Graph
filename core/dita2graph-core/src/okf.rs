@@ -416,12 +416,14 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(dir.path().join("graph.json")).unwrap())
                 .unwrap();
         assert_eq!(graph["nodes"].as_array().unwrap().len(), 4);
-        assert!(graph["edges"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["from"] == "installing-product"
-                && e["to"] == "configuration"
-                && e["relation"] == "requires"));
+        assert!(
+            graph["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["from"] == "installing-product"
+                    && e["to"] == "configuration"
+                    && e["relation"] == "requires")
+        );
     }
 }

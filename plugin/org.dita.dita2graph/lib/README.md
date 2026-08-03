@@ -12,3 +12,8 @@ Nothing in `core/` or `mcp/` depends on this jar existing — both build and
 test standalone via `cargo build`/`cargo test` from the repo root. This
 jar is only needed to wire the Java-side DITA-OT hook (§2.2) up to that
 already-working Rust pipeline.
+
+Target/source: **Java 25 (LTS)**, matching `docs/plugin-specification.md`
+§1.1 and the repo-root `.java-version` file. DITA-OT 4.4 itself only
+requires Java 17+, so this is a floor DITA2Graph sets for its own code,
+not a DITA-OT requirement.

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED};
-use dita2graph_core::{write_bundle, NormalizedNode};
+use dita2graph_core::{NormalizedNode, write_bundle};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -150,10 +150,10 @@ fn run_query(output_dir: PathBuf, topic: String, relation: Option<String>) -> Re
         if from != topic {
             continue;
         }
-        if let Some(want) = &relation {
-            if edge_relation != want {
-                continue;
-            }
+        if let Some(want) = &relation
+            && edge_relation != want
+        {
+            continue;
         }
         found = true;
         println!(
