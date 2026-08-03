@@ -21,17 +21,38 @@
        pipeline needs; skipping it fails with a NullPointerException
        deep in build_preprocess2.xml before this target ever runs. -->
   <target name="dita2dita2graph" depends="build-init,preprocess2">
-    <!-- Custom Ant task, defined by lib/dita2graph-core.jar (once it's
-         built; currently a placeholder, see lib/README.md):
+    <!-- Defaults for the args.dita2graph.* CLI arguments (§2.3,
+         cfg/dita2graph.xml): plain Ant <property>, which never overrides
+         an already-set value, so a CLI-supplied override still wins.
+         Needed because a bare ${args.dita2graph.store} reference with
+         nothing upstream ever setting it resolves to the literal,
+         unresolved string "${args.dita2graph.store}", not an empty or
+         sensible value; confirmed the hard way, see
+         docs/dev/phase-0-findings.md finding 6. -->
+    <property name="args.dita2graph.depth" value="unlimited"/>
+    <property name="args.dita2graph.mcp" value="false"/>
+    <property name="args.dita2graph.emit-graph-json" value="true"/>
+    <property name="args.dita2graph.store" value="sqlite"/>
+    <property name="args.dita2graph.include-drafts" value="false"/>
+
+    <!-- Custom Ant task, defined by lib/dita2graph-core.jar:
            1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
            2. builds the normalized DITA model (§3.2)
            3. shells out to the `dita2graph-core` Rust binary (§3.4),
               already implemented and tested under core/dita2graph-core,
               to write the OKF bundle + graph.json (§2.4)
-           4. if ${args.dita2graph.mcp} is true, also writes mcp/ (§2.4, §5.4) -->
+         depth/mcp/emit-graph-json are read and logged but not yet
+         functionally wired to the Rust core's CLI, which only accepts
+         the input/output/store arguments today (§12 Phase 1 status;
+         finding 6); include-drafts is fully implemented (topic
+         filtering happens in Java, before the Rust core ever sees the
+         normalized model). outputDir uses dita.output.dir, not
+         output.dir: the latter is only build-init's own fallback
+         default (dita.dir/out), not the property actually populated
+         from the CLI's output argument (finding 6). -->
     <dita2graph:extract
         tempDir="${dita.temp.dir}"
-        outputDir="${output.dir}"
+        outputDir="${dita.output.dir}"
         depth="${args.dita2graph.depth}"
         emitGraphJson="${args.dita2graph.emit-graph-json}"
         mcp="${args.dita2graph.mcp}"

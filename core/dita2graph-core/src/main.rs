@@ -88,7 +88,7 @@ fn main() -> ExitCode {
 fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode> {
     if store != "none" {
         eprintln!(
-            "dita2graph-core: note: --store={store} is not implemented yet (§7); \
+            "dita2graph-core: note: --store={store} is not implemented yet (see spec section 7); \
              writing graph.json only, no {store} index."
         );
     }

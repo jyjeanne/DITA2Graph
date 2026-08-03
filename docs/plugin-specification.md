@@ -153,8 +153,11 @@ org.dita.dita2graph/
 │   ├── dita2graph.xml
 │   └── messages.xml
 │
+├── java/                    # Gradle project that builds lib/dita2graph-core.jar
+│   └── src/main/java/org/dita/dita2graph/tasks/...
+│
 ├── lib/
-│   └── dita2graph-core.jar
+│   └── dita2graph-core.jar   # built artifact, gitignored — see java/README.md
 │
 └── bin/
     └── dita2graph
@@ -184,15 +187,31 @@ org.dita.dita2graph/
   `build-init,preprocess2` — not just `preprocess` — since `build-init`
   is what defines `${dita.temp.dir}` and the Ant project references the
   map-first `preprocess2` pipeline needs (finding 5).
-- **cfg/dita2graph.xml** — default configuration (graph depth, relation
-  types to extract, MCP server settings), in DITA-OT's conventional `cfg/`
-  location (matching e.g. `org.dita.pdf2`'s `cfg/fo/...`).
+- **cfg/dita2graph.xml** — a documentation summary of the
+  `args.dita2graph.*` defaults (graph depth, relation types, MCP server
+  settings); DITA-OT does **not** read this file automatically (its
+  `<dita2graph-config>` shape is a DITA2Graph convention, not a DITA-OT
+  one) — the defaults that actually take effect are the plain Ant
+  `<property>` declarations at the top of `build.xml`'s target, which
+  this file's defaults must be kept in sync with by hand
+  (`docs/dev/phase-0-findings.md` finding 6).
 - **cfg/messages.xml** — the plugin's DITA-OT message catalog (§2.5):
   declares `DITA2GRAPHnnnX` message IDs with severity, so Java/Ant code
   raises consistent, documented diagnostics through DITA-OT's own logger
   instead of ad hoc `System.out` output.
-- **lib/dita2graph-core.jar** — thin Java bridge that shells out to (or
-  JNI/FFI-binds) the Rust core engine described in section 3.
+- **java/** — a standalone Gradle project building `lib/dita2graph-core.jar`:
+  `org.dita.dita2graph.tasks.ExtractTask` (the `dita2graph:extract` Ant
+  task) and its helpers, which parse DITA-OT's resolved job data into
+  the normalized model (§3.2) and shell out to the `dita2graph-core`
+  Rust binary (§3.4). Covered by a real unit test against a fixture
+  shaped like actual DITA-OT 4.4 output; see `java/README.md`.
+- **lib/dita2graph-core.jar** — the thin Java bridge `java/` builds,
+  shelling out to the Rust core engine described in section 3 (found via
+  the `DITA2GRAPH_CORE_BIN` env var or `PATH` — not a repo-relative
+  path, since an installed plugin zip has no `target/` directory of its
+  own; bundling the platform-specific Rust binary for a real release
+  remains Phase 4/5 work). Not committed — a gitignored build artifact,
+  reproducible via `java/`.
 - **bin/dita2graph** — standalone CLI entry point for running extraction
   outside of a full DITA-OT publish (e.g. in CI, or for incremental graph
   updates).
@@ -1073,20 +1092,32 @@ script, not the CLI):
 
 > **Verified**, not guessed: this exact example (adapted to this repo's
 > own paths) was run against a live Gradle 9.6.1 + DITA-OT 4.4 in
-> `gradle-build/` (`docs/dev/phase-0-findings.md` finding 5).
-> `downloadDitaOt`, `validateDocs`, and `checkLinks` all pass for real.
-> `installDita2Graph`/`buildKnowledgeGraph` currently fail — correctly —
-> at "Library file not found: .../lib/dita2graph-core.jar", since that
-> jar doesn't exist yet (§12 Phase 1 status). The property-setter calls
-> above (`ditaOtDir(...)`, `plugins(...)`, `force.set(...)`, `ditaOt(...)`,
-> `input(...)`, `transtype(...)`, `progressStyle(...)`) were corrected
-> against `dita-ot-gradle`'s actual Kotlin source after the original
-> version of this example (using `plugins(listOf(...))`, `force(false)`,
-> and `ditaOt(...)` on `DitaOtValidateTask`) failed to compile — see
-> finding 5 for exactly what was wrong and why. `tasks.register<Type>
-> ("name") { }` is used throughout rather than `by tasks.registering
-> (Type::class)`, which Gradle 9.6 deprecates as incompatible with
-> Gradle 10.
+> `gradle-build/` (`docs/dev/phase-0-findings.md` findings 5–7).
+> `./gradlew buildKnowledgeGraph` now runs the **entire pipeline for
+> real** — download DITA-OT, install the plugin, validate, check links,
+> run the `dita2graph` transtype — and produces a real,
+> `okf_validator`-passing OKF bundle, now that `lib/dita2graph-core.jar`
+> is a real, built artifact (§12 Phase 1 status) rather than a
+> placeholder. The property-setter calls above (`ditaOtDir(...)`,
+> `plugins(...)`, `force.set(...)`, `ditaOt(...)`, `input(...)`,
+> `transtype(...)`, `progressStyle(...)`) were corrected against
+> `dita-ot-gradle`'s actual Kotlin source after the original version of
+> this example (using `plugins(listOf(...))`, `force(false)`, and
+> `ditaOt(...)` on `DitaOtValidateTask`) failed to compile — see finding
+> 5 for exactly what was wrong and why. `tasks.register<Type>("name")
+> { }` is used throughout rather than `by tasks.registering(Type::class)`,
+> which Gradle 9.6 deprecates as incompatible with Gradle 10.
+>
+> **Local-development note:** the `plugins("org.dita.dita2graph")` call
+> above assumes installing from the plugin registry (once published) or
+> a pre-built ZIP — that's what `DitaOtInstallPluginTask`'s "local" path
+> actually expects. Pointing it straight at a plugin *source directory*
+> (e.g. this repo's own `plugin/org.dita.dita2graph/` while developing)
+> fails with "Failed to expand ... to .../plugin", the same error
+> `java.util.zip` gives reading a directory as a zip stream — confirmed
+> the hard way (finding 7). `gradle-build/build.gradle.kts` shows the
+> fix: a `Zip` task ahead of `installDita2Graph`, pointing `plugins(...)`
+> at the zip's output file instead of the raw directory.
 
 #### Groovy DSL equivalent (`build.gradle`)
 
@@ -1409,25 +1440,38 @@ steps; the normalized model JSON for the sample map validates against a
 JSON Schema for §3.2 and correctly reflects resolved keys, `conref`, and
 one DITAVAL-filtered topic.
 
-**Status:** mostly done. `plugin/org.dita.dita2graph/{plugin.xml,
-build.xml, cfg/dita2graph.xml, cfg/messages.xml, bin/dita2graph}` and
-`sample-docs/` (a 3-topic ditamap with `keyref`, one `conref`-style
-cross-reference, and `audience`/`product` profiling) exist, and the
-plugin XML is now **verified against a live DITA-OT 4.4 install**
-(`docs/dev/phase-0-findings.md` finding 5): `dita --format dita2graph`
-runs DITA-OT's real preprocessing pipeline against `sample-docs/` and
-dispatches correctly to the plugin's Ant target. Finding 5 also caught
-and fixed five real bugs the first version of this spec had gotten
-wrong (illegal `--` in XML comments, two nonexistent extension points,
-the `dita2` + transtype-name Ant target-naming convention, and the
-`build-init,preprocess2` dependency chain DITA-OT 4.4 actually needs).
-**Not yet done:** `lib/dita2graph-core.jar` is still a placeholder (no
-Java extraction code), so `dita --install` fails on a missing file
-until that's written, and the exit criterion's "normalized model JSON
-... validates" half is unmet — `sample-docs/normalized-model.sample
-.json` is still hand-authored, not generated by a live run, since there's
-no Java code yet to generate it. That Java class is the single largest
-remaining item before this phase's exit criterion is fully met.
+**Status:** done, in substance. `plugin/org.dita.dita2graph/{plugin.xml,
+build.xml, cfg/dita2graph.xml, cfg/messages.xml, bin/dita2graph,
+lib/dita2graph-core.jar}` and `sample-docs/` (a 3-topic ditamap with
+`keyref`, one cross-reference, and `audience`/`product` profiling) exist,
+and the whole pipeline is **verified end-to-end against a live DITA-OT
+4.4 install** (`docs/dev/phase-0-findings.md` findings 5–7): `dita
+--format dita2graph --input sample-docs/user-guide.ditamap` and
+`./gradlew buildKnowledgeGraph` (in `gradle-build/`) both install the
+plugin, run DITA-OT's real preprocessing, execute
+`org.dita.dita2graph.tasks.ExtractTask` (built by
+`plugin/org.dita.dita2graph/java/`), and produce a real,
+`okf_validator`-passing OKF bundle. Findings 5–7 caught and fixed seven
+real bugs the spec/harness had gotten wrong along the way: illegal `--`
+in XML comments, two nonexistent extension points, the `dita2` +
+transtype-name Ant target-naming convention, the
+`build-init,preprocess2` dependency chain DITA-OT 4.4 needs, missing
+`args.dita2graph.*` property defaults, the wrong output-directory
+property name, and `dita-ot-gradle`'s local-plugin-install needing a
+ZIP rather than a raw directory.
+
+Extraction itself is intentionally narrow, not a shortcut taken
+silently: `contains` (map `<topicref>`), `requires` and `references`
+(`<xref>`/`<link>`, gated on `keyref`) are the only relations derived,
+leaving `applies-to`/`related-to`/`generated-from` as documented future
+inference work (§3.3, §13) rather than guessed. Nested
+`topicref`/`topichead`/`topicgroup` map structures aren't walked either
+(direct `<topicref>` children only) — a real gap for maps deeper than
+`sample-docs/`'s flat one. The exit criterion's "validates against a
+JSON Schema" is met in spirit but not literally: there's no standalone
+`.schema.json` file, only the Rust side's `serde` struct definitions
+acting as the de facto (and enforced) schema — worth formalizing if a
+second producer of the normalized model ever appears.
 
 ### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
 

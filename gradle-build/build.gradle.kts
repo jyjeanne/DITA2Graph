@@ -27,10 +27,24 @@ val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
     version(ditaOtVersion)
 }
 
+// DitaOtInstallPluginTask's "local" install path needs a ZIP file, not a
+// bare directory -- same as `dita install` itself (confirmed directly:
+// "Failed to expand .../org.dita.dita2graph to .../plugin", the same
+// error java.util.zip gives trying to read a directory as a zip stream).
+// dita-ot-gradle's own "absolute path" wording for local installs means
+// a path to a .zip, not a plugin directory (docs/dev/phase-0-findings.md
+// finding 7).
+val zipPlugin = tasks.register<Zip>("zipDita2GraphPlugin") {
+    from(pluginDir)
+    archiveFileName.set("org.dita.dita2graph.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("plugin-zip"))
+    into("org.dita.dita2graph")
+}
+
 val installDita2Graph = tasks.register<DitaOtInstallPluginTask>("installDita2Graph") {
-    dependsOn(downloadDitaOt)
+    dependsOn(downloadDitaOt, zipPlugin)
     ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
-    plugins(pluginDir.asFile.absolutePath)
+    plugins(zipPlugin.get().archiveFile.get().asFile.absolutePath)
     force.set(true)
 }
 

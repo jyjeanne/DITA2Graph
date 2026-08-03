@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Binds the dita2graph:extract element used in build.xml to
+  org.dita.dita2graph.tasks.ExtractTask. Resolved via Ant's antlib
+  mechanism: build.xml declares xmlns:dita2graph="antlib:org.dita.dita2graph",
+  and Ant looks this file up on the classpath at
+  org/dita/dita2graph/antlib.xml; this jar's lib.import feature
+  (plugin.xml) puts it there.
+-->
+<antlib>
+  <taskdef name="extract" classname="org.dita.dita2graph.tasks.ExtractTask"/>
+</antlib>

@@ -5,23 +5,28 @@ graph (using [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob
 v0.2 as the representation) and exposes it to AI agents over MCP.
 
 Full design, rationale, and roadmap: **[`docs/plugin-specification.md`](docs/plugin-specification.md)**.
-Implementation status against that roadmap's Phase 0–3: **[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**
+Implementation status against that roadmap's Phase 0–2: **[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**
 and the per-phase "Status" notes in the spec's §12.
 
 ## Status
 
-Early, in-progress implementation. What's real vs. not, briefly:
+The core pipeline is real and runs end to end: DITA-OT preprocessing →
+Java extraction → Rust OKF writer → validated bundle → MCP server.
 
 | Component | Status |
 |---|---|
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set, passing tests |
-| `plugin/org.dita.dita2graph` (Java/Ant/XML) | **Verified**: installs and dispatches correctly against a live DITA-OT 4.4 (`gradle-build/`); fails today only because `lib/dita2graph-core.jar` doesn't exist yet (no Java extraction code) |
-| `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project that did the above verification; see its README to re-run |
-| `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly through DITA-OT 4.4 (`html5` transtype builds it cleanly), plus a hand-authored stand-in for the normalized model DITA-OT extraction will eventually produce |
-| Java extraction (`lib/dita2graph-core.jar`) | Not started — the single remaining blocker to a fully working `dita --format dita2graph` run |
-| CI, security hardening | Not started (Phase 4–5) |
+| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested |
+| `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, and produces a real `okf_validator`-passing bundle |
+| `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real |
+| `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline |
+| CI, security hardening | Not started (Phase 4–5) — only the Rust workspace has CI today |
+
+See `docs/dev/phase-0-findings.md` for what's still narrower than the
+full spec envisions (relation types, nested map structures, `depth`/
+`mcp` args not yet wired up) — real gaps, documented rather than hidden.
 
 ## Toolchain requirements
 
@@ -29,62 +34,48 @@ Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
 (latest LTS)**, **Rust latest stable** (currently 1.97.1, pinned in
 `rust-toolchain.toml` — `rustup` picks it up automatically). `.java-version`
 at the repo root pins the Java requirement for tooling that reads it.
+`plugin/org.dita.dita2graph/java` currently compiles at `--release 21`
+(no JDK 25 available where this was built/tested — see that
+subproject's README).
 
 ## Quickstart (what works today)
 
 ```bash
-# Build everything (rustup will fetch the pinned toolchain automatically)
-cargo build --workspace
+# Build the Rust workspace (rustup fetches the pinned toolchain automatically)
+cargo build --release --workspace
 
-# Run the core engine's and MCP server's test suites
-cargo test --workspace
+# Build the DITA-OT plugin's Java side
+(cd plugin/org.dita.dita2graph/java && ./gradlew jar)
 
-# Build an OKF bundle from the sample fixture's normalized model
-./target/debug/dita2graph-core build \
-  --input sample-docs/normalized-model.sample.json \
-  --output /tmp/dita2graph-demo
+# Install the plugin and run it against the sample project, via the real
+# Gradle/Kotlin DSL harness (downloads DITA-OT 4.4 on first run)
+export DITA2GRAPH_CORE_BIN="$PWD/target/release/dita2graph-core"
+(cd gradle-build && ./gradlew buildKnowledgeGraph)
 
-# Inspect it -- it's just markdown
-cat /tmp/dita2graph-demo/okf/topics/installing-product.md
-
-# Re-validate it on its own
-./target/debug/dita2graph-core validate --bundle /tmp/dita2graph-demo/okf
-
-# Query the derived graph
-./target/debug/dita2graph-core query --store /tmp/dita2graph-demo --topic installing-product
+# Inspect the real, generated, validated bundle
+cat gradle-build/build/dita2graph/okf/topics/installing-product.md
+./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph/okf
 
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \
-  | ./target/debug/dita2graph-mcp /tmp/dita2graph-demo
+  | ./target/release/dita2graph-mcp gradle-build/build/dita2graph
 ```
 
 To register the server with Claude Code once you have a bundle built:
 
 ```bash
-claude mcp add dita2graph -- ./target/debug/dita2graph-mcp /tmp/dita2graph-demo
+claude mcp add dita2graph -- ./target/release/dita2graph-mcp gradle-build/build/dita2graph
 ```
-
-## What's not real yet
-
-The DITA-OT plugin (`plugin/org.dita.dita2graph/`) installs and dispatches
-correctly against a live DITA-OT 4.4 (`gradle-build/`,
-`docs/dev/phase-0-findings.md` finding 5) — but there is still no
-`lib/dita2graph-core.jar`, so a full `dita --format dita2graph` run fails
-at the one remaining step: the actual Java class that reads DITA-OT's
-resolved job data and calls the (already-working) `dita2graph-core` Rust
-binary. `sample-docs/normalized-model.sample.json` is hand-written to
-match the schema that Java code will eventually produce, not generated by
-it. See `docs/dev/phase-0-findings.md` and `docs/plugin-specification.md`
-§12 for exactly what's confirmed vs. still open.
 
 ## Repository layout
 
 ```
-docs/plugin-specification.md   # design spec, source of truth
-docs/dev/phase-0-findings.md   # spike results and decisions made from them
-core/dita2graph-core/          # Rust: normalized model, OKF writer, CLI (§3)
-mcp/dita2graph-mcp/            # Rust: MCP server (§5)
-plugin/org.dita.dita2graph/    # DITA-OT plugin, verified installable (§2)
-gradle-build/                  # Live Gradle/Kotlin DSL integration harness (§8)
-sample-docs/                   # fixture DITA project used by tests/demos
+docs/plugin-specification.md    # design spec, source of truth
+docs/dev/phase-0-findings.md    # spike results and decisions made from them
+core/dita2graph-core/           # Rust: normalized model, OKF writer, CLI (§3)
+mcp/dita2graph-mcp/             # Rust: MCP server (§5)
+plugin/org.dita.dita2graph/     # DITA-OT plugin: plugin.xml/build.xml/cfg (§2)
+plugin/org.dita.dita2graph/java # Java: ExtractTask, builds lib/dita2graph-core.jar
+gradle-build/                   # Live Gradle/Kotlin DSL integration harness (§8)
+sample-docs/                    # fixture DITA project used by tests/demos
 ```

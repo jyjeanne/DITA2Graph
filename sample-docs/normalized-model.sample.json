@@ -27,12 +27,12 @@
     "topicType": "topic",
     "title": "Installing Product: Prerequisites",
     "shortdesc": null,
-    "audience": ["admin"],
-    "product": ["enterprise"],
+    "audience": [],
+    "product": [],
     "keys": [],
     "sourceFile": "topics/installing-product-prereqs.dita",
     "links": [
-      { "relation": "references", "target": "configuration" }
+      { "relation": "requires", "target": "configuration" }
     ]
   },
   {
@@ -47,7 +47,7 @@
     "sourceFile": "topics/installing-product.dita",
     "links": [
       { "relation": "requires", "target": "configuration" },
-      { "relation": "contains", "target": "installing-product-prereqs" }
+      { "relation": "references", "target": "installing-product-prereqs" }
     ]
   }
 ]
