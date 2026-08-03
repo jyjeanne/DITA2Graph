@@ -21,6 +21,7 @@ plugins {
 
 val ditaOtVersion = "4.4"
 val sampleDocs = layout.projectDirectory.dir("../sample-docs")
+val sampleDocsInvalid = layout.projectDirectory.dir("../sample-docs-invalid")
 val pluginDir = layout.projectDirectory.dir("../plugin/org.dita.dita2graph")
 
 val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
@@ -58,6 +59,19 @@ val validateDocs = tasks.register<DitaOtValidateTask>("validateDocs") {
 // pure Kotlin XML link scanner, confirmed from its source.
 val checkLinks = tasks.register<DitaLinkCheckTask>("checkLinks") {
     input(sampleDocs.file("user-guide.ditamap"))
+}
+
+// Deliberately NOT a dependency of validateDocs/buildKnowledgeGraph --
+// this task is expected to FAIL. It's the Phase 4 exit criterion
+// (docs/plugin-specification.md §12) made concrete: proof that DITA-OT's
+// own validation rejects broken source before dita2graph ever runs, not
+// just a claim. See ../sample-docs-invalid/README.md for which kind of
+// "broken" this actually is (an unresolvable href, not an unresolvable
+// keyref -- the latter is only informational and does not fail).
+val validateBrokenDoc = tasks.register<DitaOtValidateTask>("validateBrokenDoc") {
+    dependsOn(downloadDitaOt)
+    ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocsInvalid.file("broken.ditamap"))
 }
 
 val buildKnowledgeGraph = tasks.register<DitaOtTask>("buildKnowledgeGraph") {

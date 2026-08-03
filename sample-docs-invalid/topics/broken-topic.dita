@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE topic PUBLIC "-//OASIS//DTD DITA Topic//EN" "topic.dtd">
+<topic id="broken-topic">
+  <title>Broken Topic</title>
+  <body>
+    <p>References a topic that does not exist: <xref href="does-not-exist.dita"/>.</p>
+  </body>
+</topic>

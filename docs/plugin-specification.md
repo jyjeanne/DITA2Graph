@@ -1275,12 +1275,22 @@ Because the graph is built from DITA-OT's own preprocessing pipeline
 rather than scraped from rendered output, DITA2Graph gets validation for
 free at multiple layers before an agent ever sees the data:
 
-- **DITA-OT key/conref resolution** fails the build on unresolved
-  `keyref`/`conkeyref` — a broken reference can't silently make it into
-  the graph the way a broken link can silently make it into a RAG index.
+- **DITA-OT's own reference resolution fails the build on a broken
+  `href`**, confirmed directly (`docs/dev/phase-0-findings.md` finding
+  8): an `<xref href="missing.dita"/>` to a nonexistent file is a hard
+  `[DOTX008E]` error and a non-zero exit. An unresolved **`keyref`** is
+  *not* equally strict, though — DITA-OT treats it as informational
+  (`[DOTJ047I] ... using the @href attribute as fallback if it exists`)
+  and the build succeeds with the target silently dropped, useful for
+  authoring against a partial key space but a real gap in this
+  guarantee: a `keyref`-only broken reference can make it into the
+  graph the way a broken plain link cannot.
 - **`dita-ot-gradle`'s `DitaOtValidateTask`/`DitaLinkCheckTask`** (§8)
   catch XML validity, reference integrity, and dead links *before*
-  `dita2graph` runs, gating graph generation on green validation.
+  `dita2graph` runs, gating graph generation on green validation — this
+  is where the CI-observed failure in §12 Phase 4's exit criterion
+  actually comes from, and it's likewise strict on broken `href`s, not
+  (currently) on unresolved `keyref`s.
 - **`okf-validator`** checks the emitted bundle for OKF v0.2 schema
   conformance and link integrity (every `relations`/markdown-link target
   actually resolves to a concept in the bundle) — the graph can't claim a
@@ -1543,6 +1553,26 @@ required checks.
 sample project fails CI at `validateDocs`/`checkLinks`, before
 `buildKnowledgeGraph` ever runs — reproducing §9.3's guarantee as an
 actual, observed CI failure rather than a claim.
+
+**Status:** exit criterion met, though with a broken *reference* rather
+than specifically a broken `conref` — `sample-docs-invalid/` (a
+`<xref href="does-not-exist.dita"/>` to a nonexistent file) and
+`gradle-build/`'s `validateBrokenDoc` task reproduce the guarantee as an
+observed CI failure (`.github/workflows/integration.yml`), not a claim.
+Worth noting since it wasn't obvious going in: an unresolvable `keyref`
+does **not** trigger this — DITA-OT treats it as informational
+(`[DOTJ047I] ... Using the @href attribute as fallback if it exists`)
+and the build succeeds anyway, confirmed by trying it first and finding
+that out the hard way. Only an unresolvable `href` (or similar hard
+reference-integrity break) produces the `[DOTX008E]`-class error
+`DitaOtValidateTask` actually fails on. `./gradlew buildKnowledgeGraph`
+itself (the "green CI building the sample project" deliverable) is also
+in CI now, alongside the Rust and Java unit-test workflows. **Not yet
+done:** the rest of §10's testing strategy (plugin-integration tests via
+DITA-OT's own test framework, a broader regression corpus beyond the one
+small fixture, MCP protocol tests running against a *live* `dita2graph`-
+built bundle rather than a hand-built one in `dita2graph-mcp`'s own unit
+tests) — CI today only covers what's described above.
 
 ### Phase 5 — Security, docs, and public v0.1.0 release (2 weeks)
 

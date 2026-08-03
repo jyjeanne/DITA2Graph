@@ -333,6 +333,46 @@ What's left for a complete MVP (§11), now that extraction itself works:
 - `depth`/`mcp`/`emit-graph-json` are read and logged by `ExtractTask`
   but not yet functionally wired to `dita2graph-core`'s CLI, which only
   accepts `--input`/`--output`/`--store` today.
-- CI (§8.3, §12 Phase 4) doesn't yet run any of `gradle-build/`'s tasks
+- ~~CI (§8.3, §12 Phase 4) doesn't yet run any of `gradle-build/`'s tasks
   or `plugin/org.dita.dita2graph/java`'s tests — only the Rust workspace
-  is covered by `.github/workflows/rust.yml` so far.
+  is covered by `.github/workflows/rust.yml` so far.~~ Closed by finding
+  8, below. Still missing: plugin-integration tests via DITA-OT's own
+  test framework, and a broader regression corpus beyond
+  `sample-docs/`'s one small fixture (§10).
+
+8. **Does DITA-OT's validation gate (`DitaOtValidateTask`, §9.3's
+   "loud, not silent" claim) actually reject broken source, and does
+   *any* kind of broken reference trigger it?** Checked directly with a
+   fixture (`sample-docs-invalid/`) rather than assumed — and the answer
+   turned out to be more specific than the spec's original phrasing
+   ("a deliberately introduced broken `conref`") implied:
+
+   - An unresolvable **`keyref`** (`<xref keyref="does-not-exist"/>`)
+     does **not** fail the build. DITA-OT logs `[DOTJ047I] Unable to
+     find key definition for key reference 'does-not-exist' in root
+     scope. Using the @href attribute as fallback if it exists` — an
+     **informational** message (`I` suffix), and the build succeeds
+     with the xref's target silently dropped. Tried this first; it was
+     the wrong fixture.
+   - An unresolvable **`href`** to a file that doesn't exist *does*
+     fail, with `[DOTX008E] The resource '...' cannot be loaded ...`
+     (an `E`-suffix error) and a non-zero exit code — the fixture
+     `sample-docs-invalid/` actually uses.
+
+   This matters beyond just picking the right test fixture: it means
+   "broken" isn't uniformly loud in DITA-OT the way §9.3 characterized
+   it — a dangling key reference degrades gracefully by design (useful
+   for authoring against draft/partial key spaces), while a dangling
+   file reference is a hard failure. A future revision of §9.3 should
+   say this precisely rather than "broken input fails loudly" as a
+   blanket claim.
+
+   **Result:** `gradle-build/build.gradle.kts` gained a
+   `validateBrokenDoc` task (deliberately outside `buildKnowledgeGraph`'s
+   dependency chain, since it's expected to fail) and
+   `.github/workflows/integration.yml` asserts it fails in CI —
+   confirmed locally first (`./gradlew validateBrokenDoc; echo $?` →
+   `1`), then wired into the same workflow that runs the full
+   `buildKnowledgeGraph` pipeline and checks the resulting bundle's
+   actual file contents (not just that `dita2graph-core validate`
+   exits zero).

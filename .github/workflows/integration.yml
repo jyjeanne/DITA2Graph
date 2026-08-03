@@ -1,0 +1,57 @@
+name: Integration
+
+# Runs the full, real pipeline end to end: Rust core engine, Java
+# extraction plugin, then a live DITA-OT 4.4 via gradle-build/. Separate
+# from rust.yml/java.yml (which only build+unit-test each side in
+# isolation) since this downloads a real ~80MB DITA-OT release and takes
+# noticeably longer -- docs/plugin-specification.md §12 Phase 4's exit
+# criterion made durable, not just a one-off manual verification
+# (docs/dev/phase-0-findings.md findings 4-7).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # matches plugin/org.dita.dita2graph/java/build.gradle.kts's --release 21
+
+      - name: Build dita2graph-core (release)
+        run: cargo build --release -p dita2graph-core --locked
+
+      - name: Build lib/dita2graph-core.jar
+        working-directory: plugin/org.dita.dita2graph/java
+        run: ./gradlew jar --no-daemon
+
+      - name: Run the full pipeline against sample-docs/
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraph --no-daemon
+
+      - name: Validate the generated bundle
+        run: ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph/okf
+
+      - name: Confirm the generated bundle looks right
+        run: |
+          set -euo pipefail
+          test -f gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+
+      - name: Confirm DITA-OT's validation gate rejects broken content
+        working-directory: gradle-build
+        run: |
+          if ./gradlew validateBrokenDoc --no-daemon; then
+            echo "::error::validateBrokenDoc was expected to fail (sample-docs-invalid/ has an unresolvable href) but succeeded"
+            exit 1
+          fi
+          echo "validateBrokenDoc failed as expected -- the validation gate works"
