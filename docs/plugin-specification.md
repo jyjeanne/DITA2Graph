@@ -694,6 +694,13 @@ for an agent (or a human) to confirm a bundle it's about to rely on is
 actually well-formed before trusting its answers, without shelling out
 to the CLI separately.
 
+This is the current, implemented tool contract. `search_topics`'s
+`query` argument today does plain text matching against titles/tags, not
+embedding-based semantic search, and there is no content-summarization
+or impact-analysis tool yet — §13.1 describes a planned `analyze_impact`
+tool and a hybrid graph-then-content query path as a future direction,
+not part of this contract.
+
 ### 5.3 Example interaction
 
 ```
@@ -1297,6 +1304,16 @@ search plus several speculative chunk reads. This is a directional claim,
 not a guaranteed number — §10 calls for measuring it against a real
 regression corpus rather than citing `okf-rs`'s figure as DITA2Graph's own.
 
+The mechanism scales further once content search is itself narrowed by
+the graph first, rather than run over the whole bundle — e.g. a corpus of
+ten thousand topics, an `applies-to`/`references` graph traversal narrows
+the candidate set to a few dozen relevant topics, and only that narrowed
+set is searched or sent to the model. §13.1 describes this as a future
+direction (a `rag/` content index alongside the OKF graph, not built
+today); the point here is that the graph's job in that design is cheap,
+deterministic narrowing, with the more expensive fuzzy-match step
+confined to a set the graph already reduced.
+
 ### 9.3 Validation
 
 Because the graph is built from DITA-OT's own preprocessing pipeline
@@ -1645,19 +1662,102 @@ answering queries in Claude Code, hitting no undocumented step.
 ### Phase 6+ — Extended capabilities (post-MVP, ongoing)
 
 Not a single phase but a backlog, picked up item-by-item based on
-adopter feedback after v0.1.0 — see §13 for the current list (multi-map
-federation, graph diffing, HTTP transport + auth, embedding-based
-`related-to` inference, a rendered-output annotation variant). Each item
-gets its own scoped follow-up spec/issue and its own exit criterion
-before work starts, rather than being bundled into one open-ended phase.
+adopter feedback after v0.1.0 — see §13 for the current list: a unified
+graph + RAG architecture with graph-narrowed hybrid retrieval and an
+`analyze_impact` tool (§13.1, the largest single item), plus multi-map
+federation, graph diffing, HTTP transport + auth, and a rendered-output
+annotation variant (§13.2). Each item gets its own scoped follow-up
+spec/issue and its own exit criterion before work starts, rather than
+being bundled into one open-ended phase.
 
 ---
 
 ## 13. Future work
 
-- Relation inference beyond explicit DITA markup (e.g. embedding-based
-  `related-to` suggestions layered on top of the structural graph, clearly
-  distinguished from author-declared relationships).
+### 13.1 A unified graph + RAG architecture (design direction, not yet implemented)
+
+Everything in §2–§5 describes what's built today: one extraction pass
+producing a single OKF graph (§4), queried through typed MCP tools
+(§5.2) whose only free-text entry point (`search_topics`) does plain
+substring matching, not semantic search. A more ambitious version of the
+same pipeline is worth designing toward: instead of treating the graph
+and a text/embedding search index as two unrelated systems that happen
+to live in the same repository, derive both from the **same single pass**
+over the normalized model (§3.2) that already visits every topic once,
+and use the graph to narrow *before* any content search runs, not after.
+
+**Single-pass extraction, two correlated outputs.** The core engine's
+model walk (§3.3) is already a full traversal of topics, maps, `keyref`,
+`conref`, links, images, and metadata; today it emits `okf/` alone. A
+`rag/` sibling output, populated from the same pass rather than a second
+independent parse of the DITA source, keeps the two representations from
+drifting apart:
+
+```
+output/
+ ├── okf/                # existing (§2.4, §4) — the graph, source of truth
+ ├── rag/                 # not implemented: a content-search artifact
+ │   ├── chunks.jsonl        # one enriched record per topic
+ │   └── metadata.json
+ └── mcp/                 # existing (§2.4, §5)
+```
+
+Each `chunks.jsonl` record would carry the same identity as its OKF
+concept so the two stay joinable, e.g.:
+
+```json
+{"id": "installing-product.dita", "title": "Installing Product", "body": "...", "product": ["enterprise"], "audience": ["admin"], "okf_node": "topics/installing-product.md"}
+```
+
+**Query routing in the MCP server.** §5.2's tools already split
+structural lookups (`find_related_topics`, `trace_dependencies`) from
+content questions; a hybrid architecture would route a question to one,
+the other, or both, depending on its shape:
+
+- Purely structural ("what topics use this key?") → graph traversal
+  only, using §5.2's existing tools as-is.
+- Purely about content ("summarize the installation procedure") → the
+  `rag/` index only.
+- Hybrid ("explain all maintenance procedures for diesel engines") →
+  graph first, to narrow the candidate set (every topic reachable via
+  `applies-to`/`references` from a "diesel engine" concept, §4.3), then
+  the `rag/` index only over that narrowed set, then the LLM only sees
+  that filtered context. The graph does cheap, deterministic narrowing;
+  the content layer does fuzzy relevance ranking *within* an
+  already-small, already-correct candidate set instead of over the
+  whole bundle — the mechanism behind §9.2's token-reduction argument at
+  scale (illustratively: ten thousand topics narrowed to a few dozen by
+  the graph before any content search runs).
+
+**Impact analysis as a first consumer.** "If I change `engine.dita`,
+what breaks?" is a graph query — dependents, containing maps,
+`conref`/`keyref` referrers, affected publications (§4.3) — whose result
+set the content layer then summarizes topic-by-topic into a readable
+report. This is the concrete case for a new `analyze_impact(topicId)`
+tool alongside §5.2's existing set (referenced there).
+
+**Longer-term direction: converge the two artifacts.** The natural end
+state folds `rag/chunks.jsonl` into the OKF nodes themselves instead of
+keeping two correlated files — each OKF concept optionally carrying an
+embedding vector alongside its existing frontmatter and relations
+(§4.2), so the graph is the single source of truth and embedding
+similarity search becomes a ranking step *within* a graph-selected node
+set rather than an independent index. This is a heavier, later step than
+the two-artifact version above: it changes the OKF bundle format itself
+(§4.1), and needs an embedding-model/dimensionality choice that doesn't
+churn the whole bundle on every model upgrade. Listed here as the
+direction under consideration, not a committed design — §10 would need
+its own regression corpus and success criteria for this before it's
+scoped as a phase.
+
+**Status:** design only. No code exists for `rag/`, `analyze_impact`, or
+node-level embeddings; `search_topics` remains text matching (§5.2).
+Tracked as Phase 6+ backlog items (§12), each to get its own scoped
+follow-up spec and exit criterion before work starts, per this section's
+existing convention.
+
+### 13.2 Other extended capabilities
+
 - Multi-map / multi-product graph federation (merging graphs from several
   `ditamap`s into one queryable knowledge base, e.g. per-product graphs
   joined into an org-wide graph).
