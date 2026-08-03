@@ -894,6 +894,19 @@ with a "confidential" tag an agent is trusted to honor. A tag-based filter
 bolted onto a single bundle is one prompt-injection or bug away from being
 ignored; a topic that was never extracted cannot leak.
 
+**Demonstrated, not just described** (§12 Phase 5): `sample-docs/`
+carries a `topics/internal-notes.dita` topicref marked
+`audience="internal"` in `user-guide.ditamap`; `sample-docs/public.ditaval`
+excludes it, `sample-docs/internal.ditaval` includes it.
+`gradle-build/build.gradle.kts`'s `buildKnowledgeGraphPublic` and
+`buildKnowledgeGraphInternal` tasks build the same map with each
+profile into separate output directories. Confirmed directly against a
+live DITA-OT 4.4 (both the raw `dita` CLI with `--filter=` and via
+Gradle's `filter(...)`): the public bundle's `okf/topics/` has no
+`internal-notes.md` at all; the internal bundle's does. CI
+(`.github/workflows/integration.yml`) asserts this as a required gate,
+the same pattern as the Phase 4 `validateBrokenDoc` negative test.
+
 ### 6.2 Local (stdio) transport is the safe default
 
 The default `transport = "stdio"` (§5.4) confines the MCP server to the
@@ -1615,11 +1628,15 @@ answering queries in Claude Code, hitting no undocumented step.
   in `main.rs` so both `build` and `validate` fail (`DITA2GRAPH050E`,
   exit code 1) on a detected secret. Verified with unit tests and a
   manual CLI smoke test against a planted AWS key.
-- Not started — public/internal DITAVAL split is not yet a *demonstrated*
-  pattern: `sample-docs/public.ditaval` currently has nothing to filter,
-  since no fixture topic is marked `audience="internal"`. Needs a fixture
-  update and a build comparison (public vs. internal output actually
-  differs) before this deliverable is real rather than aspirational.
+- Done — public/internal DITAVAL split (§6.1) is now a demonstrated
+  pattern, not a no-op: `sample-docs/topics/internal-notes.dita` is a
+  real `audience="internal"` fixture topic, `public.ditaval` excludes
+  it and `internal.ditaval` includes it, and
+  `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal`
+  (`gradle-build/build.gradle.kts`) build both profiles into separate
+  output directories. Verified against a live DITA-OT 4.4 run (both raw
+  `dita --filter=` and Gradle's `filter(...)`) that the two resulting
+  bundles differ by exactly that one file, and CI now gates on it.
 - Not started — README/quickstart polish toward the exit criterion above,
   and the `v0.1.0` tag itself (deliberately held for explicit user
   confirmation before tagging/releasing, per this project's own practice

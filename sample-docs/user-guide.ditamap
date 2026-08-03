@@ -4,4 +4,5 @@
   <title>User Guide</title>
   <topicref href="topics/configuration.dita" keys="config-concept"/>
   <topicref href="topics/installing-product.dita" keys="install-task"/>
+  <topicref href="topics/internal-notes.dita" keys="internal-notes-concept" audience="internal"/>
 </map>

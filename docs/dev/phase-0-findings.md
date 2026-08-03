@@ -376,3 +376,39 @@ What's left for a complete MVP (§11), now that extraction itself works:
    `buildKnowledgeGraph` pipeline and checks the resulting bundle's
    actual file contents (not just that `dita2graph-core validate`
    exits zero).
+
+9. **Does the public/internal DITAVAL split (§6.1) actually filter
+   anything, once a fixture exists to test it against?** Before this,
+   `sample-docs/public.ditaval` was an empty `<val>` with a comment
+   explaining it had nothing to exclude yet, and `internal.ditaval`'s
+   only rule (`<prop att="audience" val="admin" action="include"/>`) was
+   a no-op too — `installing-product.dita` has `audience="admin"` on its
+   root element, but the *topicref* referencing it in
+   `user-guide.ditamap` carries no `audience` attribute, and DITA-OT
+   filters branches out of the map based on the topicref's own
+   profiling attributes, not (only) the target file's root element. So
+   neither DITAVAL file was doing anything, and the "split" was
+   aspirational.
+
+   Added `sample-docs/topics/internal-notes.dita` and a topicref for it
+   in `user-guide.ditamap` with `audience="internal"` **on the
+   topicref**, then re-tested. `public.ditaval` (now
+   `<prop att="audience" val="internal" action="exclude"/>`) and
+   `internal.ditaval` (adds the matching `include`) were each run
+   against a live DITA-OT 4.4, twice: once via the raw `dita` CLI
+   (`--filter=sample-docs/public.ditaval` / `internal.ditaval`) and once
+   via new `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal`
+   Gradle tasks (`filter(...)`, confirmed to be the right Kotlin DSL
+   call by reading `DitaOtTask`'s source rather than guessing). Both
+   ways: the public bundle's `okf/topics/` has no `internal-notes.md`;
+   the internal bundle's does; every other file is identical between the
+   two. Hit the same recurring `--` (double-dash literal) inside an XML
+   comment bug as previous findings while writing `public.ditaval`'s
+   updated comment — same fix, watch for it in prose near an em dash.
+
+   **Result:** the split is now backed by a real fixture and a passing
+   negative/positive comparison, not just two mostly-empty files. CI
+   gates on it (`.github/workflows/integration.yml`: builds both
+   profiles, asserts `internal-notes.md` is absent from the public
+   bundle and present in the internal one) the same way `validateBrokenDoc`
+   gates Phase 4's validation claim.

@@ -47,6 +47,21 @@ jobs:
           grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
           grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
 
+      - name: Build the public/internal DITAVAL split (§6.1)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphPublic buildKnowledgeGraphInternal --no-daemon
+
+      - name: Confirm internal-only content is excluded from the public bundle only
+        run: |
+          set -euo pipefail
+          if [ -f gradle-build/build/dita2graph-public/okf/topics/internal-notes.md ]; then
+            echo "::error::internal-notes.md leaked into the public DITAVAL bundle"
+            exit 1
+          fi
+          test -f gradle-build/build/dita2graph-internal/okf/topics/internal-notes.md
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |

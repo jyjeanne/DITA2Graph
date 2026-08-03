@@ -82,3 +82,30 @@ val buildKnowledgeGraph = tasks.register<DitaOtTask>("buildKnowledgeGraph") {
     transtype("dita2graph")
     progressStyle("DETAILED")
 }
+
+// The public/internal DITAVAL split (docs/plugin-specification.md §6.1):
+// topics/internal-notes.dita's topicref carries audience="internal" in
+// user-guide.ditamap, so filtering it out at preprocessing time (not as
+// an MCP-server-side check, per §6.1's "a topic that was never extracted
+// cannot leak") means it never reaches dita2graph's extraction step and
+// no okf/topics/internal-notes.md is written -- confirmed directly by
+// running both profiles and diffing the resulting bundles (§12 Phase 5).
+val buildKnowledgeGraphPublic = tasks.register<DitaOtTask>("buildKnowledgeGraphPublic") {
+    dependsOn(installDita2Graph, validateDocs, checkLinks)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocs.file("user-guide.ditamap"))
+    filter(sampleDocs.file("public.ditaval"))
+    output(layout.buildDirectory.dir("dita2graph-public").get().asFile.path)
+    transtype("dita2graph")
+    progressStyle("DETAILED")
+}
+
+val buildKnowledgeGraphInternal = tasks.register<DitaOtTask>("buildKnowledgeGraphInternal") {
+    dependsOn(installDita2Graph, validateDocs, checkLinks)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocs.file("user-guide.ditamap"))
+    filter(sampleDocs.file("internal.ditaval"))
+    output(layout.buildDirectory.dir("dita2graph-internal").get().asFile.path)
+    transtype("dita2graph")
+    progressStyle("DETAILED")
+}

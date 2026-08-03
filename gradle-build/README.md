@@ -27,10 +27,34 @@ export DITA2GRAPH_CORE_BIN=/path/to/dita2graph-core   # or put it on PATH
 
 ./gradlew validateDocs checkLinks   # real, passes
 ./gradlew installDita2Graph          # real, installs the plugin (zips it first, see below)
-./gradlew buildKnowledgeGraph        # real, produces build/dita2graph/okf/
+./gradlew buildKnowledgeGraph        # real, produces build/dita2graph/okf/ (unfiltered)
+
+./gradlew buildKnowledgeGraphPublic    # real, filtered with ../sample-docs/public.ditaval
+./gradlew buildKnowledgeGraphInternal  # real, filtered with ../sample-docs/internal.ditaval
 
 ./gradlew validateBrokenDoc          # expected to FAIL -- see below
 ```
+
+## Public/internal DITAVAL split (§6.1)
+
+`buildKnowledgeGraphPublic` and `buildKnowledgeGraphInternal` build the
+same `../sample-docs/user-guide.ditamap` with two different DITAVAL
+profiles into separate output directories
+(`build/dita2graph-public/`, `build/dita2graph-internal/`). The map's
+`topics/internal-notes.dita` topicref carries `audience="internal"`;
+`public.ditaval` excludes it, `internal.ditaval` includes it. Confirmed
+directly, not just asserted:
+
+```bash
+diff <(ls build/dita2graph-public/okf/topics) <(ls build/dita2graph-internal/okf/topics)
+# > internal-notes.md   (present only on the internal side)
+```
+
+This is §6.1's point made concrete: the filtering happens during
+DITA-OT preprocessing, before `dita2graph`'s extraction step ever runs
+on the excluded topic — a topic that was never extracted cannot leak
+through the MCP server, regardless of what the server-side query logic
+does or doesn't check.
 
 `build/` and `.gradle/` are gitignored — `build/dita-ot/dita-ot-4.4/` in
 particular is an ~80MB downloaded DITA-OT install, not something to
