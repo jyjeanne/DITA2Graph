@@ -3,7 +3,7 @@
 <val>
   <!-- Public build: excludes internal-only content. No audience is
        excluded from this sample project yet since it has none marked
-       audience="internal" -- this file exists so the public/internal
+       audience="internal"; this file exists so the public/internal
        DITAVAL split described in docs/plugin-specification.md §6.1 has
        a concrete starting point once internal-only topics are added. -->
 </val>

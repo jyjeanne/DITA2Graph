@@ -1,15 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Implements the `dita2graph` transtype (docs/plugin-specification.md §2).
-  Unverified against a live DITA-OT build (see plugin.xml's header note);
-  this is the shape DITA-OT's own single-transtype plugins (e.g. a custom
-  Ant-task-driven transform) follow, adapted for this plugin.
+  Implements the dita2graph transtype (docs/plugin-specification.md §2).
+  Verified end-to-end against a live DITA-OT 4.4 preprocessing run
+  (gradle-build/, docs/dev/phase-0-findings.md finding 5): the target
+  name, dependency chain, and transtype registration below are the real,
+  confirmed-working shape, not a guess. dita2graph:extract itself is not
+  implemented yet (lib/dita2graph-core.jar is a placeholder, see
+  lib/README.md), so a build still fails there until that Java class
+  exists; see plugin.xml's header note.
 -->
-<project name="dita2graph" default="dita2graph" basedir=".">
+<project name="dita2graph" xmlns:dita2graph="antlib:org.dita.dita2graph" default="dita2dita2graph" basedir=".">
 
-  <target name="dita2graph" depends="preprocess">
+  <!-- DITA-OT dispatches transtype "dita2graph" to an Ant target named
+       "dita2" + the transtype value, i.e. dita2dita2graph, not just
+       dita2graph, confirmed against org.dita.html5's transtype="html5"
+       -> target "dita2html5". depends="build-init,preprocess2" (not
+       just "preprocess") is likewise required: build-init's
+       init-properties target is what actually defines dita.temp.dir and
+       the Store/XML-utils Ant references DITA-OT 4.4's map-first
+       pipeline needs; skipping it fails with a NullPointerException
+       deep in build_preprocess2.xml before this target ever runs. -->
+  <target name="dita2dita2graph" depends="build-init,preprocess2">
     <!-- Custom Ant task, defined by lib/dita2graph-core.jar (once it's
-         built -- currently a placeholder, see lib/README.md):
+         built; currently a placeholder, see lib/README.md):
            1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
            2. builds the normalized DITA model (§3.2)
            3. shells out to the `dita2graph-core` Rust binary (§3.4),

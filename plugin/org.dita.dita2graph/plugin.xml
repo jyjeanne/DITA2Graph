@@ -1,14 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  org.dita.dita2graph -- DITA-OT plugin layer (docs/plugin-specification.md §2).
+  org.dita.dita2graph: DITA-OT plugin layer (docs/plugin-specification.md §2).
 
-  NOT YET VALIDATED against a live DITA-OT install: this environment has
-  no `dita` binary and downloading/installing DITA-OT 4.4 (§1.1) hasn't
-  been attempted yet (see docs/dev/phase-0-findings.md). The Rust side
-  (core/, mcp/) is real, built, and tested; this XML is a best-effort
-  skeleton following documented DITA-OT plugin conventions, and is the
-  next concrete Phase 1 step: `dita --install .` against this directory,
-  then `dita --format dita2graph` against sample-docs/user-guide.ditamap.
+  Verified installable against a live DITA-OT 4.4 (gradle-build/, §1.1;
+  see docs/dev/phase-0-findings.md finding 5). Extraction itself is not
+  wired up yet (lib/dita2graph-core.jar is a placeholder, see
+  lib/README.md), so the dita2graph transtype fails once build.xml's
+  Ant task actually runs; installation and the earlier pipeline stages
+  (dita install, validate, link-check) work.
 -->
 <plugin id="org.dita.dita2graph">
   <!-- The standard preprocessing pipeline (key-space resolution,
@@ -16,16 +15,23 @@
        hooks into after (§2.2). -->
   <require plugin="org.dita.base"/>
 
-  <!-- Registers the `dita2graph` transtype (§2.3: `dita --format dita2graph`). -->
-  <feature extension="dita.transtype" value="dita2graph"/>
-  <feature extension="dita.conductor.transtype.check" file="build.xml">
-    <param name="transtype" value="dita2graph"/>
-  </feature>
+  <!-- Registers the dita2graph transtype (§2.3): a top-level transtype
+       element, not a feature extension named dita.transtype, since that
+       extension point does not exist, confirmed against org.dita.base's
+       own plugin.xml, which declares no such point. See
+       docs/dev/phase-0-findings.md finding 5. -->
+  <transtype name="dita2graph" desc="DITA2Graph knowledge graph extraction (OKF v0.2 + MCP)"/>
+
+  <!-- Imports build.xml's dita2graph target into the Ant build, the same
+       mechanism org.dita.init itself uses for its own build files:
+       ant.import, confirmed real; dita.conductor.transtype.check is not
+       a real extension point either. -->
+  <feature extension="ant.import" file="build.xml"/>
 
   <!-- Puts dita2graph-core.jar (the Java bridge to the Rust core engine,
-       §2.1/§3.1 -- currently empty, see lib/README.md) on the Ant
+       §2.1/§3.1; currently a placeholder, see lib/README.md) on the Ant
        classpath for build.xml's extraction task. -->
-  <feature extension="dita.conductor.lib.import" file="lib/dita2graph-core.jar" type="ant-typedef"/>
+  <feature extension="dita.conductor.lib.import" file="lib/dita2graph-core.jar"/>
 
   <!-- Registers this plugin's message catalog (§2.5) alongside DITA-OT's own. -->
   <feature extension="dita.xsl.messages" file="cfg/messages.xml"/>

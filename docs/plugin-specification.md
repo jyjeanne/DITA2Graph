@@ -160,17 +160,30 @@ org.dita.dita2graph/
     └── dita2graph
 ```
 
-- **plugin.xml** — declares the plugin id (`org.dita.dita2graph`), the
-  `dita2graph` transtype, and the `<feature>` extension points (transtype
-  registration, classpath/lib import, message file import) DITA-OT's build
-  system reads when assembling the toolkit. It does **not** ship a
-  per-plugin `integrator.xml`: DITA-OT auto-generates one toolkit-wide
-  `integrator.xml` by aggregating every installed plugin's `plugin.xml`
-  during `dita --install`/`ant integrator` — an individual plugin only
-  ever authors `plugin.xml` and (optionally) `build.xml`.
+- **plugin.xml** — declares the plugin id (`org.dita.dita2graph`), a
+  top-level `<transtype name="dita2graph" desc="..."/>` element
+  registering the transtype itself, and `<feature>` elements wiring
+  `build.xml` into the Ant build (`ant.import`), the classpath
+  (`dita.conductor.lib.import`), and the message catalog
+  (`dita.xsl.messages`) — all four confirmed against DITA-OT 4.4's own
+  bundled plugins and a live install/dispatch run (§12 Phase 0/1 status;
+  `docs/dev/phase-0-findings.md` finding 5). There is **no**
+  `dita.transtype`/`dita.conductor.transtype.check` extension point — an
+  earlier draft of this spec invented both; neither exists in DITA-OT.
+  The plugin does **not** ship a per-plugin `integrator.xml`: DITA-OT
+  auto-generates one toolkit-wide `integrator.xml` by aggregating every
+  installed plugin's `plugin.xml` during `dita --install`/`ant
+  integrator` — an individual plugin only ever authors `plugin.xml` and
+  (optionally) `build.xml`.
 - **build.xml** — Ant build wiring the plugin's preprocessing and
   post-processing steps into the DITA-OT `preprocess`/`compile` phases,
-  and invoking `lib/dita2graph-core.jar`.
+  and invoking `lib/dita2graph-core.jar`. DITA-OT dispatches transtype
+  `dita2graph` to an Ant target literally named `dita2dita2graph` (its
+  own `dita2` + transtype-value convention, confirmed against
+  `org.dita.html5`'s `html5` → `dita2html5`), depending on
+  `build-init,preprocess2` — not just `preprocess` — since `build-init`
+  is what defines `${dita.temp.dir}` and the Ant project references the
+  map-first `preprocess2` pipeline needs (finding 5).
 - **cfg/dita2graph.xml** — default configuration (graph depth, relation
   types to extract, MCP server settings), in DITA-OT's conventional `cfg/`
   location (matching e.g. `org.dita.pdf2`'s `cfg/fo/...`).
@@ -989,31 +1002,38 @@ java {
     }
 }
 
-val downloadDitaOt by tasks.registering(DitaOtDownloadTask::class) {
+val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
     version("4.4")
 }
 
-val installDita2Graph by tasks.registering(DitaOtInstallPluginTask::class) {
+val installDita2Graph = tasks.register<DitaOtInstallPluginTask>("installDita2Graph") {
     dependsOn(downloadDitaOt)
     ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
-    plugins(listOf("org.dita.dita2graph"))   // local path, URL, or registry id
-    force(false)
+    plugins("org.dita.dita2graph")   // local path, URL, or registry id
+    force.set(false)
 }
 
-val validateDocs by tasks.registering(DitaOtValidateTask::class) {
-    dependsOn(installDita2Graph)
-    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+// DitaOtValidateTask uses ditaOtDir(...), not ditaOt(...) -- that name
+// only exists on DitaOtTask (§12 Phase 0/1 status). Depends on
+// downloadDitaOt directly, not installDita2Graph: validation doesn't
+// need our plugin installed, and decoupling means it (and checkLinks)
+// still run -- and still gate buildKnowledgeGraph below -- even on a
+// build where plugin installation itself fails.
+val validateDocs = tasks.register<DitaOtValidateTask>("validateDocs") {
+    dependsOn(downloadDitaOt)
+    ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
     input("docs/user-guide.ditamap")
 }
 
-val checkLinks by tasks.registering(DitaLinkCheckTask::class) {
-    dependsOn(validateDocs)
-    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+// DitaLinkCheckTask has no ditaOtDir/DITA-OT dependency at all -- it's a
+// pure Kotlin XML link scanner (confirmed from its source), so it needs
+// neither dependsOn(downloadDitaOt) nor a ditaOtDir(...) call.
+val checkLinks = tasks.register<DitaLinkCheckTask>("checkLinks") {
     input("docs/user-guide.ditamap")
 }
 
-val buildKnowledgeGraph by tasks.registering(DitaOtTask::class) {
-    dependsOn(checkLinks)
+val buildKnowledgeGraph = tasks.register<DitaOtTask>("buildKnowledgeGraph") {
+    dependsOn(installDita2Graph, validateDocs, checkLinks)
     ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
     input("docs/user-guide.ditamap")
     output("build/dita2graph")
@@ -1029,8 +1049,8 @@ val buildKnowledgeGraph by tasks.registering(DitaOtTask::class) {
 }
 
 // Normal HTML5 publishing can run alongside graph generation
-val publishHtml by tasks.registering(DitaOtTask::class) {
-    dependsOn(checkLinks)
+val publishHtml = tasks.register<DitaOtTask>("publishHtml") {
+    dependsOn(installDita2Graph, validateDocs, checkLinks)
     ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
     input("docs/user-guide.ditamap")
     output("build/docs/html")
@@ -1051,21 +1071,31 @@ script, not the CLI):
 ./gradlew publishAll
 ```
 
-> The property-setter calls above (`version(...)`, `ditaOt(...)`,
-> `plugins(...)`, `progressStyle(...)`, ...) follow the one Kotlin DSL
-> pattern `dita-ot-gradle`'s own README documents (`ditaOt(file(...))`,
-> `input(...)`, `transtype(...)`, used in its "Kotlin DSL with
-> Properties" example). The task types not shown there
-> (`DitaOtDownloadTask`, `DitaOtInstallPluginTask`,
-> `DitaOtValidateTask`, `DitaLinkCheckTask`) are adapted from the
-> Groovy API below on the assumption their setters follow the same
-> convention — **unverified against the actual plugin**, since this
-> spec hasn't run a live Gradle build yet (§12). If a property turns
-> out to be a real Gradle `Property<T>` instead of a plain setter, the
-> assignment form (`version = "4.4"`) works too; check
-> `dita-ot-gradle`'s Kotlin API docs before relying on either.
+> **Verified**, not guessed: this exact example (adapted to this repo's
+> own paths) was run against a live Gradle 9.6.1 + DITA-OT 4.4 in
+> `gradle-build/` (`docs/dev/phase-0-findings.md` finding 5).
+> `downloadDitaOt`, `validateDocs`, and `checkLinks` all pass for real.
+> `installDita2Graph`/`buildKnowledgeGraph` currently fail — correctly —
+> at "Library file not found: .../lib/dita2graph-core.jar", since that
+> jar doesn't exist yet (§12 Phase 1 status). The property-setter calls
+> above (`ditaOtDir(...)`, `plugins(...)`, `force.set(...)`, `ditaOt(...)`,
+> `input(...)`, `transtype(...)`, `progressStyle(...)`) were corrected
+> against `dita-ot-gradle`'s actual Kotlin source after the original
+> version of this example (using `plugins(listOf(...))`, `force(false)`,
+> and `ditaOt(...)` on `DitaOtValidateTask`) failed to compile — see
+> finding 5 for exactly what was wrong and why. `tasks.register<Type>
+> ("name") { }` is used throughout rather than `by tasks.registering
+> (Type::class)`, which Gradle 9.6 deprecates as incompatible with
+> Gradle 10.
 
 #### Groovy DSL equivalent (`build.gradle`)
+
+Not independently re-run in `gradle-build/` (only the Kotlin DSL version
+above was) — Groovy's dynamic property assignment tends to work against
+Gradle's `Property<T>`/`ListProperty<T>` types in more cases than
+Kotlin's static typing allows without `.set(...)`, but treat this as
+translated-and-plausible rather than verified the same way the Kotlin
+version is.
 
 ```groovy
 plugins {
@@ -1090,19 +1120,19 @@ tasks.register('installDita2Graph', com.github.jyjeanne.DitaOtInstallPluginTask)
 }
 
 tasks.register('validateDocs', com.github.jyjeanne.DitaOtValidateTask) {
-    dependsOn installDita2Graph
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
+    dependsOn downloadDitaOt
+    ditaOtDir layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
 }
 
+// DitaLinkCheckTask has no ditaOtDir/DITA-OT dependency at all -- a pure
+// Kotlin XML link scanner, same as the Kotlin DSL version above.
 tasks.register('checkLinks', com.github.jyjeanne.DitaLinkCheckTask) {
-    dependsOn validateDocs
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
 }
 
 tasks.register('buildKnowledgeGraph', com.github.jyjeanne.DitaOtTask) {
-    dependsOn checkLinks
+    dependsOn installDita2Graph, validateDocs, checkLinks
     ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
     output 'build/dita2graph'
@@ -1119,7 +1149,7 @@ tasks.register('buildKnowledgeGraph', com.github.jyjeanne.DitaOtTask) {
 
 // Normal HTML5 publishing can run alongside graph generation
 tasks.register('publishHtml', com.github.jyjeanne.DitaOtTask) {
-    dependsOn checkLinks
+    dependsOn installDita2Graph, validateDocs, checkLinks
     ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
     output 'build/docs/html'
@@ -1353,13 +1383,16 @@ rather than CLI-only.
 decision (§3's "verifying the reuse assumption" note) if `okf-dita`/
 `okf-generator` turn out not to be usable as libraries.
 
-**Status:** library-reuse half done — see `docs/dev/phase-0-findings.md`.
-`okf-core`/`okf-validator` confirmed reusable; `okf-dita`/`okf-generator`
-confirmed *not* reusable for the core write path (fallback decision taken:
-`dita2graph-core` writes its own bundle, §3). The DITA-OT-preprocessing
-half (dumping resolved intermediate XML from a live `dita` run) is **not
-done** — no DITA-OT install was available/attempted this session. That's
-the top item in Phase 1's backlog below.
+**Status:** done, both halves. `okf-core`/`okf-validator` confirmed
+reusable; `okf-dita`/`okf-generator` confirmed *not* reusable for the
+core write path (fallback decision taken: `dita2graph-core` writes its
+own bundle, §3). The DITA-OT-preprocessing half is now also confirmed:
+DITA-OT 4.4 was downloaded and run for real against `sample-docs/`
+(`gradle-build/`, `docs/dev/phase-0-findings.md` finding 4/5) — its
+resolved intermediate topic for `installing-product.dita` shows the
+`keyref="config-concept"` cross-reference resolved to a concrete
+`href="configuration.dita"`, with `audience`/`product` profiling
+preserved, exactly matching §3.2's assumptions.
 
 ### Phase 1 — DITA-OT plugin skeleton + normalized model (2–3 weeks)
 
@@ -1376,16 +1409,25 @@ steps; the normalized model JSON for the sample map validates against a
 JSON Schema for §3.2 and correctly reflects resolved keys, `conref`, and
 one DITAVAL-filtered topic.
 
-**Status:** partially done. `plugin/org.dita.dita2graph/{plugin.xml,
+**Status:** mostly done. `plugin/org.dita.dita2graph/{plugin.xml,
 build.xml, cfg/dita2graph.xml, cfg/messages.xml, bin/dita2graph}` and
 `sample-docs/` (a 3-topic ditamap with `keyref`, one `conref`-style
-cross-reference, and `audience`/`product` profiling) exist, but the
-plugin XML is **unverified against a live DITA-OT install** — no `dita
---install` has been run — and `lib/dita2graph-core.jar` is a placeholder
-(no Java extraction code yet). `sample-docs/normalized-model.sample.json`
-is hand-authored to the exit criterion's schema, standing in for what a
-real extraction run would produce, not generated by one. Exit criterion
-not yet met.
+cross-reference, and `audience`/`product` profiling) exist, and the
+plugin XML is now **verified against a live DITA-OT 4.4 install**
+(`docs/dev/phase-0-findings.md` finding 5): `dita --format dita2graph`
+runs DITA-OT's real preprocessing pipeline against `sample-docs/` and
+dispatches correctly to the plugin's Ant target. Finding 5 also caught
+and fixed five real bugs the first version of this spec had gotten
+wrong (illegal `--` in XML comments, two nonexistent extension points,
+the `dita2` + transtype-name Ant target-naming convention, and the
+`build-init,preprocess2` dependency chain DITA-OT 4.4 actually needs).
+**Not yet done:** `lib/dita2graph-core.jar` is still a placeholder (no
+Java extraction code), so `dita --install` fails on a missing file
+until that's written, and the exit criterion's "normalized model JSON
+... validates" half is unmet — `sample-docs/normalized-model.sample
+.json` is still hand-authored, not generated by a live run, since there's
+no Java code yet to generate it. That Java class is the single largest
+remaining item before this phase's exit criterion is fully met.
 
 ### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
 

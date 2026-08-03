@@ -84,12 +84,107 @@ Status of the Phase 0 exit criteria from `docs/plugin-specification.md`
 
 4. **Does DITA-OT's resolved preprocessing output actually expose
    everything §2.2/§3.2 assume (resolved `keyref`/`conref`, DITAVAL
-   filtering, `topicref` hierarchy)?** **Not yet checked.** This requires
-   an actual DITA-OT 4.4 install and a live `dita --format <transtype>`
-   run, which wasn't attempted in this session (no `dita` binary
-   available; a full DITA-OT release is a large download). This remains
-   the single biggest open Phase 0/1 risk and the top of the next
-   session's list — see "Next steps" below.
+   filtering, `topicref` hierarchy)?** **Yes, confirmed.** DITA-OT 4.4 was
+   downloaded and run for real (`gradle-build/`, finding 5) against
+   `sample-docs/`. Its `html5` transtype builds `sample-docs/` cleanly
+   end to end, and the resolved intermediate topic file for
+   `installing-product.dita` shows exactly what §3.2 assumes: the
+   `<xref keyref="config-concept">` resolved to a concrete
+   `href="configuration.dita"`, and `audience="admin"
+   product="enterprise"` preserved on the root element. This closes what
+   was the single biggest open Phase 0/1 risk.
+
+5. **Does the spec's §8.2 Kotlin DSL `build.gradle.kts` example actually
+   compile and run, and does the plugin's `plugin.xml`/`build.xml`
+   skeleton (§2.1) actually install and dispatch correctly against a
+   live DITA-OT 4.4?** Checked directly, in `gradle-build/` (a real
+   Gradle 9.6.1 project, wrapper-pinned, run against JDK 21 — JDK 25
+   wasn't available in this sandbox and Gradle's toolchain
+   auto-provisioning couldn't reach `api.foojay.io` to fetch one; DITA-OT
+   4.4 only requires 17+, so this doesn't affect the findings below, only
+   means JDK 25-specific behavior is itself unverified). This surfaced
+   five real bugs, none of them guesses — each confirmed by reading
+   `dita-ot-gradle`'s actual Kotlin source or DITA-OT's own bundled
+   plugins, not assumed:
+
+   **a. §8.2's Kotlin DSL property calls didn't match the real API.**
+   `plugins(listOf(...))` doesn't compile — `DitaOtInstallPluginTask
+   .plugins` is `fun plugins(vararg pluginIds: String)`, not a function
+   taking a `List`. `force(true)` doesn't compile at all — `force` is a
+   bare `Property<Boolean>` with no Groovy-DSL-friendly wrapper function,
+   so it needs `force.set(true)`. `DitaOtValidateTask` uses `ditaOtDir(dir:
+   Any)`, not `ditaOt(...)` (that name only exists on `DitaOtTask`).
+   `DitaLinkCheckTask` has no `ditaOtDir` property at all — it's a pure
+   Kotlin XML link scanner with no DITA-OT dependency, confirmed from its
+   source, so it shouldn't `dependsOn(downloadDitaOt)` or take a
+   `ditaOtDir` either. Fixed in both `gradle-build/build.gradle.kts` and
+   spec §8.2 (§8.2 also picked up a `tasks.register<Type>("name") { }`
+   rewrite, since the original `by tasks.registering(Type::class)` form
+   is deprecated as of Gradle 9.6 and warns it's incompatible with
+   Gradle 10).
+
+   **b. XML comments containing `--` are illegal and DITA-OT's parser
+   enforces it.** Multiple files (`plugin.xml`, `build.xml`,
+   `cfg/dita2graph.xml`, `sample-docs/public.ditaval`) had comments using
+   `--` as an em-dash or quoting a `--flag` literally — legal in most
+   contexts but a hard XML parse error (`[Fatal Error] plugin.xml:3:25:
+   The string "--" is not permitted within comments.`), which is exactly
+   how `dita install` failed the first time it was tried. Fixed
+   everywhere (verified with a script that checks every `<!-- ... -->`
+   body for `--`, not just eyeballing it — the fix itself introduced a
+   second violation the first time around).
+
+   **c. `dita.transtype` and `dita.conductor.transtype.check` are not
+   real DITA-OT extension points.** Confirmed by grepping every bundled
+   plugin's `plugin.xml` in the downloaded DITA-OT 4.4 for
+   `<extension-point>` declarations: neither exists. `org.dita.base`
+   declares `ant.import` and `dita.conductor.target.relative` instead,
+   and `org.dita.html5`/`org.lwdita` both register their transtype with a
+   top-level `<transtype name="..." desc="..."/>` element and wire their
+   Ant build file in via `<feature extension="ant.import" file="..."/>`.
+   `plugin.xml` rewritten to match; this was the cause of "Integration
+   failed: ... uses an undefined extension point dita.transtype".
+
+   **d. `dita.conductor.lib.import` takes no `type` attribute.** No real
+   plugin.xml among DITA-OT 4.4's bundled plugins passes one. Removed
+   (harmless either way, but wrong).
+
+   **e. DITA-OT's transtype-to-Ant-target dispatch has two undocumented
+   (in this spec) requirements**, both found by trial and error against
+   the real toolkit, not by reading a spec DITA-OT itself doesn't publish
+   here:
+   - The Ant target's name must be `dita2` + the transtype value, *not*
+     the transtype value alone. `org.dita.html5`'s `transtype
+     name="html5"` dispatches to a target literally named `dita2html5`.
+     Our transtype is already named `dita2graph`, so the real working
+     target name is the admittedly-odd `dita2dita2graph` — confirmed by
+     `Target "dita2dita2graph" does not exist in the project "null"`
+     once the target-naming fix above was in place.
+   - The target must `depends="build-init,preprocess2"`, not just
+     `depends="preprocess"`. `build-init`'s `init-properties` sub-target
+     is what actually defines `${dita.temp.dir}` and the Ant project
+     references (`Store`, `XML utils`) DITA-OT 4.4's map-first
+     (`preprocess2`) pipeline needs; skipping it produced `${dita.temp
+     .dir}` appearing *unsubstituted* in a log line and then a bare
+     `NullPointerException` deep inside `build_preprocess2.xml`, with no
+     other diagnostic. `org.dita.html5`'s real target depends on
+     `html5.init,build-init,preprocess2,...` — `build-init` is the part
+     that was missing here, adapted rather than the whole html5-specific
+     chain since our target doesn't need html5's own init step.
+
+   **Result after all five fixes:** `dita --format dita2graph --input
+   sample-docs/user-guide.ditamap` runs DITA-OT 4.4's real preprocessing
+   pipeline against `sample-docs/` and reaches our target successfully
+   (`BUILD SUCCESSFUL`, confirmed with a temporary `<echo>` in place of
+   the real extraction task). The *only* remaining failure, restored to
+   `build.xml` for the final state, is exactly the one already predicted:
+   `dita2graph:extract` is unbound because `lib/dita2graph-core.jar`
+   doesn't exist yet (§2.1, Phase 1 backlog item 3, unchanged). Verified
+   both via the raw `dita` CLI and via the real Gradle task graph
+   (`./gradlew validateDocs checkLinks` — real pass; `./gradlew
+   installDita2Graph` / `buildKnowledgeGraph` — fail exactly at "Library
+   file not found: .../lib/dita2graph-core.jar", the correct and expected
+   failure).
 
 ## What got built off these findings
 
@@ -115,28 +210,44 @@ Status of the Phase 0 exit criteria from `docs/plugin-specification.md`
   automatically — hand-authored, not machine-generated, since the Java
   extraction side doesn't exist yet (finding 4).
 - `plugin/org.dita.dita2graph`: `plugin.xml`/`build.xml`/`cfg/*.xml`/
-  `bin/dita2graph` skeleton per §2.1, explicitly flagged in-file as
-  unverified against a live DITA-OT install.
+  `bin/dita2graph` per §2.1. **Verified** installing and dispatching
+  correctly against a live DITA-OT 4.4 (finding 5) — no longer flagged
+  as unverified, though `dita --install` itself still fails today because
+  `lib/dita2graph-core.jar` doesn't exist (expected, see finding 5's
+  result and "Next steps" below).
+- `gradle-build/`: the real Gradle 9.6.1 project (Kotlin DSL, wrapper
+  pinned) that did the finding-5 verification — see its own README for
+  how to re-run it. `build/`/`.gradle/` gitignored (an ~80MB downloaded
+  DITA-OT install lives there, not something to commit).
 
 ## Corrections made to the spec
 
 `docs/plugin-specification.md` §3's reuse table and surrounding text
-should be read alongside this document; a follow-up edit will fold
-findings 2–3 back into §3 directly (marking `okf-dita`/`okf-generator` as
+were updated to match findings 2–3 (marking `okf-dita`/`okf-generator` as
 not reused for the core write path, and adding the two `okf-validator`
-gaps above) rather than leaving the correction only here.
+gaps above). §2.1/§2.2 and §8.2 were updated to match finding 5: the real
+`plugin.xml`/`build.xml` extension points and target-naming convention,
+and the corrected Kotlin DSL property-setter calls.
 
 ## Next steps (top of the Phase 1 backlog)
 
-1. Download and install DITA-OT 4.4; run `dita --install` against
-   `plugin/org.dita.dita2graph`; confirm it installs without error.
-2. Run `dita --input sample-docs/user-guide.ditamap --format dita2graph`
-   (once `build.xml`'s Ant task actually calls something — right now
-   there is no `dita2graph-core.jar`, so this will fail at the
-   `ant-typedef` step) and compare DITA-OT's resolved intermediate output
-   against the hand-authored `normalized-model.sample.json`, to close
-   finding 4.
-3. Write the actual `org.dita.dita2graph.tasks.ExtractTask` Java class
-   and build `lib/dita2graph-core.jar`, wiring `build.xml`'s
-   `<dita2graph:extract>` to real DITA-OT job data instead of a
-   hand-written JSON fixture.
+1. ~~Download and install DITA-OT 4.4; run `dita --install` against
+   `plugin/org.dita.dita2graph`; confirm it installs without error.~~
+   Done (finding 5) — confirmed working once a placeholder
+   `lib/dita2graph-core.jar` exists; fails today without one, which is
+   expected until step 3 below.
+2. ~~Run `dita --input sample-docs/user-guide.ditamap --format dita2graph`
+   ... and compare DITA-OT's resolved intermediate output against the
+   hand-authored `normalized-model.sample.json`, to close finding 4.~~
+   Done (findings 4 and 5) — resolved `keyref`/audience/product output
+   confirmed to match §3.2's assumptions, using `html5` as the control
+   transtype since `dita2graph` itself can't produce output yet.
+3. Write the actual Java Ant task (`org.dita.dita2graph.tasks
+   .ExtractTask`, referenced as `dita2graph:extract` in `build.xml`) and
+   build a real `lib/dita2graph-core.jar` with an `antlib.xml` binding
+   the `dita2graph` namespace prefix to it — wiring `build.xml`'s
+   `<dita2graph:extract>` to real DITA-OT job data (job.xml + the
+   resolved temp-directory topics/maps finding 4 confirmed the shape of)
+   instead of a hand-written JSON fixture. This is now the single
+   remaining blocker between the current state and a fully working
+   `dita --format dita2graph` run.
