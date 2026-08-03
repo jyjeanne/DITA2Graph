@@ -292,36 +292,40 @@ be reused outside of DITA-OT (e.g. as a standalone CLI or embedded in the
 MCP server) and benefit from Rust's performance and memory-safety for
 processing large documentation sets.
 
-Rather than building an OKF writer and MCP server from scratch, the core
-engine is designed to sit on top of the crates already published in
-[`jyjeanne/okf-rs`](https://github.com/jyjeanne/okf-rs), which is itself
-an OKF v0.2-conformant Rust toolchain and — notably — already ships an
-**`okf-dita` crate** ("DITA XML converter: export an OKF bundle to DITA
-topics, and import an existing DITA corpus as Document concepts"). That
-crate is the natural starting point for the DITA→OKF direction of
-DITA2Graph, rather than a parallel reimplementation:
+Rather than building an MCP server from scratch, and rather than
+reimplementing bundle *validation* from scratch, the core engine reuses
+what [`jyjeanne/okf-rs`](https://github.com/jyjeanne/okf-rs) already gets
+right — but **not** its bundle *writer*, which the Phase 0 spike
+(`docs/dev/phase-0-findings.md`) found to be a poor fit:
 
-| `okf-rs` crate | Reused for |
-|---|---|
-| `okf-dita` | DITA XML ↔ OKF concept conversion (topics → concepts, maps → index) |
-| `okf-core` | Bundle config (`okf.toml`), path/type conventions |
-| `okf-parser` | Reading frontmatter + body back out of a bundle |
-| `okf-generator` | Writing conformant markdown + YAML frontmatter concepts |
-| `okf-graph` | Call/reference-graph construction and traversal (`graph_*` queries) |
-| `okf-validator` | Schema and link-integrity validation of the emitted bundle |
-| `okf-search` | Free-text and ranked (BM25) search over the bundle |
-| `okf-mcp` | JSON-RPC-over-stdio MCP server exposing the above as tools (§5.5) |
+| `okf-rs` crate | Status | Notes |
+|---|---|---|
+| `okf-core` | Reused | `okf.toml` config convention (§2.4) |
+| `okf-validator` | Reused as-is | `validate_bundle(dir) -> ValidationReport` validates raw parsed frontmatter on disk — no dependency on the typed model below, confirmed working against a directly-written bundle (§6.4, §10) |
+| `okf-mcp` | Pattern reused | JSON-RPC-over-stdio structure (§5.5); the code itself is DITA2Graph-specific |
+| `okf-dita` | **Not reused** | `import_dita` is a generic, DITA-OT-independent XML→`Document` importer (no `keyref`/`conref`/DITAVAL resolution, no topic-type distinction) — not a substitute for §2's DITA-OT-driven extraction |
+| `okf-generator` / `okf_parser::Concept` | **Not reused** | Hardcoded to a source-code vocabulary (`ConceptKind::{Package, Module, Class, Function, ...}`, `RelationKind::{Calls, Imports, ...}`) that cannot represent DITA topic types or the DITA relation taxonomy (§4.3) without upstream `okf-rs` changes |
+| `okf-graph`, `okf-search` | Not reused (MVP) | Built on the same typed model as `okf-generator`; `dita2graph-core`'s own `graph.json` (§2.4) covers the MVP's query needs instead |
+
+`dita2graph-core` writes its OKF bundle directly (`core/dita2graph-core/src/okf.rs`,
+already implemented — see §12 Phase 0/1/2 status) rather than through
+`okf-generator`. This is fully conformant: the OKF v0.2 *format* is just
+markdown + YAML frontmatter with `type` as the only required key, nothing
+about conformance requires going through `okf-rs`'s typed Rust API, and
+this is verified empirically — the directly-written bundle passes
+`okf_validator::validate_bundle` with zero errors (test in `okf.rs`).
 
 DITA2Graph's own code is then mostly the DITA-specific extraction (§3.2)
 and the DITA relation taxonomy (§4.3) layered on top — relation inference,
 `conref`/`conkeyref` dedup, and audience/product/key mapping onto OKF
-frontmatter (§4.1) — plus the DITA-specific MCP tools in §5.2.
+frontmatter (§4.1) — plus the DITA-specific MCP tools in §5.2, plus the
+bundle writer itself.
 
-**Verifying the reuse assumption is a Phase 0 exit criterion (§12):**
-`okf-dita`/`okf-generator` must be usable as library dependencies (not
-only as `okf-rs` CLI subcommands) for this table to hold; if they turn
-out to be CLI-only, DITA2Graph falls back to shelling out to the `okf-rs`
-binary or vendoring the relevant logic, and this section gets revised.
+**Phase 0's exit criterion (§12) is met** for the library-reuse half (all
+of the crates above compile as git dependencies) but **not yet** for the
+DITA-OT-preprocessing half — no live `dita --format dita2graph` run has
+been attempted yet (`docs/dev/phase-0-findings.md`, finding 4). That
+remains open at the top of the Phase 1 backlog.
 
 ### 3.1 Architecture
 
@@ -332,17 +336,14 @@ DITA-OT (Java)
        v
 dita2graph-core (Rust)
        |
-       | DITA relation inference + conref/key dedup      (dita2graph-specific)
-       v
-okf-dita / okf-generator (from okf-rs)                    (reused)
-       |
-       | writes conformant OKF v0.2 bundle
+       | relation inference, conref/key dedup, OKF frontmatter mapping,
+       | bundle writing (all dita2graph-specific -- src/model.rs, src/okf.rs)
        v
 okf/ bundle (markdown + YAML frontmatter)
        |
-       | okf-parser + okf-graph + okf-search index
+       | okf_validator::validate_bundle (reused as-is, §6.4, §10)
        v
-Storage (SQLite / RocksDB) + graph.json + okf-mcp server
+graph.json + dita2graph-mcp server (JSON-RPC-over-stdio, pattern from okf-mcp, §5.5)
 ```
 
 The Java plugin and Rust engine communicate over a small JSON-over-stdio (or
@@ -1259,6 +1260,14 @@ rather than CLI-only.
 decision (§3's "verifying the reuse assumption" note) if `okf-dita`/
 `okf-generator` turn out not to be usable as libraries.
 
+**Status:** library-reuse half done — see `docs/dev/phase-0-findings.md`.
+`okf-core`/`okf-validator` confirmed reusable; `okf-dita`/`okf-generator`
+confirmed *not* reusable for the core write path (fallback decision taken:
+`dita2graph-core` writes its own bundle, §3). The DITA-OT-preprocessing
+half (dumping resolved intermediate XML from a live `dita` run) is **not
+done** — no DITA-OT install was available/attempted this session. That's
+the top item in Phase 1's backlog below.
+
 ### Phase 1 — DITA-OT plugin skeleton + normalized model (2–3 weeks)
 
 **Goal:** `org.dita.dita2graph` installs cleanly and runs end-to-end on a
@@ -1274,6 +1283,17 @@ steps; the normalized model JSON for the sample map validates against a
 JSON Schema for §3.2 and correctly reflects resolved keys, `conref`, and
 one DITAVAL-filtered topic.
 
+**Status:** partially done. `plugin/org.dita.dita2graph/{plugin.xml,
+build.xml, cfg/dita2graph.xml, cfg/messages.xml, bin/dita2graph}` and
+`sample-docs/` (a 3-topic ditamap with `keyref`, one `conref`-style
+cross-reference, and `audience`/`product` profiling) exist, but the
+plugin XML is **unverified against a live DITA-OT install** — no `dita
+--install` has been run — and `lib/dita2graph-core.jar` is a placeholder
+(no Java extraction code yet). `sample-docs/normalized-model.sample.json`
+is hand-authored to the exit criterion's schema, standing in for what a
+real extraction run would produce, not generated by one. Exit criterion
+not yet met.
+
 ### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
 
 **Goal:** `dita2graph-core` consumes the normalized model, performs
@@ -1288,6 +1308,22 @@ second run.
 byte-for-byte (modulo timestamps); 100% `okf-validator` pass; a no-op
 re-run touches zero unchanged concept files.
 
+**Status:** mostly done, ahead of Phase 1. `core/dita2graph-core`
+implements the normalized model (`src/model.rs`), the bundle writer
+(`src/okf.rs`), the `DITA2GRAPHnnnX` diagnostics catalog
+(`src/diagnostics.rs`), and a `build`/`validate`/`query` CLI
+(`src/main.rs`); `cargo test -p dita2graph-core` passes, including a test
+that builds a bundle and round-trips it through `okf_validator::
+validate_bundle` with zero errors. **Not done:** relation *inference*
+(§3.3's "topics sharing a `product` value are `related-to`" kind of
+derived edge — only author-declared relations from the normalized model
+are handled so far), incremental rebuild, and SQLite/RocksDB storage
+(`query` currently reads `graph.json` directly, not a database). No
+golden-fixture byte-for-byte test yet either. This phase got ahead of
+Phase 1 because it could be developed and tested against a hand-authored
+fixture without needing a live DITA-OT install — closing Phase 1's gap
+may still change `dita2graph-core`'s input shape at the edges.
+
 ### Phase 3 — MCP server (2–3 weeks)
 
 **Goal:** `dita2graph-mcp` implements the JSON-RPC-over-stdio pattern
@@ -1301,6 +1337,18 @@ re-run touches zero unchanged concept files.
 sample bundle's server, correctly answers the §5.3 example interaction
 end to end (`search_topics` → related tasks), with tool calls visibly
 returning small, typed results rather than raw file contents.
+
+**Status:** mostly done. `mcp/dita2graph-mcp` implements the pattern from
+§5.5 with `search_topics`/`find_related_topics`/`explain_task`/
+`trace_dependencies`/`generate_summary`/`validate_bundle`; protocol and
+tool tests pass (`cargo test -p dita2graph-mcp`), and it was exercised
+manually end-to-end over real stdin/stdout JSON-RPC against the
+`sample-docs/` bundle, correctly answering a `search_topics`/
+`explain_task` sequence. **Not done:** the exit criterion specifically
+asks for a live Claude Code session registered against it, which hasn't
+been done in this session; `mcp-server.toml` emission (§5.4) also isn't
+wired up yet — the server currently takes the bundle root as a plain CLI
+argument.
 
 ### Phase 4 — Gradle integration + CI hardening (2 weeks)
 

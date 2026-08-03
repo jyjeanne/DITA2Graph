@@ -1,0 +1,27 @@
+[package]
+name = "dita2graph-core"
+description = "Normalizes DITA-OT's resolved model into an OKF v0.2 knowledge bundle."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "dita2graph_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dita2graph-core"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+clap.workspace = true
+chrono.workspace = true
+okf-validator.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

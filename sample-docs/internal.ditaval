@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE val PUBLIC "-//OASIS//DTD DITA DITAVAL//EN" "ditaval.dtd">
+<val>
+  <!-- Internal build: includes everything, i.e. audience="admin" content
+       stays in. Contrast with public.ditaval, which is the profile a
+       public-facing bundle should be built with instead (§6.1). -->
+  <prop att="audience" val="admin" action="include"/>
+</val>

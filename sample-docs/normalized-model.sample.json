@@ -1,0 +1,53 @@
+[
+  {
+    "type": "map",
+    "id": "user-guide",
+    "title": "User Guide",
+    "sourceFile": "user-guide.ditamap",
+    "links": [
+      { "relation": "contains", "target": "configuration" },
+      { "relation": "contains", "target": "installing-product" }
+    ]
+  },
+  {
+    "type": "topic",
+    "id": "configuration",
+    "topicType": "concept",
+    "title": "Configuration Overview",
+    "shortdesc": null,
+    "audience": [],
+    "product": [],
+    "keys": ["config-concept"],
+    "sourceFile": "topics/configuration.dita",
+    "links": []
+  },
+  {
+    "type": "topic",
+    "id": "installing-product-prereqs",
+    "topicType": "topic",
+    "title": "Installing Product: Prerequisites",
+    "shortdesc": null,
+    "audience": ["admin"],
+    "product": ["enterprise"],
+    "keys": [],
+    "sourceFile": "topics/installing-product-prereqs.dita",
+    "links": [
+      { "relation": "references", "target": "configuration" }
+    ]
+  },
+  {
+    "type": "topic",
+    "id": "installing-product",
+    "topicType": "task",
+    "title": "Installing Product",
+    "shortdesc": "Steps to install the product in a production environment.",
+    "audience": ["admin"],
+    "product": ["enterprise"],
+    "keys": ["install-task"],
+    "sourceFile": "topics/installing-product.dita",
+    "links": [
+      { "relation": "requires", "target": "configuration" },
+      { "relation": "contains", "target": "installing-product-prereqs" }
+    ]
+  }
+]

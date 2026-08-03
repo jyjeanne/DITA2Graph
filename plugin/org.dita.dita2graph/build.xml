@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Implements the `dita2graph` transtype (docs/plugin-specification.md §2).
+  Unverified against a live DITA-OT build (see plugin.xml's header note);
+  this is the shape DITA-OT's own single-transtype plugins (e.g. a custom
+  Ant-task-driven transform) follow, adapted for this plugin.
+-->
+<project name="dita2graph" default="dita2graph" basedir=".">
+
+  <target name="dita2graph" depends="preprocess">
+    <!-- Custom Ant task, defined by lib/dita2graph-core.jar (once it's
+         built -- currently a placeholder, see lib/README.md):
+           1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
+           2. builds the normalized DITA model (§3.2)
+           3. shells out to the `dita2graph-core` Rust binary (§3.4),
+              already implemented and tested under core/dita2graph-core,
+              to write the OKF bundle + graph.json (§2.4)
+           4. if ${args.dita2graph.mcp} is true, also writes mcp/ (§2.4, §5.4) -->
+    <dita2graph:extract
+        tempDir="${dita.temp.dir}"
+        outputDir="${output.dir}"
+        depth="${args.dita2graph.depth}"
+        emitGraphJson="${args.dita2graph.emit-graph-json}"
+        mcp="${args.dita2graph.mcp}"
+        store="${args.dita2graph.store}"
+        includeDrafts="${args.dita2graph.include-drafts}"/>
+  </target>
+
+</project>
