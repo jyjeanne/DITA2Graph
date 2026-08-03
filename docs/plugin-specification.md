@@ -1,5 +1,25 @@
 # DITA2Graph Plugin Specification
 
+## Table of contents
+
+1. [Overview](#1-overview)
+2. [DITA-OT Plugin Layer](#2-dita-ot-plugin-layer)
+3. [DITA2Graph Core Engine](#3-dita2graph-core-engine)
+4. [OKF Knowledge Graph Model](#4-okf-knowledge-graph-model)
+5. [MCP Server Layer](#5-mcp-server-layer)
+6. [Security and Access Control](#6-security-and-access-control)
+7. [Recommended Implementation Stack](#7-recommended-implementation-stack)
+8. [Build Integration with Gradle](#8-build-integration-with-gradle-dita-ot-gradle)
+9. [Why This Architecture Is Interesting](#9-why-this-architecture-is-interesting)
+10. [Testing Strategy](#10-testing-strategy)
+11. [MVP Scope](#11-mvp-scope)
+12. [Development Phases](#12-development-phases)
+13. [Future Work](#13-future-work)
+14. [Licensing](#14-licensing)
+15. [Appendix A: Quickstart](#15-appendix-a-quickstart)
+
+---
+
 ## 1. Overview
 
 **DITA2Graph** is a DITA-OT plugin that converts DITA content into a semantic
@@ -23,22 +43,30 @@ to the AI layer:
 DITA → Semantic Graph (OKF) → MCP → AI Agent
 ```
 
-### 1.1 Target versions
+### 1.1 Target versions and compatibility
 
 DITA2Graph is specified against a fixed baseline so extraction behavior,
 key resolution, and OKF output are reproducible across environments:
 
 | Dependency | Version | Notes |
 |---|---|---|
-| DITA-OT | **4.4** | Latest stable line; matches the versions already validated by `dita-ot-gradle` (§7). |
+| DITA-OT | **4.4** | Latest stable line; matches the versions already validated by `dita-ot-gradle` (§8). |
 | DITA standard | **1.3** | OASIS DITA 1.3 (topic types, key scopes, `conkeyref`, branch filtering). The extraction layer targets 1.3 markup; DITA 2.0-only constructs are out of scope for the MVP. |
 | OKF standard | **v0.2** | [OKF v0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) — see §4.1 for how DITA2Graph maps onto it. |
-| MCP | 2024-11-05 protocol revision | JSON-RPC 2.0 over stdio (HTTP transport planned, §10). |
+| MCP | 2024-11-05 protocol revision | JSON-RPC 2.0 over stdio (HTTP transport planned, §6.3/§13). |
 
 Pinning DITA-OT 4.4 and DITA 1.3 means the normalized model in §3.2 can
 assume 1.3 semantics for `conkeyref`, key scopes, and branch filtering
 (`ditaval` + `<data>`-based conditions) without version-sniffing the source
 map.
+
+**Compatibility policy:** `org.dita.dita2graph`, `dita2graph-core`, and
+`dita2graph-mcp` are versioned independently with semver, but released
+together against a single tested DITA-OT/OKF pair per minor release (e.g.
+`dita2graph 0.x` ↔ DITA-OT 4.4 ↔ OKF v0.2). A DITA-OT major-version bump or
+an OKF spec bump each get their own compatibility row in this table and
+their own migration note before being adopted as the new baseline — the
+plugin does not silently follow upstream latest.
 
 ### 1.2 High-level architecture
 
@@ -82,6 +110,24 @@ The system is composed of three layers:
 3. **MCP Server Layer** — exposes the OKF graph as resources and tools that
    AI agents can query.
 
+### 1.3 Glossary
+
+| Term | Meaning |
+|---|---|
+| DITA | Darwin Information Typing Architecture — the OASIS XML standard for modular, reusable technical documentation. |
+| DITA-OT | DITA Open Toolkit — the reference publishing engine that processes DITA source into output formats. |
+| Transtype | A DITA-OT output-format target selected via `-f`/`--format` (e.g. `html5`, `pdf`, `dita2graph`). |
+| Topic | The smallest reusable DITA content unit; typed as `concept`, `task`, `reference`, `glossentry`, etc. |
+| Ditamap | The XML manifest that assembles topics (via `topicref`) into a publication. |
+| Key / `keyref` / `keydef` | DITA's indirection mechanism: a `keydef` binds a key to a resource within a key scope; `keyref` resolves against it. |
+| `conref` / `conkeyref` | Content-reuse mechanisms that pull a fragment from one topic into another, by ID or by key. |
+| DITAVAL | A filter file (`.ditaval`) that includes/excludes/flags content by profiling attributes (`audience`, `platform`, `product`, `otherprops`) during processing. |
+| OKF | Open Knowledge Format — a minimal markdown-plus-YAML-frontmatter convention for portable, agent- and human-readable knowledge. |
+| Bundle (OKF) | An OKF-conformant directory tree of concept documents; the unit of distribution. |
+| Concept (OKF) | **Ambiguity warning:** in OKF, "concept" means *any* markdown document in a bundle, of any `type`. This is a different sense from the DITA `concept` topic type. DITA2Graph uses "OKF concept" or "concept document" when the OKF sense is meant, and "DITA `<concept>` topic" or `type: Concept` when the DITA topic type is meant. |
+| Frontmatter | The YAML metadata block at the top of an OKF concept document. |
+| MCP | Model Context Protocol — a JSON-RPC-based protocol for exposing typed resources and tools to AI agents. |
+
 ---
 
 ## 2. DITA-OT Plugin Layer
@@ -97,9 +143,9 @@ org.dita.dita2graph/
 │
 ├── plugin.xml
 ├── build.xml
-├── integrator.xml
-├── config/
-│   └── dita2graph.xml
+├── cfg/
+│   ├── dita2graph.xml
+│   └── messages.xml
 │
 ├── lib/
 │   └── dita2graph-core.jar
@@ -108,15 +154,24 @@ org.dita.dita2graph/
     └── dita2graph
 ```
 
-- **plugin.xml** — declares the `dita2graph` transtype, extension points,
-  and Ant targets contributed to the DITA-OT pipeline.
+- **plugin.xml** — declares the plugin id (`org.dita.dita2graph`), the
+  `dita2graph` transtype, and the `<feature>` extension points (transtype
+  registration, classpath/lib import, message file import) DITA-OT's build
+  system reads when assembling the toolkit. It does **not** ship a
+  per-plugin `integrator.xml`: DITA-OT auto-generates one toolkit-wide
+  `integrator.xml` by aggregating every installed plugin's `plugin.xml`
+  during `dita --install`/`ant integrator` — an individual plugin only
+  ever authors `plugin.xml` and (optionally) `build.xml`.
 - **build.xml** — Ant build wiring the plugin's preprocessing and
-  post-processing steps into the DITA-OT `preprocess`/`compile` phases.
-- **integrator.xml** — registers the plugin's parameters (feature flags,
-  output paths, OKF options) so they are recognized by `dita` CLI/Gradle
-  invocations.
-- **config/dita2graph.xml** — default configuration (graph depth, relation
-  types to extract, MCP server settings).
+  post-processing steps into the DITA-OT `preprocess`/`compile` phases,
+  and invoking `lib/dita2graph-core.jar`.
+- **cfg/dita2graph.xml** — default configuration (graph depth, relation
+  types to extract, MCP server settings), in DITA-OT's conventional `cfg/`
+  location (matching e.g. `org.dita.pdf2`'s `cfg/fo/...`).
+- **cfg/messages.xml** — the plugin's DITA-OT message catalog (§2.5):
+  declares `DITA2GRAPHnnnX` message IDs with severity, so Java/Ant code
+  raises consistent, documented diagnostics through DITA-OT's own logger
+  instead of ad hoc `System.out` output.
 - **lib/dita2graph-core.jar** — thin Java bridge that shells out to (or
   JNI/FFI-binds) the Rust core engine described in section 3.
 - **bin/dita2graph** — standalone CLI entry point for running extraction
@@ -140,6 +195,14 @@ org.dita.dita2graph/
 - Write outputs (`okf/` bundle, `graph.json`, MCP server bundle) to the
   DITA-OT output directory.
 
+**Filtering happens here, not later.** DITAVAL-driven exclusion must be
+applied during this preprocessing step, before content ever reaches the
+core engine — the plugin should never extract audience/product-restricted
+content into the normalized model and rely on a downstream layer to hide
+it. This is what lets a "public" and an "internal" OKF bundle be produced
+from the same source by swapping the DITAVAL file, with no risk of
+restricted content leaking into the public one (§6.1).
+
 ### 2.3 Invocation
 
 ```bash
@@ -157,8 +220,8 @@ Key parameters:
 |---|---|---|
 | `args.dita2graph.depth` | `unlimited` | Max relationship traversal depth captured in the graph |
 | `args.dita2graph.mcp` | `false` | Whether to also emit an MCP server bundle |
-| `args.dita2graph.format` | `json` | OKF serialization: `json` \| `yaml` |
-| `args.dita2graph.store` | `sqlite` | Backing store for the generated graph: `sqlite` \| `rocksdb` \| `none` |
+| `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1) |
+| `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
 | `args.dita2graph.include-drafts` | `false` | Include topics flagged `status="draft"` |
 
 ### 2.4 Output
@@ -186,6 +249,37 @@ artifact — plain markdown, per the OKF v0.2 spec. `graph.db` is a derived,
 disposable index the MCP server queries for speed; it can always be
 rebuilt from `okf/` alone, the same relationship `okf-rs` itself uses
 between its bundle and its `okf-search`/`okf-graph` indices.
+
+### 2.5 Error handling, logging, and exit codes
+
+DITA2Graph follows DITA-OT's own diagnostic conventions rather than
+inventing its own, so its messages show up consistently alongside other
+plugin output in a normal `dita` build log:
+
+- **Message catalog** (`cfg/messages.xml`): every diagnostic the plugin
+  can raise gets a stable ID of the form `DITA2GRAPHnnnX`, where `X` is
+  `F` (fatal), `E` (error), `W` (warning), or `I` (info) — the same
+  scheme DITA-OT's own message catalog uses. Representative entries:
+
+  | ID | Severity | Meaning |
+  |---|---|---|
+  | `DITA2GRAPH001E` | Error | Unresolved `keyref`/`conkeyref` encountered during extraction — build fails, since a graph built on an unresolved reference would be silently wrong. |
+  | `DITA2GRAPH010W` | Warning | Ambiguous relation inference (e.g. two candidate `applies-to` targets) — the lower-confidence edge is dropped, not guessed. |
+  | `DITA2GRAPH020I` | Info | Topic skipped because `status="draft"` and `args.dita2graph.include-drafts=false`. |
+  | `DITA2GRAPH030E` | Error | Generated OKF concept failed `okf-validator` conformance — build fails before the bundle is considered complete (§6.4, §10). |
+  | `DITA2GRAPH040W` | Warning | Topic has no resolvable `type` mapping (unknown/custom topic type) — emitted as a generic OKF concept per the spec's graceful-degradation rule (§4.1), but flagged so authors can review it. |
+
+- **Exit codes**: `0` success; `1` validation failure (bad DITA input,
+  failed `okf-validator` check — recoverable by fixing source content);
+  `2` internal error (bug in the plugin/core engine itself). This mirrors
+  the Ant/DITA-OT convention that any non-zero exit fails the enclosing
+  build (and thus the Gradle task in §8).
+- **Where diagnostics go**: messages raised inside the DITA-OT pipeline go
+  through DITA-OT's own logger (so they appear in the standard build log
+  and respect `-v`/log-level flags); `bin/dita2graph`/`dita2graph-core`
+  running standalone (outside a `dita` invocation) log structured JSON to
+  stderr instead, so CI can parse them without a DITA-OT log format
+  dependency.
 
 ---
 
@@ -219,9 +313,15 @@ DITA2Graph, rather than a parallel reimplementation:
 | `okf-mcp` | JSON-RPC-over-stdio MCP server exposing the above as tools (§5.5) |
 
 DITA2Graph's own code is then mostly the DITA-specific extraction (§3.2)
-and the DITA relation taxonomy (§4.2) layered on top — relation inference,
+and the DITA relation taxonomy (§4.3) layered on top — relation inference,
 `conref`/`conkeyref` dedup, and audience/product/key mapping onto OKF
 frontmatter (§4.1) — plus the DITA-specific MCP tools in §5.2.
+
+**Verifying the reuse assumption is a Phase 0 exit criterion (§12):**
+`okf-dita`/`okf-generator` must be usable as library dependencies (not
+only as `okf-rs` CLI subcommands) for this table to hold; if they turn
+out to be CLI-only, DITA2Graph falls back to shelling out to the `okf-rs`
+binary or vendoring the relevant logic, and this section gets revised.
 
 ### 3.1 Architecture
 
@@ -284,7 +384,9 @@ versioned on its own.
 - **Relation inference**: derive implicit relationships DITA doesn't encode
   explicitly, e.g. "topics sharing a `product` value are `related-to`",
   or "a task's `<cmd>` referencing a `<uicontrol>` defined in a reference
-  topic is `applies-to`".
+  topic is `applies-to`". Low-confidence inferences are dropped rather than
+  guessed (`DITA2GRAPH010W`, §2.5), so inferred edges never masquerade as
+  author-declared ones.
 - **Deduplication & reuse tracking**: because of `conref`/`conkeyref`, the
   same content fragment can appear in multiple topics — the engine tracks a
   single canonical node with multiple `contains` edges rather than
@@ -309,13 +411,15 @@ useful for CI pipelines or ad-hoc graph inspection:
 dita2graph-core build \
   --input output/normalized-model.json \
   --output output/ \
-  --store sqlite \
-  --format json
+  --store sqlite
 
 dita2graph-core query \
   --store output/graph.db \
   --topic installing-product \
   --relation requires
+
+dita2graph-core validate \
+  --bundle output/okf   # runs okf-validator conformance checks (§6.4, §10)
 ```
 
 ---
@@ -336,22 +440,29 @@ no schema registry and no required runtime: "if you can `cat` a file, you
 can read OKF." DITA2Graph targets this directly rather than inventing its
 own envelope.
 
+> **Naming collision to watch for:** OKF's "concept" (any markdown
+> document in a bundle) and DITA's `<concept>` topic type are different
+> things that happen to share a word. A DITA `task` topic becomes an OKF
+> *concept document* with `type: Task` — it does not become an OKF
+> "Concept". See the glossary (§1.3) for the disambiguation convention
+> used throughout this spec.
+
 Only one frontmatter key is required — `type` — everything else
 (`title`, `description`, `resource`, `tags`, provenance, trust, lifecycle)
 is optional and consumers must tolerate unknown/missing keys gracefully
-(spec §11, "graceful degradation"). DITA2Graph's mapping from DITA onto
-OKF frontmatter:
+(OKF spec §11, "graceful degradation"). DITA2Graph's mapping from DITA
+onto OKF frontmatter:
 
 | DITA source | OKF frontmatter field |
 |---|---|
 | Topic type (`concept`/`task`/`reference`/`glossentry`) | `type` (e.g. `Concept`, `Task`, `Reference`, `Glossary Entry`) |
 | `<title>` | `title` |
 | `<shortdesc>`/`<abstract>` | `description` |
-| Source `.dita` file path | `resource` |
+| Source `.dita` file path (relative, never absolute — §6.3) | `resource` |
 | `audience`, `platform`, `product`, `otherprops` | `tags` |
-| `conref`/`conkeyref` origin, resolved `keyref` | `sources` (provenance, §5.1 of the spec) |
+| `conref`/`conkeyref` origin, resolved `keyref` | `sources` (provenance, OKF spec §5.1) |
 | `dita2graph-core` version + generation timestamp | `generated: { by, at }` |
-| Relation taxonomy edges (§4.2) not covered by a plain link | `relations` — a DITA2Graph **extension** field (spec explicitly allows producer-defined keys) |
+| Relation taxonomy edges (§4.3) not covered by a plain link | `relations` — a DITA2Graph **extension** field (spec explicitly allows producer-defined keys) |
 
 Structural relationships that OKF *does* define natively — a standard
 markdown link from one concept to another — are used wherever the DITA
@@ -438,7 +549,7 @@ Steps to install the product in a production environment.
 ````
 
 `okf/topics/configuration.md`, a plain concept topic with no extension
-fields — still fully conformant per §11 of the spec, since `type` is the
+fields — still fully conformant per OKF spec §11, since `type` is the
 only required key:
 
 ````markdown
@@ -517,7 +628,13 @@ dita://product/{name}
 dita://architecture
 dita://map/{mapId}
 dita://relation/{topicId}/{relationType}
+dita://ditaval/{name}
 ```
+
+`dita://ditaval/{name}` exposes which DITAVAL profile a given bundle was
+built with (audience/product/platform filters applied), so an agent can
+tell whether it's looking at the public or an internal build before
+trusting an answer's completeness (§6.1).
 
 ### 5.2 Tools
 
@@ -528,7 +645,14 @@ explain_task(topicId)
 trace_dependencies(topicId, depth?)
 generate_summary(topicId | mapId)
 list_key_definitions(scope?)
+validate_bundle()
 ```
+
+`validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
+§6.4, §10) on demand and returns pass/fail plus any violations — useful
+for an agent (or a human) to confirm a bundle it's about to rely on is
+actually well-formed before trusting its answers, without shelling out
+to the CLI separately.
 
 ### 5.3 Example interaction
 
@@ -551,22 +675,22 @@ returns:
 
 ### 5.4 Server configuration
 
-The plugin emits `mcp/mcp-server.toml`, generated from `config/dita2graph.xml`:
+The plugin emits `mcp/mcp-server.toml`, generated from `cfg/dita2graph.xml`:
 
 ```toml
 [server]
 name = "dita2graph"
-transport = "stdio"   # or "http" for remote/multi-client deployments
+transport = "stdio"   # or "http" for remote/multi-client deployments (§6.3)
 
 [graph]
 store = "output/graph.db"
 okf = "output/okf"
 
 [resources]
-enable = ["topics", "product", "architecture", "map", "relation"]
+enable = ["topics", "product", "architecture", "map", "relation", "ditaval"]
 
 [tools]
-enable = ["search_topics", "find_related_topics", "explain_task", "trace_dependencies", "generate_summary"]
+enable = ["search_topics", "find_related_topics", "explain_task", "trace_dependencies", "generate_summary", "validate_bundle"]
 ```
 
 Running it:
@@ -696,9 +820,9 @@ pub fn list() -> Vec<Value> {
             },
         }),
         // dita2graph-mcp would declare search_topics, find_related_topics,
-        // explain_task, trace_dependencies, generate_summary here, in the
-        // same shape (§5.2), dispatched to dita2graph-core instead of
-        // okf-rs's generic okf-query layer.
+        // explain_task, trace_dependencies, generate_summary, and
+        // validate_bundle here, in the same shape (§5.2), dispatched to
+        // dita2graph-core instead of okf-rs's generic okf-query layer.
     ]
 }
 ```
@@ -712,25 +836,90 @@ fresh (as `okf-mcp` does), so a running server always reflects the latest
 
 ---
 
-## 6. Recommended implementation stack
+## 6. Security and access control
+
+Because DITA2Graph turns internal documentation into something an AI agent
+can query directly and quote from, the trust boundary around the bundle
+and the MCP server deserves explicit treatment — it wasn't addressed
+elsewhere in this spec and is not optional for a real deployment.
+
+### 6.1 Restricted content never enters the bundle
+
+Audience/product/`otherprops` filtering must happen at DITAVAL-driven
+extraction time (§2.2), not as a query-time access check on the MCP
+server. Practically, this means maintaining (at minimum) two DITAVAL
+profiles per product — `public.ditaval` and `internal.ditaval` — and
+building two separate `okf/` bundles from them, rather than one bundle
+with a "confidential" tag an agent is trusted to honor. A tag-based filter
+bolted onto a single bundle is one prompt-injection or bug away from being
+ignored; a topic that was never extracted cannot leak.
+
+### 6.2 Local (stdio) transport is the safe default
+
+The default `transport = "stdio"` (§5.4) confines the MCP server to the
+same trust boundary as running any other local CLI tool the user already
+has filesystem access to — no additional authentication is required for
+this mode, since there's no network exposure to authenticate against.
+
+### 6.3 HTTP transport requires authentication (not yet implemented)
+
+The planned HTTP transport (§13) multiplies exposure — a remote,
+multi-client MCP server — and must not ship without:
+
+- An API key or OAuth-based auth layer in front of `dita2graph-mcp`.
+- Per-audience scoping that mirrors DITA's own `audience` attribute, so
+  a caller authenticated as "customer support" cannot query a bundle
+  built from `internal.ditaval`.
+- Transport-level TLS; the stdio pattern in §5.5 has no encryption story
+  of its own and must not be naively reused verbatim over a raw socket.
+
+Until this lands, the MCP server should be treated as **local-only** in
+any deployment guidance.
+
+### 6.4 No secrets or unintended provenance leakage in the bundle
+
+- The core engine must not copy API keys, credentials, or internal
+  hostnames from DITA source metadata (`<data>`, `othermeta`) into OKF
+  frontmatter or body content. `okf-validator` (§2.5, §10) should include
+  a DITA2Graph-specific rule that flags common secret patterns
+  (`DITA2GRAPH030E`-adjacent check) as a build-breaking error, not a
+  warning.
+- `resource`/`sources` paths in generated frontmatter are always
+  bundle-relative (`topics/installing-product.dita`), never absolute
+  filesystem paths — absolute paths on a build machine can leak usernames,
+  internal directory structure, or CI system layout into a bundle that
+  might be published publicly (§4.1 table, §14).
+
+### 6.5 Supply-chain note on reused crates
+
+Since the core engine depends on `okf-rs` crates (§3) rather than
+vendoring their logic, DITA2Graph inherits their dependency tree and
+release cadence. Pin exact `okf-rs` crate versions (not a floating range)
+in `Cargo.toml`, and re-run the validation suite (§10) on every `okf-rs`
+version bump before adopting it, the same discipline applied to the
+DITA-OT/OKF baseline in §1.1.
+
+---
+
+## 7. Recommended implementation stack
 
 | Component | Technology |
 |---|---|
 | DITA processing | DITA-OT 4.4 |
 | DITA standard | DITA 1.3 |
 | Plugin (DITA-OT integration) | Java / Ant / Gradle |
-| Build automation | Gradle (via `dita-ot-gradle`, see section 7) |
+| Build automation | Gradle (via `dita-ot-gradle`, see section 8) |
 | Graph engine | Rust, built on `okf-rs` crates (`okf-dita`, `okf-core`, `okf-generator`, `okf-graph`, `okf-validator`, `okf-search`) |
 | Knowledge format | OKF v0.2 |
 | Agent interface | MCP (JSON-RPC 2.0, protocol rev. 2024-11-05), pattern from `okf-mcp` |
 | Storage | SQLite / RocksDB (derived index only — the bundle itself is markdown) |
 | CLI | Rust (Clap) |
 | Serialization | Markdown + YAML frontmatter (bundle) / JSON (derived `graph.json`) |
-| MCP transport | stdio (local) / HTTP (remote, planned) |
+| MCP transport | stdio (local, default) / HTTP (remote, planned — requires auth, §6.3) |
 
 ---
 
-## 7. Build integration with Gradle (`dita-ot-gradle`)
+## 8. Build integration with Gradle (`dita-ot-gradle`)
 
 For teams that already build their DITA output with Gradle rather than
 invoking `dita` directly, DITA2Graph is designed to slot into
@@ -741,7 +930,7 @@ itself: downloading it, installing plugins into it (including
 all as ordinary Gradle tasks with up-to-date checking and configuration
 cache support.
 
-### 7.1 Why use it
+### 8.1 Why use it
 
 - **No manual DITA-OT install.** `DitaOtDownloadTask` fetches and verifies a
   pinned DITA-OT release, so CI machines and developer laptops build against
@@ -761,7 +950,9 @@ cache support.
   for `html5`/`pdf` output can drive the `dita2graph` transtype alongside
   normal publishing outputs.
 
-### 7.2 Example `build.gradle`
+### 8.2 Example `build.gradle`
+
+Pinned to DITA-OT **4.4**, matching the baseline in §1.1:
 
 ```groovy
 plugins {
@@ -769,31 +960,31 @@ plugins {
 }
 
 tasks.register('downloadDitaOt', com.github.jyjeanne.DitaOtDownloadTask) {
-    version = '4.2.3'
+    version = '4.4'
 }
 
 tasks.register('installDita2Graph', com.github.jyjeanne.DitaOtInstallPluginTask) {
     dependsOn downloadDitaOt
-    ditaOtDir = layout.buildDirectory.dir('dita-ot/dita-ot-4.2.3')
+    ditaOtDir = layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     plugins = ['org.dita.dita2graph']   // local path, URL, or registry id
     force = false
 }
 
 tasks.register('validateDocs', com.github.jyjeanne.DitaOtValidateTask) {
     dependsOn installDita2Graph
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.2.3')
+    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
 }
 
 tasks.register('checkLinks', com.github.jyjeanne.DitaLinkCheckTask) {
     dependsOn validateDocs
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.2.3')
+    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
 }
 
 tasks.register('buildKnowledgeGraph', com.github.jyjeanne.DitaOtTask) {
     dependsOn checkLinks
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.2.3')
+    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
     output 'build/dita2graph'
     transtype 'dita2graph'
@@ -810,7 +1001,7 @@ tasks.register('buildKnowledgeGraph', com.github.jyjeanne.DitaOtTask) {
 // Normal HTML5 publishing can run alongside graph generation
 tasks.register('publishHtml', com.github.jyjeanne.DitaOtTask) {
     dependsOn checkLinks
-    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.2.3')
+    ditaOt layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
     input 'docs/user-guide.ditamap'
     output 'build/docs/html'
     transtype 'html5'
@@ -826,7 +1017,7 @@ Kotlin DSL equivalent for the graph-generation task:
 ```kotlin
 tasks.register<com.github.jyjeanne.DitaOtTask>("buildKnowledgeGraph") {
     dependsOn("checkLinks")
-    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.2.3"))
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
     input("docs/user-guide.ditamap")
     output("build/dita2graph")
     transtype("dita2graph")
@@ -846,7 +1037,7 @@ Run it:
 ./gradlew publishAll
 ```
 
-### 7.3 CI recommendation
+### 8.3 CI recommendation
 
 ```properties
 # gradle.properties
@@ -858,11 +1049,12 @@ Use `progressStyle = 'QUIET'` on `buildKnowledgeGraph` in CI so logs stay
 readable, and gate `buildKnowledgeGraph` behind `validateDocs` and
 `checkLinks` succeeding, so a broken source map never produces a stale or
 partially-built graph that an AI agent could query with confidence it
-doesn't deserve.
+doesn't deserve. See §10 for what else should run in this pipeline
+(bundle conformance, MCP protocol tests, regression corpus).
 
 ---
 
-## 8. Why this architecture is interesting
+## 9. Why this architecture is interesting
 
 The important innovation is that **DITA-OT already knows the meaning of
 technical documentation**. Most AI systems reduce documentation to:
@@ -891,20 +1083,21 @@ than a search index: an agent asking "how do I configure authentication?"
 gets a typed graph traversal (task → requires → concept/reference) instead
 of a best-effort nearest-neighbor match over disconnected text chunks.
 
-### 8.1 Comparison with standard RAG
+### 9.1 Comparison with standard RAG
 
 | Dimension | Standard RAG (text → chunks → embeddings) | DITA2Graph (DITA → OKF → MCP) |
 |---|---|---|
 | Unit of retrieval | Arbitrary N-token text chunk, often splitting mid-thought | A whole DITA concept (topic, one coherent unit the author already scoped) |
 | Relationships | Inferred at query time from embedding similarity | Explicit, author-declared (`reltable`, `keyref`, `xref`) plus a typed taxonomy (§4.3) |
 | Reuse (conref) | Duplicated across every chunk that includes it, inflating the index and risking drift between copies | Single canonical concept, referenced by `sources`/relations — one source of truth |
-| Applicability (audience/product/version) | Usually lost, or hacked in as metadata filters bolted onto the vector store | First-class (`tags`, DITAVAL-driven), enforced at extraction time |
+| Applicability (audience/product/version) | Usually lost, or hacked in as metadata filters bolted onto the vector store | First-class (`tags`, DITAVAL-driven), enforced at extraction time (§6.1) |
 | Answer for "what does X require?" | Best-effort: retrieve top-k similar chunks, hope one mentions a dependency | Deterministic: one graph traversal (`requires` edge) |
 | Freshness / staleness detection | Re-embed everything, or nothing | Incremental rebuild keyed by source file hash (§3.3); `generated.at` frontmatter makes staleness inspectable |
-| Failure mode on bad input | Silent — a broken doc still embeds and gets retrieved | Loud — `okf-validator` and DITA-OT's own key/conref resolution reject broken source before a graph is built (§8.3) |
+| Failure mode on bad input | Silent — a broken doc still embeds and gets retrieved | Loud — `okf-validator` and DITA-OT's own key/conref resolution reject broken source before a graph is built (§9.3) |
 | Output artifact | Vectors in a proprietary store; not human-readable | Plain markdown bundle; human-readable, diffable, greppable without tooling |
+| Access control | Usually none, or bolted on after the fact | Enforced at extraction (§6.1) via separate DITAVAL-built bundles |
 
-### 8.2 Reduced token consumption
+### 9.2 Reduced token consumption
 
 A RAG pipeline typically has to over-retrieve to compensate for imprecise
 similarity search — pulling in several chunks per query and letting the
@@ -917,9 +1110,11 @@ thousands a full-file or multi-chunk read would cost — because the graph
 edge already encodes the answer; the agent doesn't have to re-derive it
 from prose. The same holds for `search_topics`/`trace_dependencies` in
 DITA2Graph's tool set (§5.2): a typed lookup replaces a broad semantic
-search plus several speculative chunk reads.
+search plus several speculative chunk reads. This is a directional claim,
+not a guaranteed number — §10 calls for measuring it against a real
+regression corpus rather than citing `okf-rs`'s figure as DITA2Graph's own.
 
-### 8.3 Validation
+### 9.3 Validation
 
 Because the graph is built from DITA-OT's own preprocessing pipeline
 rather than scraped from rendered output, DITA2Graph gets validation for
@@ -928,7 +1123,7 @@ free at multiple layers before an agent ever sees the data:
 - **DITA-OT key/conref resolution** fails the build on unresolved
   `keyref`/`conkeyref` — a broken reference can't silently make it into
   the graph the way a broken link can silently make it into a RAG index.
-- **`dita-ot-gradle`'s `DitaOtValidateTask`/`DitaLinkCheckTask`** (§7)
+- **`dita-ot-gradle`'s `DitaOtValidateTask`/`DitaLinkCheckTask`** (§8)
   catch XML validity, reference integrity, and dead links *before*
   `dita2graph` runs, gating graph generation on green validation.
 - **`okf-validator`** checks the emitted bundle for OKF v0.2 schema
@@ -940,7 +1135,7 @@ free at multiple layers before an agent ever sees the data:
   relationship, so there's no equivalent of an embedding model
   hallucinating a similarity that isn't really there.
 
-### 8.4 Native AI-tool interaction
+### 9.4 Native AI-tool interaction
 
 MCP gives the agent a typed contract instead of a single fuzzy
 `search(query: string)` endpoint: resources are addressable by stable
@@ -956,7 +1151,46 @@ to traverse from.
 
 ---
 
-## 9. MVP scope
+## 10. Testing strategy
+
+None of the guarantees claimed in §9 hold unless they're tested, so
+testing is treated as a first-class part of the spec rather than an
+afterthought:
+
+- **Unit tests (`dita2graph-core`, Rust)**: `cargo test` around
+  normalization, relation inference, and `conref`/`conkeyref`
+  deduplication (§3.3); golden-file tests comparing generated OKF
+  concepts against checked-in fixtures for a representative multi-topic
+  sample project.
+- **Plugin integration tests (Java/Ant side)**: leverage DITA-OT's own
+  plugin test framework (`test/testinput` + `test/testexpected`
+  fixtures, run via the toolkit's `ant test`) rather than inventing a
+  parallel harness, so DITA2Graph's tests run the same way every other
+  DITA-OT plugin's tests do.
+- **Bundle conformance tests**: run `okf-validator` against every
+  generated bundle as a required CI gate (§2.5, §6.4, §9.3) — a bundle
+  that fails conformance fails the build, full stop.
+- **MCP protocol tests**: JSON-RPC round-trip tests for `initialize`,
+  `tools/list`, and `tools/call`, following the pattern already present
+  in `okf-mcp`'s own `#[cfg(test)] mod tests` (§5.5) — reuse that
+  structure for `dita2graph-mcp`'s DITA-specific tools.
+- **End-to-end tests**: a small but representative reference project
+  (multiple topic types, at least two audience/product DITAVAL profiles,
+  at least one `conref` and one `conkeyref`) exercised through the full
+  pipeline — `dita --format dita2graph` → bundle → `dita2graph-mcp query`
+  — in CI, as part of the Gradle build (§8).
+- **Regression corpus**: that reference project is maintained as a fixed,
+  version-controlled fixture so future changes to relation inference or
+  OKF mapping have something concrete to regress against; it also
+  doubles as the basis for measuring the token-consumption claim in
+  §9.2 empirically instead of by analogy to `okf-rs`.
+- **Security tests**: a fixture pair (`public.ditaval`/`internal.ditaval`
+  builds of the same source, §6.1) with an automated check that no
+  internal-only topic ID appears in the public bundle's `okf/` tree.
+
+---
+
+## 11. MVP scope
 
 For a first minimum viable product, pinned to DITA-OT 4.4 / DITA 1.3 /
 OKF v0.2:
@@ -972,15 +1206,143 @@ OKF v0.2:
 4. A Rust MCP server exposing the OKF graph via the resources/tools in
    section 5, following the `okf-mcp` JSON-RPC-over-stdio pattern
    (section 5.5).
-5. A `build.gradle` example (section 7) wiring `dita-ot-gradle` to
+5. A `build.gradle` example (section 8) wiring `dita-ot-gradle` to
    download DITA-OT 4.4, install the plugin, validate content
    (`okf-validator` + `DitaOtValidateTask`/`DitaLinkCheckTask`), and run
    the `dita2graph` transtype as part of a normal CI build.
+6. The public/internal DITAVAL split (§6.1) and the regression corpus
+   (§10), so the MVP demonstrates the access-control and validation
+   guarantees this spec claims, not just the happy path.
 
 That scope is already a self-contained, demonstrable, open-source project:
-DITA in, queryable knowledge graph and live MCP server out.
+DITA in, queryable knowledge graph and live MCP server out. Section 12
+breaks this same scope into ordered, gated delivery phases.
 
-## 10. Future work
+---
+
+## 12. Development phases
+
+Each phase has a goal, concrete deliverables, and an exit criterion that
+gates moving to the next phase — a phase isn't "done" on a time box, it's
+done when its exit criterion is met.
+
+### Phase overview
+
+| Phase | Focus | Rough duration | Depends on |
+|---|---|---|---|
+| 0 | Spike & feasibility | 1–2 weeks | — |
+| 1 | Plugin skeleton + normalized model | 2–3 weeks | Phase 0 |
+| 2 | Core engine: OKF bundle generation | 3–4 weeks | Phase 1 |
+| 3 | MCP server | 2–3 weeks | Phase 2 |
+| 4 | Gradle integration + CI hardening | 2 weeks | Phase 3 |
+| 5 | Security, docs, public v0.1.0 release | 2 weeks | Phase 4 |
+| 6+ | Extended capabilities (post-MVP) | Ongoing, per-item | Phase 5 |
+
+Total to a public v0.1.0: roughly **12–16 weeks** for a small team (1–2
+engineers), assuming the Phase 0 reuse assumption (§3) holds.
+
+### Phase 0 — Spike & feasibility (1–2 weeks)
+
+**Goal:** de-risk the two biggest unknowns before committing to the
+architecture — that DITA-OT's preprocessing exposes everything §2.2/§3.2
+assume, and that `okf-rs` crates are usable as library dependencies (§3)
+rather than CLI-only.
+
+**Deliverables:**
+- A throwaway script that dumps DITA-OT's resolved intermediate XML for
+  one sample ditamap and confirms resolved `keyref`/`conref`/DITAVAL
+  filtering are all present at the point DITA2Graph would hook in.
+- A spike Rust program that hand-writes one OKF concept file and passes
+  it through `okf-validator` as a library call (not the `okf-rs` CLI).
+
+**Exit criteria:** both confirmed working, or a documented fallback
+decision (§3's "verifying the reuse assumption" note) if `okf-dita`/
+`okf-generator` turn out not to be usable as libraries.
+
+### Phase 1 — DITA-OT plugin skeleton + normalized model (2–3 weeks)
+
+**Goal:** `org.dita.dita2graph` installs cleanly and runs end-to-end on a
+sample map, producing the normalized DITA model (§3.2) — no OKF or MCP
+yet.
+
+**Deliverables:** `plugin.xml`, `build.xml`, `cfg/dita2graph.xml`,
+`cfg/messages.xml` (§2.1, §2.5); `bin/dita2graph` CLI stub; one working
+`dita --format dita2graph` invocation against a 3-topic sample map.
+
+**Exit criteria:** plugin installs via `dita --install` with no manual
+steps; the normalized model JSON for the sample map validates against a
+JSON Schema for §3.2 and correctly reflects resolved keys, `conref`, and
+one DITAVAL-filtered topic.
+
+### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
+
+**Goal:** `dita2graph-core` consumes the normalized model, performs
+relation inference and `conref`/`conkeyref` dedup (§3.3), and writes a
+conformant OKF v0.2 bundle.
+
+**Deliverables:** `okf/` bundle output for the sample map (§4.4); derived
+`graph.json`; incremental rebuild (source-hash keyed, §3.3) working on a
+second run.
+
+**Exit criteria:** generated bundle matches a checked-in golden fixture
+byte-for-byte (modulo timestamps); 100% `okf-validator` pass; a no-op
+re-run touches zero unchanged concept files.
+
+### Phase 3 — MCP server (2–3 weeks)
+
+**Goal:** `dita2graph-mcp` implements the JSON-RPC-over-stdio pattern
+(§5.5) with the DITA-specific tool set (§5.2), including `validate_bundle`.
+
+**Deliverables:** `dita2graph-mcp` binary; `mcp-server.toml` emission
+(§5.4); passing protocol tests (§10) for `initialize`/`tools/list`/
+`tools/call`.
+
+**Exit criteria:** a live Claude Code session, registered against the
+sample bundle's server, correctly answers the §5.3 example interaction
+end to end (`search_topics` → related tasks), with tool calls visibly
+returning small, typed results rather than raw file contents.
+
+### Phase 4 — Gradle integration + CI hardening (2 weeks)
+
+**Goal:** wire the `dita-ot-gradle` tasks (§8) end-to-end and turn the
+testing strategy (§10) into an enforced CI pipeline.
+
+**Deliverables:** the reference `build.gradle`/Kotlin DSL from §8.2;
+green CI building the sample project on every push; the regression
+corpus and public/internal DITAVAL security test (§10) both wired in as
+required checks.
+
+**Exit criteria:** a deliberately introduced broken `conref` in the
+sample project fails CI at `validateDocs`/`checkLinks`, before
+`buildKnowledgeGraph` ever runs — reproducing §9.3's guarantee as an
+actual, observed CI failure rather than a claim.
+
+### Phase 5 — Security, docs, and public v0.1.0 release (2 weeks)
+
+**Goal:** apply §6 end-to-end and make the project usable by someone who
+isn't the person who built it.
+
+**Deliverables:** public/internal DITAVAL split shipped as a documented
+pattern (§6.1); secret-leakage `okf-validator` rule (§6.4); a
+user-facing README/quickstart (§15); `LICENSE` file (§14); tagged
+`v0.1.0` matching the MVP scope in §11.
+
+**Exit criteria:** an external tester, given only the README and no other
+context, gets from a DITA project to a working `dita2graph-mcp` server
+answering queries in Claude Code, hitting no undocumented step.
+
+### Phase 6+ — Extended capabilities (post-MVP, ongoing)
+
+Not a single phase but a backlog, picked up item-by-item based on
+adopter feedback after v0.1.0 — see §13 for the current list (multi-map
+federation, graph diffing, HTTP transport + auth, embedding-based
+`related-to` inference, a rendered-output annotation variant). Each item
+gets its own scoped follow-up spec/issue and its own exit criterion
+before work starts, rather than being bundled into one open-ended phase.
+
+---
+
+## 13. Future work
 
 - Relation inference beyond explicit DITA markup (e.g. embedding-based
   `related-to` suggestions layered on top of the structural graph, clearly
@@ -991,7 +1353,74 @@ DITA in, queryable knowledge graph and live MCP server out.
 - Graph versioning/diffing across doc releases, so an agent can answer
   "what changed about authentication between v3 and v4?".
 - HTTP transport for the MCP server to support shared/remote deployments,
-  with per-audience access control mirroring DITA's `audience` filtering.
+  with authentication and per-audience access control mirroring DITA's
+  `audience` filtering (§6.3).
 - A DITA-OT PDF/HTML5 plugin variant that annotates rendered output with
   links back into the graph (e.g. "view related topics" panels driven by
   `dita2graph.find_related_topics`).
+
+---
+
+## 14. Licensing
+
+DITA2Graph is intended as an open-source project and should pick licenses
+consistent with the ecosystem it builds on, so redistribution and reuse
+stay unambiguous:
+
+- **`org.dita.dita2graph` (DITA-OT plugin, Java/Ant)**: recommend
+  **Apache License 2.0**, matching `dita-ot-gradle` (§8) and DITA-OT
+  itself.
+- **`dita2graph-core` / `dita2graph-mcp` (Rust)**: recommend dual
+  **MIT OR Apache-2.0**, the Rust-ecosystem norm and the same scheme
+  `okf-rs` (§3, §5.5) already uses.
+- **Reused `okf-rs` source**: the reference implementation excerpt in
+  §5.5 is adapted from `jyjeanne/okf-rs`, which is itself dual MIT/
+  Apache-2.0 — any code adapted from it into `dita2graph-mcp` should keep
+  the appropriate license header/attribution, not just a spec-level
+  citation.
+- **This specification document**: recommend a permissive documentation
+  license (e.g. CC-BY-4.0) if published standalone outside the code
+  repository.
+
+A `LICENSE` file matching the chosen code license, plus a short
+`NOTICE`/attribution entry for the `okf-rs`-derived portions, is a Phase 5
+(§12) deliverable.
+
+---
+
+## 15. Appendix A: Quickstart
+
+A minimal path from a DITA project to a queryable MCP server, assuming
+the MVP scope (§11) is implemented:
+
+```bash
+# 1. Install DITA-OT 4.4 and the DITA2Graph plugin (§2)
+dita --install org.dita.dita2graph
+
+# 2. (Optional) Build with Gradle instead of the raw CLI (§8)
+./gradlew buildKnowledgeGraph
+
+# 3. Or invoke DITA-OT directly (§2.3)
+dita \
+  --input user-guide.ditamap \
+  --format dita2graph \
+  --filter public.ditaval \
+  --args.dita2graph.mcp=true
+
+# 4. Inspect the generated bundle (§4) — it's just markdown
+ls output/okf/topics/
+cat output/okf/topics/installing-product.md
+
+# 5. Validate it explicitly (§2.5, §6.4, §10)
+dita2graph-core validate --bundle output/okf
+
+# 6. Start the MCP server (§5.4)
+dita2graph-mcp serve --config output/mcp/mcp-server.toml
+
+# 7. Register it with Claude Code
+claude mcp add dita2graph -- dita2graph-mcp serve --config output/mcp/mcp-server.toml
+```
+
+From here, asking Claude Code a documentation question (§5.3) should
+route through `search_topics`/`find_related_topics` rather than a raw
+file read — that's the signal the integration is working end to end.
