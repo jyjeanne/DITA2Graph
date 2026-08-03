@@ -1,0 +1,26 @@
+DITA2Graph is dual-licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option. This applies to every component in this repository —
+the Rust workspace (`core/`, `mcp/`), the DITA-OT plugin
+(`plugin/org.dita.dita2graph/`, including its Java sources under
+`plugin/org.dita.dita2graph/java/`), and the integration harness
+(`gradle-build/`) — rather than mixing licenses per component
+(docs/plugin-specification.md §14 originally sketched Apache-2.0 for the
+Java/Ant side specifically, to match DITA-OT's own license, and dual
+MIT/Apache-2.0 for the Rust side; using one consistent dual license
+across the whole repository is simpler for downstream users and a
+superset of what Apache-2.0-only would permit — anyone who specifically
+wants Apache-2.0 terms, e.g. for DITA-OT-ecosystem compatibility, still
+gets them).
+
+Unless You explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this project by You, as defined in the
+Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
+
+See [NOTICE](NOTICE) for third-party attribution.

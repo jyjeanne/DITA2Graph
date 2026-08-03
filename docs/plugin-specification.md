@@ -306,6 +306,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH020I` | Info | Topic skipped because `status="draft"` and `args.dita2graph.include-drafts=false`. |
   | `DITA2GRAPH030E` | Error | Generated OKF concept failed `okf-validator` conformance — build fails before the bundle is considered complete (§6.4, §10). |
   | `DITA2GRAPH040W` | Warning | Topic has no resolvable `type` mapping (unknown/custom topic type) — emitted as a generic OKF concept per the spec's graceful-degradation rule (§4.1), but flagged so authors can review it. |
+  | `DITA2GRAPH050E` | Error | A generated OKF concept matches a high-confidence secret pattern (AWS access key, PEM private key, GitHub/Slack token) — build fails, not a warning (§6.4). |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);
@@ -919,10 +920,24 @@ any deployment guidance.
 
 - The core engine must not copy API keys, credentials, or internal
   hostnames from DITA source metadata (`<data>`, `othermeta`) into OKF
-  frontmatter or body content. `okf-validator` (§2.5, §10) should include
-  a DITA2Graph-specific rule that flags common secret patterns
-  (`DITA2GRAPH030E`-adjacent check) as a build-breaking error, not a
-  warning.
+  frontmatter or body content.
+- **Implemented and shipped** (§12 Phase 5): `okf-validator` is an
+  external dependency (§3) and isn't ours to extend with a
+  DITA2Graph-specific rule, so the check lives in `dita2graph-core`
+  itself — `core/dita2graph-core/src/secrets.rs`'s `scan_bundle()` walks
+  every file in the written bundle for high-confidence secret shapes
+  (AWS access key IDs, PEM private-key headers, GitHub and Slack token
+  prefixes) and is run from `validate_and_report()` in `main.rs`
+  immediately after the `okf-validator` conformance check, for both
+  `build` and `validate`. A match is a build-breaking error, not a
+  warning: `DITA2GRAPH050E` is emitted and the process exits `1`, exactly
+  like a failed `okf-validator` check (§2.5). Deliberately narrow — no
+  generic `password=`/`api_key=` heuristic, since that would false-positive
+  on ordinary documentation prose (a topic titled "How to reset your
+  password" is not a leak). Covered by 7 unit tests plus a manual
+  end-to-end smoke test (`build` against a normalized model containing a
+  planted AWS key correctly fails with exit code 1 and the diagnostic; the
+  same model with the key removed passes).
 - `resource`/`sources` paths in generated frontmatter are always
   bundle-relative (`topics/installing-product.dita`), never absolute
   filesystem paths — absolute paths on a build machine can leak usernames,
@@ -1580,13 +1595,35 @@ tests) — CI today only covers what's described above.
 isn't the person who built it.
 
 **Deliverables:** public/internal DITAVAL split shipped as a documented
-pattern (§6.1); secret-leakage `okf-validator` rule (§6.4); a
-user-facing README/quickstart (§15); `LICENSE` file (§14); tagged
-`v0.1.0` matching the MVP scope in §11.
+pattern (§6.1); secret-leakage detection rule (§6.4); a user-facing
+README/quickstart (§15); `LICENSE` file (§14); tagged `v0.1.0` matching
+the MVP scope in §11.
 
 **Exit criteria:** an external tester, given only the README and no other
 context, gets from a DITA project to a working `dita2graph-mcp` server
 answering queries in Claude Code, hitting no undocumented step.
+
+**Status:**
+- Done — licensing decided and shipped: dual **MIT OR Apache-2.0** applied
+  uniformly across every component (Rust, Java, Gradle); `LICENSE`,
+  `LICENSE-MIT`, `LICENSE-APACHE`, and `NOTICE` (attribution for the
+  `okf-mcp`-derived transport code and the `okf-rs`/`dita-ot-gradle`
+  dependencies) added at the repo root; `Cargo.toml`'s
+  `[workspace.package].license` matches (§14).
+- Done — secret-leakage detection (§6.4): implemented in
+  `core/dita2graph-core/src/secrets.rs`, wired into `validate_and_report`
+  in `main.rs` so both `build` and `validate` fail (`DITA2GRAPH050E`,
+  exit code 1) on a detected secret. Verified with unit tests and a
+  manual CLI smoke test against a planted AWS key.
+- Not started — public/internal DITAVAL split is not yet a *demonstrated*
+  pattern: `sample-docs/public.ditaval` currently has nothing to filter,
+  since no fixture topic is marked `audience="internal"`. Needs a fixture
+  update and a build comparison (public vs. internal output actually
+  differs) before this deliverable is real rather than aspirational.
+- Not started — README/quickstart polish toward the exit criterion above,
+  and the `v0.1.0` tag itself (deliberately held for explicit user
+  confirmation before tagging/releasing, per this project's own practice
+  of treating visible, hard-to-reverse actions as confirm-first).
 
 ### Phase 6+ — Extended capabilities (post-MVP, ongoing)
 
@@ -1620,28 +1657,29 @@ before work starts, rather than being bundled into one open-ended phase.
 
 ## 14. Licensing
 
-DITA2Graph is intended as an open-source project and should pick licenses
-consistent with the ecosystem it builds on, so redistribution and reuse
-stay unambiguous:
+**Decided and shipped** (§12 Phase 5): dual **MIT OR Apache-2.0**,
+applied uniformly across every component in the repository — the Rust
+workspace, the DITA-OT plugin (Java/Ant/XML), and the Gradle integration
+harness — via root `LICENSE`/`LICENSE-MIT`/`LICENSE-APACHE` files, plus
+a `NOTICE` file for third-party attribution. This supersedes an earlier
+draft of this section that sketched *different* licenses per component
+(Apache-2.0 for the Java/Ant side specifically, to match `dita-ot-gradle`
+and DITA-OT; dual MIT/Apache-2.0 for Rust): one consistent license across
+a single repository is simpler for downstream users to reason about, and
+is a strict superset of what Apache-2.0-only would permit — anyone who
+specifically wants Apache-2.0 terms (e.g. for DITA-OT-ecosystem
+compatibility) still gets to choose them.
 
-- **`org.dita.dita2graph` (DITA-OT plugin, Java/Ant)**: recommend
-  **Apache License 2.0**, matching `dita-ot-gradle` (§8) and DITA-OT
-  itself.
-- **`dita2graph-core` / `dita2graph-mcp` (Rust)**: recommend dual
-  **MIT OR Apache-2.0**, the Rust-ecosystem norm and the same scheme
-  `okf-rs` (§3, §5.5) already uses.
-- **Reused `okf-rs` source**: the reference implementation excerpt in
-  §5.5 is adapted from `jyjeanne/okf-rs`, which is itself dual MIT/
-  Apache-2.0 — any code adapted from it into `dita2graph-mcp` should keep
-  the appropriate license header/attribution, not just a spec-level
-  citation.
-- **This specification document**: recommend a permissive documentation
-  license (e.g. CC-BY-4.0) if published standalone outside the code
-  repository.
-
-A `LICENSE` file matching the chosen code license, plus a short
-`NOTICE`/attribution entry for the `okf-rs`-derived portions, is a Phase 5
-(§12) deliverable.
+- **Reused `okf-rs` source**: the JSON-RPC-over-stdio transport in
+  `mcp/dita2graph-mcp/src/main.rs` is adapted from `jyjeanne/okf-rs`'s
+  `okf-mcp` crate (itself dual MIT/Apache-2.0, §3, §5.5) — attributed in
+  both that file's own doc comment and in `NOTICE`, not just a
+  spec-level citation.
+- **This specification document**: still unlicensed for standalone
+  redistribution outside the code repository; a permissive documentation
+  license (e.g. CC-BY-4.0) remains a good choice if that's ever needed,
+  but hasn't been applied since the document has only been published as
+  part of this repository so far.
 
 ---
 

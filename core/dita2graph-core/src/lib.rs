@@ -11,6 +11,8 @@
 pub mod diagnostics;
 pub mod model;
 pub mod okf;
+pub mod secrets;
 
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
 pub use okf::{BundleSummary, write_bundle};
+pub use secrets::{SecretFinding, scan_bundle};

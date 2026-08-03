@@ -33,6 +33,8 @@ pub const DRAFT_TOPIC_SKIPPED: MessageId = MessageId("DITA2GRAPH020I", Severity:
 pub const BUNDLE_VALIDATION_FAILED: MessageId = MessageId("DITA2GRAPH030E", Severity::Error);
 /// Topic has no resolvable `type` mapping; emitted as a generic concept.
 pub const UNKNOWN_TOPIC_TYPE: MessageId = MessageId("DITA2GRAPH040W", Severity::Warning);
+/// A generated concept matches a high-confidence secret pattern (§6.4).
+pub const POSSIBLE_SECRET_LEAK: MessageId = MessageId("DITA2GRAPH050E", Severity::Error);
 
 #[derive(Serialize)]
 struct Diagnostic<'a> {
@@ -64,5 +66,6 @@ mod tests {
         assert_eq!(DRAFT_TOPIC_SKIPPED.0, "DITA2GRAPH020I");
         assert_eq!(BUNDLE_VALIDATION_FAILED.0, "DITA2GRAPH030E");
         assert_eq!(UNKNOWN_TOPIC_TYPE.0, "DITA2GRAPH040W");
+        assert_eq!(POSSIBLE_SECRET_LEAK.0, "DITA2GRAPH050E");
     }
 }

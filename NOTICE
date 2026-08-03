@@ -1,0 +1,27 @@
+DITA2Graph
+Copyright the DITA2Graph Contributors
+
+This product includes software adapted from third-party projects:
+
+- `mcp/dita2graph-mcp/src/main.rs`'s JSON-RPC-over-stdio transport
+  (the `main`/`handle_message` functions) is adapted from the `okf-mcp`
+  crate of jyjeanne/okf-rs (https://github.com/jyjeanne/okf-rs),
+  dual-licensed under MIT OR Apache-2.0. See
+  docs/plugin-specification.md §5.5 for the excerpt this was adapted
+  from and what was changed (the DITA-specific tool set in `tools.rs`
+  is original to this project, dispatched through the same transport
+  shape).
+
+- The Gradle build patterns in `gradle-build/` and
+  `plugin/org.dita.dita2graph/java/`'s use of
+  `io.github.jyjeanne.dita-ot-gradle` (https://github.com/jyjeanne/dita-ot-gradle,
+  Apache License 2.0) are a dependency, not vendored/copied code, and
+  are used under that project's own license terms via its published
+  Gradle Plugin Portal artifact.
+
+- `core/dita2graph-core` depends on `okf-validator` from
+  jyjeanne/okf-rs (dual MIT/Apache-2.0) as an ordinary Cargo
+  dependency, not vendored code.
+
+This NOTICE file is provided for informational purposes and does not
+modify DITA2Graph's own license (see LICENSE).

@@ -9,8 +9,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED};
-use dita2graph_core::{NormalizedNode, write_bundle};
+use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
+use dita2graph_core::{NormalizedNode, scan_bundle, write_bundle};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -132,6 +132,29 @@ fn validate_and_report(bundle: &std::path::Path) -> Result<ExitCode> {
         );
         return Ok(ExitCode::from(1));
     }
+
+    // A bundle can be format-valid per `okf-validator` and still leak a
+    // secret into generated prose (§6.4); that's a build-breaking error,
+    // not a warning, so it's checked separately and still fails the build.
+    let secret_findings = scan_bundle(bundle)?;
+    if !secret_findings.is_empty() {
+        for finding in &secret_findings {
+            println!(
+                "Error {}: possible secret leak ({})",
+                finding.file, finding.pattern
+            );
+        }
+        diagnostics::emit(
+            POSSIBLE_SECRET_LEAK,
+            &format!(
+                "{} file(s) in {} match a high-confidence secret pattern",
+                secret_findings.len(),
+                bundle.display()
+            ),
+        );
+        return Ok(ExitCode::from(1));
+    }
+
     println!("bundle OK: {}", bundle.display());
     Ok(ExitCode::SUCCESS)
 }
