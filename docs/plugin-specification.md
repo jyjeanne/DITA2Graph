@@ -915,7 +915,7 @@ DITA-OT/OKF baseline in §1.1.
 | DITA processing | DITA-OT 4.4 |
 | DITA standard | DITA 1.3 |
 | Plugin (DITA-OT integration) | Java 25 (LTS) / Ant / Gradle 9.0+ |
-| Build automation | Gradle 9.0 minimum, currently building against 9.6.x (via `dita-ot-gradle`, see section 8) |
+| Build automation | Gradle 9.0 minimum, currently building against 9.6.x, Kotlin DSL (`build.gradle.kts`) preferred over Groovy (via `dita-ot-gradle`, see section 8) |
 | Graph engine | Rust (latest stable, currently 1.97.1, edition 2024) — own OKF bundle writer; reuses `okf-core` (config) and `okf-validator` (validation) from `okf-rs` as-is, not `okf-dita`/`okf-generator` (§3) |
 | Knowledge format | OKF v0.2 |
 | Agent interface | MCP (JSON-RPC 2.0, protocol rev. 2024-11-05), pattern from `okf-mcp` |
@@ -963,10 +963,109 @@ rather than relying on whatever Gradle happens to be on a machine's `PATH`.
   for `html5`/`pdf` output can drive the `dita2graph` transtype alongside
   normal publishing outputs.
 
-### 8.2 Example `build.gradle`
+### 8.2 Example `build.gradle.kts` (Kotlin DSL)
 
 Pinned to DITA-OT **4.4** and Java **25**, matching the baseline in §1.1
-(requires Gradle 9.0+, §8):
+(requires Gradle 9.0+, §8). Kotlin DSL is the primary example here —
+it's what `dita-ot-gradle` itself is written in (it ships a
+`gradle-kotlin-dsl` topic), gets IDE autocomplete/type-checking that the
+Groovy DSL doesn't, and is what Gradle itself now recommends for new
+builds. A Groovy DSL equivalent follows for teams standardized on it.
+
+```kotlin
+import com.github.jyjeanne.DitaOtDownloadTask
+import com.github.jyjeanne.DitaOtInstallPluginTask
+import com.github.jyjeanne.DitaOtValidateTask
+import com.github.jyjeanne.DitaLinkCheckTask
+import com.github.jyjeanne.DitaOtTask
+
+plugins {
+    id("io.github.jyjeanne.dita-ot-gradle") version "2.8.6"
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }
+}
+
+val downloadDitaOt by tasks.registering(DitaOtDownloadTask::class) {
+    version("4.4")
+}
+
+val installDita2Graph by tasks.registering(DitaOtInstallPluginTask::class) {
+    dependsOn(downloadDitaOt)
+    ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+    plugins(listOf("org.dita.dita2graph"))   // local path, URL, or registry id
+    force(false)
+}
+
+val validateDocs by tasks.registering(DitaOtValidateTask::class) {
+    dependsOn(installDita2Graph)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+    input("docs/user-guide.ditamap")
+}
+
+val checkLinks by tasks.registering(DitaLinkCheckTask::class) {
+    dependsOn(validateDocs)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+    input("docs/user-guide.ditamap")
+}
+
+val buildKnowledgeGraph by tasks.registering(DitaOtTask::class) {
+    dependsOn(checkLinks)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+    input("docs/user-guide.ditamap")
+    output("build/dita2graph")
+    transtype("dita2graph")
+
+    properties {
+        "args.dita2graph.mcp" to "true"
+        "args.dita2graph.store" to "sqlite"
+        "args.dita2graph.depth" to "3"
+    }
+
+    progressStyle("DETAILED")
+}
+
+// Normal HTML5 publishing can run alongside graph generation
+val publishHtml by tasks.registering(DitaOtTask::class) {
+    dependsOn(checkLinks)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
+    input("docs/user-guide.ditamap")
+    output("build/docs/html")
+    transtype("html5")
+}
+
+tasks.register("publishAll") {
+    dependsOn(buildKnowledgeGraph, publishHtml)
+}
+```
+
+Run it (identical either way — the DSL choice only affects the build
+script, not the CLI):
+
+```bash
+./gradlew buildKnowledgeGraph
+# or, to validate, publish HTML, and build the graph together
+./gradlew publishAll
+```
+
+> The property-setter calls above (`version(...)`, `ditaOt(...)`,
+> `plugins(...)`, `progressStyle(...)`, ...) follow the one Kotlin DSL
+> pattern `dita-ot-gradle`'s own README documents (`ditaOt(file(...))`,
+> `input(...)`, `transtype(...)`, used in its "Kotlin DSL with
+> Properties" example). The task types not shown there
+> (`DitaOtDownloadTask`, `DitaOtInstallPluginTask`,
+> `DitaOtValidateTask`, `DitaLinkCheckTask`) are adapted from the
+> Groovy API below on the assumption their setters follow the same
+> convention — **unverified against the actual plugin**, since this
+> spec hasn't run a live Gradle build yet (§12). If a property turns
+> out to be a real Gradle `Property<T>` instead of a plain setter, the
+> assignment form (`version = "4.4"`) works too; check
+> `dita-ot-gradle`'s Kotlin API docs before relying on either.
+
+#### Groovy DSL equivalent (`build.gradle`)
 
 ```groovy
 plugins {
@@ -1030,31 +1129,6 @@ tasks.register('publishHtml', com.github.jyjeanne.DitaOtTask) {
 tasks.register('publishAll') {
     dependsOn buildKnowledgeGraph, publishHtml
 }
-```
-
-Kotlin DSL equivalent for the graph-generation task:
-
-```kotlin
-tasks.register<com.github.jyjeanne.DitaOtTask>("buildKnowledgeGraph") {
-    dependsOn("checkLinks")
-    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
-    input("docs/user-guide.ditamap")
-    output("build/dita2graph")
-    transtype("dita2graph")
-
-    properties {
-        "args.dita2graph.mcp" to "true"
-        "args.dita2graph.store" to "sqlite"
-    }
-}
-```
-
-Run it:
-
-```bash
-./gradlew buildKnowledgeGraph
-# or, to validate, publish HTML, and build the graph together
-./gradlew publishAll
 ```
 
 ### 8.3 CI recommendation
@@ -1226,7 +1300,7 @@ OKF v0.2:
 4. A Rust MCP server exposing the OKF graph via the resources/tools in
    section 5, following the `okf-mcp` JSON-RPC-over-stdio pattern
    (section 5.5).
-5. A `build.gradle` example (section 8) wiring `dita-ot-gradle` to
+5. A `build.gradle.kts` (Kotlin DSL) example (section 8) wiring `dita-ot-gradle` to
    download DITA-OT 4.4, install the plugin, validate content
    (`okf-validator` + `DitaOtValidateTask`/`DitaLinkCheckTask`), and run
    the `dita2graph` transtype as part of a normal CI build.
@@ -1374,7 +1448,7 @@ argument.
 **Goal:** wire the `dita-ot-gradle` tasks (§8) end-to-end and turn the
 testing strategy (§10) into an enforced CI pipeline.
 
-**Deliverables:** the reference `build.gradle`/Kotlin DSL from §8.2;
+**Deliverables:** the reference `build.gradle.kts` (Kotlin DSL, §8.2);
 green CI building the sample project on every push; the regression
 corpus and public/internal DITAVAL security test (§10) both wired in as
 required checks.
