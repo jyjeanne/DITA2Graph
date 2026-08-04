@@ -122,7 +122,7 @@ Once registered, an agent can call:
 | `explain_task(topicId)` | Title, description, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
 | `analyze_impact(topicId, depth?)` | Reverse, transitive traversal — everything that would be affected by changing this topic, with content excerpts (§13.1) |
-| `generate_summary(id)` | Title + description for a topic or map |
+| `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.

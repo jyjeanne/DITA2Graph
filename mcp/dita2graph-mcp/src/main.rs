@@ -536,6 +536,46 @@ mod tests {
     }
 
     #[test]
+    fn generate_summary_returns_title_and_description_for_a_topic_id() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "generate_summary", "arguments": { "topicId": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "Installing Product: Steps to install the product.");
+        assert_eq!(response["result"]["isError"], false);
+    }
+
+    /// `topicId`, matching every other tool in the set -- not `id`
+    /// (found live: a real Claude Code session calling this tool with
+    /// `topicId` first, the same way any agent would reasonably infer
+    /// this tool's shape from the rest of the set, hit exactly this
+    /// error twice before it happened to try `id`). The error message
+    /// itself needs to name the parameter this tool actually expects,
+    /// or a caller that DOES get this wrong has no way to self-correct
+    /// from the error alone.
+    #[test]
+    fn generate_summary_reports_a_tool_level_error_naming_the_correct_parameter() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "generate_summary", "arguments": { "id": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("topicId"), "{text}");
+        assert_eq!(response["result"]["isError"], true);
+    }
+
+    #[test]
     fn unknown_tool_reports_a_tool_level_error_not_a_protocol_error() {
         let dir = sample_bundle_root();
         let response = handle_message(

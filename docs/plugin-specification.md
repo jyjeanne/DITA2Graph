@@ -799,7 +799,7 @@ find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
 analyze_impact(topicId, depth?)
-generate_summary(id)
+generate_summary(topicId)
 validate_bundle()
 ```
 
@@ -1837,20 +1837,37 @@ sample bundle's server, correctly answers the §5.3 example interaction
 end to end (`search_topics` → related tasks), with tool calls visibly
 returning small, typed results rather than raw file contents.
 
-**Status:** mostly done. `mcp/dita2graph-mcp` implements the pattern from
-§5.5 with `search_topics`/`find_related_topics`/`explain_task`/
-`trace_dependencies`/`generate_summary`/`validate_bundle`; protocol and
-tool tests pass (`cargo test -p dita2graph-mcp`), and it was exercised
-manually end-to-end over real stdin/stdout JSON-RPC against the
-`sample-docs/` bundle, correctly answering a `search_topics`/
-`explain_task` sequence. `mcp-server.toml` emission (§5.4) is now wired
-up too: `dita2graph-core build --mcp true` writes it, and
-`dita2graph-mcp --config <path>` reads it back to resolve the bundle
-root — the server still also accepts the bundle root as a plain CLI
-argument directly, unchanged. **Not done:** the exit criterion
-specifically asks for a live Claude Code session registered against it,
-which hasn't been done in this session; and `resources/*` (§5.1) isn't
-implemented at all, only `tools/list`/`tools/call` (§5.2).
+**Status:** done, including the exit criterion. `mcp/dita2graph-mcp`
+implements the pattern from §5.5 with `search_topics`/
+`find_related_topics`/`explain_task`/`trace_dependencies`/
+`search_content`/`analyze_impact`/`generate_summary`/`validate_bundle`;
+protocol and tool tests pass (`cargo test -p dita2graph-mcp`).
+`mcp-server.toml` emission (§5.4) is wired up: `dita2graph-core build
+--mcp true` writes it, and `dita2graph-mcp --config <path>` reads it
+back to resolve the bundle root — the server still also accepts the
+bundle root as a plain CLI argument directly.
+
+**The exit criterion itself** was closed with a real headless Claude
+Code session (`claude -p --mcp-config ...`), registered against a
+bundle built from `dita-ot/docs` (the real third-party corpus §1's
+"found and fixed" notes above cover) — not a scripted stdio replay.
+Asked "How do I install a DITA-OT plugin?" with no other guidance, the
+session independently called `search_topics("plugin")`,
+`search_content` (refining its query across a couple of calls),
+`explain_task` on `plugins-installing`, `generate_summary`, and
+`find_related_topics`, then produced a correct answer (`dita install
+<plugin>`, the plugin registry at dita-ot.org/plugins, the
+`plugin.xml` descriptor, `dita uninstall`) grounded entirely in typed
+tool results, never raw file contents. That live run also caught a
+real bug no scripted test had: `generate_summary`'s schema took `id`
+while every other tool in the set takes `topicId` — the session called
+it with `topicId` first (the reasonable inference from the rest of the
+tool set) and got `missing required argument \`id\`` twice before
+trying `id`. Fixed (renamed to `topicId`, both the schema and the
+handler) and reverified with a second live session, which called it
+correctly on the first try. `resources/*` (§5.1) remains genuinely not
+implemented — see the Deferred note above — but nothing it would add
+has blocked this exit criterion or any real use so far.
 
 ### Phase 4 — Gradle integration + CI hardening (2 weeks)
 

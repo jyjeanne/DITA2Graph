@@ -194,6 +194,32 @@ that reproduces the exact two-step-write race, plus a test proving a
 bundle with no `rag/` at all still caches normally rather than being
 treated as permanently stale.
 
+**Live Claude Code exit criterion, closed for real.** `docs/plugin-
+specification.md` §12 had flagged this as the one Phase 3 exit
+criterion left unmet: "a live Claude Code session, registered against
+[a] bundle's server, correctly answers ... end to end." Closed with a
+real headless session (`claude -p --mcp-config ...`, a genuinely
+separate Claude Code process, not this one) registered against a
+bundle built from `dita-ot/docs` — asked "How do I install a DITA-OT
+plugin?" with no other guidance, it independently called
+`search_topics`, `search_content`, `explain_task`, `generate_summary`,
+and `find_related_topics`, and produced a correct, tool-grounded answer.
+
+That live run is also what caught the next bug, not a scripted test:
+**`generate_summary`'s parameter was named `id`, the lone holdout —
+every other tool in the set (`find_related_topics`, `explain_task`,
+`trace_dependencies`, `search_content`, `analyze_impact`) takes
+`topicId`.** The live session called it with `topicId` first (the
+reasonable inference from the rest of the tool set) and got `missing
+required argument \`id\`` twice before trying `id` — a real usability
+bug a hand-written test with the "correct" parameter name baked in
+would never have caught. Renamed to `topicId` (schema and handler);
+`generate_summary` also had zero test coverage before this, now has
+two (a correctness case and one asserting the error message names the
+right parameter, so a caller that still gets it wrong can self-correct
+from the error alone). Reverified with a second live session, which
+called it correctly on the first try.
+
 ### Phase 4 — Gradle integration + CI hardening
 
 `gradle-build/`'s Kotlin DSL harness runs the entire pipeline for real:

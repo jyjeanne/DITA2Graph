@@ -83,8 +83,8 @@ pub fn list() -> Vec<Value> {
             "description": "Title and description for a topic or map id.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"],
+                "properties": { "topicId": { "type": "string" } },
+                "required": ["topicId"],
             },
         }),
         json!({
@@ -425,8 +425,20 @@ fn excerpt(text: &str, max_chars: usize) -> String {
     result
 }
 
+/// `topicId`, not `id` -- every other tool in this set that takes a
+/// concept id (`find_related_topics`, `explain_task`,
+/// `trace_dependencies`, `search_content`'s optional narrowing param,
+/// `analyze_impact`) names it `topicId`; this one used to be the lone
+/// `id` holdout. Found live, not by inspection: a real Claude Code
+/// session driving this server over MCP called `generate_summary` with
+/// `topicId` first (matching the rest of the tool set, the same way any
+/// agent would reasonably infer this tool's shape from the others) and
+/// got `missing required argument \`id\`` twice before it happened to
+/// try `id` -- a real, reproducible usability bug caught by watching
+/// live tool use, not something a hand-written test with the "correct"
+/// parameter name baked in would ever catch.
 fn generate_summary(bundle: &BundleReader, arguments: &Value) -> Result<String> {
-    let id = arg_str(arguments, "id")?;
+    let id = arg_str(arguments, "topicId")?;
     let (frontmatter, _) = bundle.read_concept(id)?;
     let title = frontmatter
         .get("title")
