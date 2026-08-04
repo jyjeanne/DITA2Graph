@@ -840,7 +840,13 @@ even though it would sort second alphabetically. Each hit also carries
 a 200-character text excerpt of the matched chunk (newlines flattened)
 — found missing live: a real Claude Code session got titles/scores back
 with no way to see *what actually matched* short of a second round
-trip, and no other tool filled that gap either.
+trip, and no other tool filled that gap either. Capped at the top 15
+matches by score, with a truncation note (`"showing top N of M
+matches..."`) when there are more — also found live: adding excerpts to
+every hit meant an unscoped or broad query on a real, sizeable bundle
+could return 50+ KB of output, well past what a real MCP client renders
+inline. Narrowing with `topicId` is the way to see more of a specific
+area rather than raising the cap.
 
 `analyze_impact(topicId, depth?)` is a reverse graph traversal — every
 edge that points *at* `topicId`, followed transitively up to `depth`

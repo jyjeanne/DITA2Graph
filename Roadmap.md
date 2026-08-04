@@ -318,6 +318,36 @@ past it. Adds coverage for two tools that had none before this
 (`explain_task` had zero tests; `search_content` had none for its
 excerpt content specifically) — 39/39 `dita2graph-mcp` tests pass.
 
+**A final round, and a real regression the last fix introduced.**
+Two more live sessions against the real `dita-ot/docs` bundle asked
+genuine content questions ("what does the documentation say about
+migrating Ant builds", "what does it say about project files"). The
+first attempt used `--allowedTools` listing only the `dita2graph`
+tools, expecting that to sandbox the session to MCP-only — it doesn't;
+`--allowedTools` only auto-approves those tools, it doesn't block
+others, and the session fell back to `Bash`/`Read` against the actual
+DITA-OT source on disk for parts of both answers. Redone properly with
+`--disallowedTools` blocking `Bash`/`Read`/`Glob`/`Grep`/etc. to force
+genuine MCP-only usage, which is what a real hosted MCP client (no
+filesystem access at all) would look like anyway.
+
+That run surfaced a real regression from the excerpt fix directly
+above: an unscoped or broad `search_content` query, now with every hit
+carrying its own excerpt, returned 50+ KB of output on the real corpus
+— past what a real MCP client renders inline, the exact "small, typed
+results, not raw file dumps" failure this tool set exists to avoid.
+Fixed by capping `search_content` to its top 15 matches by score, with
+a note when results were truncated (`"showing top 15 of N matches --
+narrow with topicId..."`) so the cap is visible, not a silent drop.
+Verified directly: the same query that produced 50+ KB before now
+returns 4.4 KB, correctly reporting 183 total matches. Reverified live
+with the same two questions, MCP-only: both produced accurate, fully
+sourced answers — real quotes from the actual documentation content,
+correctly attributed to their topics, with the agent explicitly noting
+where its own excerpt was truncated rather than fabricating past it.
+Adds a dedicated test (20 matching topics, only 15 plus the truncation
+note come back) — 40/40 `dita2graph-mcp` tests pass.
+
 ### Phase 4 — Gradle integration + CI hardening
 
 `gradle-build/`'s Kotlin DSL harness runs the entire pipeline for real:

@@ -512,6 +512,54 @@ mod tests {
         assert!(!text.contains("Unrelated Topic"), "{text}");
     }
 
+    /// Found live: on a real, sizeable corpus, an unscoped or broad
+    /// query matching dozens of topics -- each now carrying its own
+    /// excerpt -- produced 50+ KB of output, past what a real MCP
+    /// client renders inline. 20 matching topics here, well past the
+    /// 15-result cap, proves both halves: only the top 15 (by score)
+    /// come back, and the response says so rather than silently
+    /// dropping the rest.
+    #[test]
+    fn search_content_caps_results_and_notes_the_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = (0..20)
+            .map(|i| {
+                NormalizedNode::Topic(NormalizedTopic {
+                    id: format!("topic-{i}"),
+                    topic_type: TopicType::Concept,
+                    title: format!("Topic {i}"),
+                    shortdesc: None,
+                    body: Some("Mentions widgets in its body.".into()),
+                    audience: vec![],
+                    product: vec![],
+                    keys: vec![],
+                    uicontrols: vec![],
+                    cmd_uicontrols: vec![],
+                    source_file: format!("topics/topic-{i}.dita"),
+                    links: vec![],
+                })
+            })
+            .collect();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "widgets" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let result_count = text.matches("Mentions widgets in its body.").count();
+        assert_eq!(result_count, 15, "{text}");
+        assert!(
+            text.contains("showing top 15 of 20 matches"),
+            "expected a truncation note: {text}"
+        );
+    }
+
     #[test]
     fn search_content_reports_no_rag_index_when_bundle_predates_rag() {
         let dir = sample_bundle_root(); // built without write_rag_index

@@ -54,7 +54,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "search_content",
-            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content. Pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -212,7 +212,23 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             None => format!("no content matched `{query}`"),
         });
     }
-    Ok(scored
+
+    // Capped at the top MAX_RESULTS matches -- found live: on a real,
+    // sizeable corpus, an unscoped or broad query matching dozens of
+    // topics, each now carrying its own excerpt (above), produced
+    // 50+ KB of output, well past what a real MCP client would render
+    // inline -- the exact "small, typed results, not raw file dumps"
+    // failure mode this whole tool set exists to avoid. The excerpts
+    // are what make results actually useful (see above), so the fix is
+    // capping result *count*, not dropping the excerpts back out.
+    // Narrowing scope with topicId is the documented way to see more of
+    // a specific area; a truncation note here tells the caller that
+    // option exists rather than silently hiding the rest.
+    const MAX_RESULTS: usize = 15;
+    let total = scored.len();
+    scored.truncate(MAX_RESULTS);
+
+    let mut out = scored
         .into_iter()
         .map(|(score, id, title, topic_type, text_excerpt)| {
             let mut line = format!("{title} ({topic_type}) [{id}] (score: {score})");
@@ -222,7 +238,13 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             line
         })
         .collect::<Vec<_>>()
-        .join("\n"))
+        .join("\n");
+    if total > MAX_RESULTS {
+        out.push_str(&format!(
+            "\n\n(showing top {MAX_RESULTS} of {total} matches -- narrow with topicId to see more of a specific area)"
+        ));
+    }
+    Ok(out)
 }
 
 /// Keyword-frequency relevance score across `terms` (already
