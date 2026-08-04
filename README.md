@@ -64,6 +64,25 @@ intelligent applications:
 
 ![DITA2Graph complete workflow](docs/images/dita2graph-workflow.png)
 
+### Conversion pipeline (UML activity diagram)
+
+```mermaid
+flowchart TD
+    A([Start: DITA Repository<br/>maps, topics, keys, conrefs]) --> B["DITA-OT preprocessing<br/>resolves maps, keys, conrefs"]
+    B --> C["Java ExtractTask<br/>parses resolved output into the normalized model"]
+    C --> D["Rust dita2graph-core<br/>normalize · infer relations · enrich"]
+    D --> E{"okf_validator +<br/>secret-leak scan"}
+    E -- fails --> F([Build fails<br/>errors reported]):::fail
+    E -- passes --> G["OKF bundle<br/>okf/ nodes, edges, metadata"]
+    D --> H["RAG content index<br/>rag/chunks.jsonl, rag/metadata.json"]
+    G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
+    H --> I
+    I --> J["MCP tools<br/>search_topics · search_content · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle"]
+    J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
+
+    classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
+```
+
 ## Toolchain requirements
 
 Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
