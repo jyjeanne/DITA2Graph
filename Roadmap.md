@@ -112,7 +112,19 @@ Licensing decided and shipped (dual MIT OR Apache-2.0, uniform across
 Rust/Java/Gradle). Secret-leakage detection is build-breaking, not a
 warning, and covers both `okf/` and `rag/`. The public/internal DITAVAL
 split is a demonstrated pattern with a real fixture topic, not a no-op.
-README and this roadmap document the actual, current state.
+README and this roadmap document the actual, current state. `v0.1.0` is
+tagged.
+
+**Release automation for future versions:** `.github/workflows/tag.yml`
+(`workflow_dispatch` from `main` — validates the requested version
+against `Cargo.toml` before tagging) triggers
+`.github/workflows/release.yml` on the resulting tag push: re-runs the
+unit-test suites as a release gate, builds the Rust binaries and the
+DITA-OT plugin zip (reusing `gradle-build/`'s own tested
+`zipDita2GraphPlugin`/`installDita2Graph` tasks to prove the released
+zip actually installs into a live DITA-OT 4.4, not just that `zip`
+produced a file), and publishes a GitHub Release with all three
+artifacts attached.
 
 ### Phase 6+ — Extended capabilities (post-MVP, ongoing)
 

@@ -1915,10 +1915,28 @@ answering queries in Claude Code, hitting no undocumented step.
   output directories. Verified against a live DITA-OT 4.4 run (both raw
   `dita --filter=` and Gradle's `filter(...)`) that the two resulting
   bundles differ by exactly that one file, and CI now gates on it.
-- Not started — README/quickstart polish toward the exit criterion above,
-  and the `v0.1.0` tag itself (deliberately held for explicit user
-  confirmation before tagging/releasing, per this project's own practice
-  of treating visible, hard-to-reverse actions as confirm-first).
+- Done — README/`Roadmap.md` reflect the current, real state (not
+  aspirational), and `v0.1.0` is tagged, from explicit user confirmation
+  (per this project's practice of treating visible, hard-to-reverse
+  actions as confirm-first) rather than tagged automatically. The tag
+  itself was pushed manually — the CLI session driving this work has
+  git remote access restricted to branch updates only, a session-level
+  policy distinct from GitHub's own permission model, so it couldn't
+  push the tag itself.
+- Done — release automation for future versions:
+  `.github/workflows/tag.yml` (`workflow_dispatch`, validates the
+  requested version against `Cargo.toml`'s workspace version before
+  tagging, since the GitHub Actions runner's own `GITHUB_TOKEN` isn't
+  subject to the session-level restriction above) and
+  `.github/workflows/release.yml` (triggered by the resulting tag push:
+  re-runs the fast unit-test suites as a release gate, builds the Rust
+  binaries and the DITA-OT plugin zip — reusing `gradle-build/`'s own
+  `zipDita2GraphPlugin`/`installDita2Graph` tasks to prove the exact
+  released zip installs into a live DITA-OT 4.4, the same verification
+  discipline as everywhere else in this project — and publishes a
+  GitHub Release with all three artifacts attached).
+- Not started — the exit criterion's external-tester walkthrough
+  hasn't literally been run by someone outside this project.
 
 ### Phase 6+ — Extended capabilities (post-MVP, ongoing)
 

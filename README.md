@@ -47,9 +47,13 @@ than hidden. Every relation in §4.3's taxonomy (`contains`/`requires`/
 (findings 13, 15), and all five `args.dita2graph.*` parameters,
 including `mcp`, are functionally wired end to end (finding 12).
 
-**Release status:** the MVP scope (§11) is functionally complete and
-`v0.1.0`-ready — see **[`Roadmap.md`](Roadmap.md)** for the phase-by-phase
-breakdown and what's left for Phase 6+.
+**Release status:** the MVP scope (§11) is functionally complete;
+`v0.1.0` is tagged — see **[`Roadmap.md`](Roadmap.md)** for the
+phase-by-phase breakdown and what's left for Phase 6+. Future releases
+are automated: run the **Tag release** workflow from the Actions tab
+(`workflow_dispatch`, takes a version number) to tag, which triggers
+**Release** to test, build, and publish a GitHub Release with the Rust
+binaries and the DITA-OT plugin zip attached.
 
 ## Toolchain requirements
 
