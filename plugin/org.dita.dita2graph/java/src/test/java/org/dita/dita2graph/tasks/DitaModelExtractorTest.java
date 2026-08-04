@@ -125,6 +125,41 @@ class DitaModelExtractorTest {
         assertTrue(section.links.isEmpty(), "section: " + section.links);
     }
 
+    @Test
+    void maxDepthLimitsHowManyLevelsOfContainmentAreCaptured(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", JOB_XML_NESTED);
+        write(tempDir, "user-guide.ditamap", MAP_XML_NESTED);
+        write(tempDir, "topics/chapter.dita", CHAPTER_XML_WITH_RELATED_LINKS);
+        write(tempDir, "topics/section.dita", SECTION_XML_WITH_RELATED_LINKS);
+        write(tempDir, "topics/grouped.dita", topicXml("grouped", "Grouped"));
+        write(tempDir, "topics/another.dita", topicXml("another", "Another"));
+
+        // depth=1: top-level topicrefs (chapter, grouped, another --
+        // topichead/topicgroup don't consume a level) are still
+        // captured, but "section" (nested one level inside "chapter",
+        // i.e. level 2) is not -- its topic node still exists (Pass 2
+        // extracts every resolved topic regardless), it just has no
+        // incoming contains edge.
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, 1, msg -> { }, msg -> { }).extract();
+        assertEquals(5, nodes.size(), "the topic itself is still extracted, just not contained");
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(3, map.links.size(), "map: " + map.links);
+        assertTrue(map.links.stream().anyMatch(l -> l.target.equals("chapter")));
+        assertTrue(map.links.stream().anyMatch(l -> l.target.equals("grouped")));
+        assertTrue(map.links.stream().anyMatch(l -> l.target.equals("another")));
+
+        TopicNode chapterAtDepth1 = findTopic(nodes, "chapter");
+        assertTrue(chapterAtDepth1.links.isEmpty(),
+                "section is one level too deep for depth=1: " + chapterAtDepth1.links);
+
+        // depth=2 (or "unlimited", the default) restores the nested edge.
+        List<Object> unlimitedNodes =
+                new DitaModelExtractor(tempDir.toFile(), false, 2, msg -> { }, msg -> { }).extract();
+        TopicNode chapterAtDepth2 = findTopic(unlimitedNodes, "chapter");
+        assertTrue(chapterAtDepth2.links.stream().anyMatch(l -> l.target.equals("section")));
+    }
+
     private static String topicXml(String id, String title) {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><topic id=\"" + id + "\">"
                 + "<title>" + title + "</title><body><p>" + title + " content.</p></body></topic>";

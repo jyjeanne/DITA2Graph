@@ -43,3 +43,13 @@ cross-references, only the map hierarchy itself.
 
 Exercised by `gradle-build/build.gradle.kts`'s `buildKnowledgeGraphNested`
 task, gated in CI (`.github/workflows/integration.yml`).
+
+Also doubles as the fixture for `args.dita2graph.depth` (§2.3): with
+`--args.dita2graph.depth=1`, the nested `chapter --contains--> section`
+edge is correctly omitted (level 2, one level past the limit) while
+`user-guide --contains--> {chapter, grouped, another}` (level 1) still
+appears, and `section` is still extracted as its own node — only its
+incoming `contains` edge is missing, the same graceful degradation as
+an unresolved topicref target. Confirmed directly against a live
+DITA-OT 4.4 run and gated in CI alongside the unlimited-depth check
+above.

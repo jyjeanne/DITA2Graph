@@ -256,7 +256,7 @@ Key parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `args.dita2graph.depth` | `unlimited` | Max relationship traversal depth captured in the graph. Accepted and logged, not yet functionally wired to `dita2graph-core`. Nested `topicref`/`topichead`/`topicgroup` map structures are walked now (§3.3, §12 Phase 1 status), so this has a well-defined meaning — limiting how many levels of the map hierarchy get walked — but wiring it is separate follow-up work, not yet done |
+| `args.dita2graph.depth` | `unlimited` | Max levels of *map containment* captured as `contains` edges — level 1 is a top-level `<topicref>`, level 2 is one nested inside that, and so on (`<topichead>`/`<topicgroup>`/an href-less `<topicref>` don't consume a level, since they never become a graph node themselves). **Implemented**: parsed and enforced entirely in `ExtractTask`/`DitaModelExtractor` (§3.3) — the Rust core never sees or needs it, since the map walk that builds `contains` edges happens before the normalized model is even handed off. A topic beyond the limit is still extracted as its own node; only its `contains` edge from its parent is omitted, the same graceful degradation as an unresolved topicref target |
 | `args.dita2graph.mcp` | `false` | Whether to also emit an MCP server bundle. Accepted and logged, not yet functionally wired — would write an `mcp/mcp-server.toml` that `dita2graph-mcp` doesn't read yet (it takes a bundle path directly, no `--config`, §5.4) |
 | `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1). **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --emit-graph-json`, verified against a live DITA-OT 4.4 run |
 | `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
@@ -1637,6 +1637,15 @@ cross-reference extraction (`DitaModelExtractor.isInsideRelatedLinks`).
 anchors, or sub-maps) remain out of scope, same "verify before you
 infer" discipline as `applies-to`/`related-to`/`generated-from`.
 
+With real nesting in place, `args.dita2graph.depth` (§2.3) stopped
+being an open question and became a direct follow-up: `ExtractTask`
+parses it (`"unlimited"` or a positive integer) and `DitaModelExtractor`
+enforces it during the same map walk, limiting how many levels of
+containment produce a `contains` edge — verified against
+`sample-docs-nested/` with `--args.dita2graph.depth=1`, which correctly
+omits the nested `chapter → section` edge while `section` itself is
+still extracted as a node, and gated in CI the same way.
+
 A later, separate finding (`docs/dev/phase-0-findings.md` finding 10):
 the `args.dita2graph.*` family's CLI overrides never actually worked
 against a real DITA-OT 4.4 run — `plugin.xml`'s `<transtype>` had no
@@ -1645,11 +1654,10 @@ any `--args.dita2graph.*=...` value outright, before `build.xml`'s Ant
 `<property>` defaults ever got a chance to matter. Fixed by adding
 `<param>` declarations (matching `org.dita.html5`'s own pattern for its
 `args.*` family); confirmed directly that CLI overrides for all five
-parameters now work. `args.dita2graph.emit-graph-json` was also wired
-end to end at the same time (§2.3) as the first of the three
-previously-unwired flags to become real, from CLI through `ExtractTask`
-to `dita2graph-core build --emit-graph-json`; `depth`/`mcp` remain
-accepted-and-logged only, for the reasons in §2.3's table.
+parameters now work. `args.dita2graph.emit-graph-json` was wired at the
+same time, and `args.dita2graph.depth` shortly after once nested map
+structures (above) gave it a well-defined meaning; only `mcp` remains
+accepted-and-logged only, for the reason in §2.3's table.
 
 ### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
 

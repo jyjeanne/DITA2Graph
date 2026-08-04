@@ -59,17 +59,35 @@ import java.util.function.Consumer;
  * #bodyElementTag}) is also captured as whitespace-normalized plain text
  * -- markup stripped, nothing else cleaned up -- for both the OKF
  * bundle's body content and the RAG index (§4.4, §13.1).
+ *
+ * <p>{@code maxDepth} (§2.3's {@code args.dita2graph.depth}) limits how
+ * many levels of *real* map containment the {@code contains} edges
+ * captured in the graph go -- level 1 is a top-level {@code topicref},
+ * level 2 is one nested inside that, and so on. {@code topichead}/{@code
+ * topicgroup}/an href-less {@code topicref} don't consume a level, since
+ * they never become a node in the graph themselves (this counts depth
+ * in the *resulting graph*, not raw XML nesting). A topic beyond the
+ * limit is still extracted as its own node (still a real topic DITA-OT
+ * resolved) -- only its {@code contains} edge from its parent is
+ * omitted, the same graceful-degradation choice as an unresolved
+ * topicref target (§2.5's {@code DITA2GRAPH010W}).
  */
 final class DitaModelExtractor {
 
     private final File tempDir;
     private final boolean includeDrafts;
+    private final int maxDepth;
     private final Consumer<String> warn;
     private final Consumer<String> info;
 
     DitaModelExtractor(File tempDir, boolean includeDrafts, Consumer<String> warn, Consumer<String> info) {
+        this(tempDir, includeDrafts, Integer.MAX_VALUE, warn, info);
+    }
+
+    DitaModelExtractor(File tempDir, boolean includeDrafts, int maxDepth, Consumer<String> warn, Consumer<String> info) {
         this.tempDir = tempDir;
         this.includeDrafts = includeDrafts;
+        this.maxDepth = maxDepth;
         this.warn = warn;
         this.info = info;
     }
@@ -141,7 +159,7 @@ final class DitaModelExtractor {
 
         List<RawContainment> containments = new ArrayList<>();
         Map<String, List<String>> keysByPath = new HashMap<>();
-        walkMapChildren(mapRoot, mapFile.path, null, containments, keysByPath);
+        walkMapChildren(mapRoot, mapFile.path, null, 1, containments, keysByPath);
 
         // Pass 2: parse every topic file for its own metadata, deferring
         // link resolution (target ids may not be known yet).
@@ -309,15 +327,16 @@ final class DitaModelExtractor {
      * {@code <topicref>}/{@code <topichead>}/{@code <topicgroup>},
      * collecting one {@link RawContainment} per {@code topicref} that
      * has an {@code href} and descending into every one of the three
-     * (arbitrarily deep) so nested map structures are captured, not just
-     * the top level. {@code containerPath} is the resolved path of the
-     * nearest containing real topic so far ({@code null} means "the map
-     * itself" -- true only before the first real topicref is seen);
-     * {@code topichead}/{@code topicgroup}/an href-less {@code
-     * topicref} have no topic of their own, so their children keep the
-     * *same* {@code containerPath}, skipping through them.
+     * (arbitrarily deep, up to {@link #maxDepth}) so nested map
+     * structures are captured, not just the top level. {@code
+     * containerPath} is the resolved path of the nearest containing
+     * real topic so far ({@code null} means "the map itself" -- true
+     * only before the first real topicref is seen); {@code
+     * topichead}/{@code topicgroup}/an href-less {@code topicref} have
+     * no topic of their own, so their children keep the *same* {@code
+     * containerPath} and {@code level}, skipping through them.
      */
-    private static void walkMapChildren(Element parent, String mapPath, String containerPath,
+    private void walkMapChildren(Element parent, String mapPath, String containerPath, int level,
             List<RawContainment> containments, Map<String, List<String>> keysByPath) {
         NodeList children = parent.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
@@ -330,7 +349,14 @@ final class DitaModelExtractor {
                 case "topicref": {
                     String href = child.getAttribute("href");
                     if (href.isEmpty()) {
-                        walkMapChildren(child, mapPath, containerPath, containments, keysByPath);
+                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        break;
+                    }
+                    if (level > maxDepth) {
+                        // Beyond args.dita2graph.depth (§2.3): the topic
+                        // itself is still extracted as a node (Pass 2
+                        // parses every resolved "dita" file regardless),
+                        // just without a contains edge from its parent.
                         break;
                     }
                     String targetPath = resolve(mapPath, href);
@@ -339,12 +365,12 @@ final class DitaModelExtractor {
                     if (!keys.isEmpty()) {
                         keysByPath.put(targetPath, List.of(keys.trim().split("\\s+")));
                     }
-                    walkMapChildren(child, mapPath, targetPath, containments, keysByPath);
+                    walkMapChildren(child, mapPath, targetPath, level + 1, containments, keysByPath);
                     break;
                 }
                 case "topichead":
                 case "topicgroup":
-                    walkMapChildren(child, mapPath, containerPath, containments, keysByPath);
+                    walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                     break;
                 default:
                     break;

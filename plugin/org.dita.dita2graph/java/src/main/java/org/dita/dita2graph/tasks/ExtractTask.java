@@ -20,17 +20,16 @@ import java.util.List;
  * Rust binary (§3.4) to write the OKF bundle.
  *
  * <p>{@code emitGraphJson} is forwarded to the Rust core's
- * {@code --emit-graph-json} flag. {@code depth}/{@code mcp} are still
- * only accepted and logged, not yet passed through: {@code depth}
- * ("max relationship traversal depth captured in the graph", §2.3)
- * has no well-defined meaning against today's flat, non-recursive
- * extraction (deep/nested {@code topicref}/{@code topichead}/{@code
- * topicgroup} aren't walked at all yet, {@link DitaModelExtractor});
- * {@code mcp} would write an {@code mcp/mcp-server.toml} that
- * {@code dita2graph-mcp} doesn't read yet (it takes a bundle path
- * argument directly, no {@code --config}, §5.4). Both are honest gaps,
- * not silently dropped -- wiring them needs those blockers resolved
- * first, not just a CLI flag added here.
+ * {@code --emit-graph-json} flag. {@code depth} ("max relationship
+ * traversal depth captured in the graph", §2.3) is parsed here and
+ * passed to {@link DitaModelExtractor}'s {@code maxDepth}, limiting how
+ * many levels of map containment its {@code contains} edges go, now
+ * that nested {@code topicref}/{@code topichead}/{@code topicgroup} are
+ * actually walked. {@code mcp} is still only accepted and logged, not
+ * yet passed through: it would write an {@code mcp/mcp-server.toml}
+ * that {@code dita2graph-mcp} doesn't read yet (it takes a bundle path
+ * argument directly, no {@code --config}, §5.4) -- an honest gap, not
+ * silently dropped, wiring it needs that blocker resolved first.
  */
 public class ExtractTask extends Task {
 
@@ -81,14 +80,17 @@ public class ExtractTask extends Task {
         }
 
         boolean drafts = Boolean.parseBoolean(includeDrafts);
+        int resolvedMaxDepth = parseMaxDepth(depth);
         log("dita2graph:extract: depth=" + depth + " mcp=" + mcp
-                + " (accepted, not yet wired to dita2graph-core, §12) includeDrafts=" + drafts, Project.MSG_VERBOSE);
+                + " (mcp accepted, not yet wired to dita2graph-core, §12) includeDrafts=" + drafts,
+                Project.MSG_VERBOSE);
 
         List<Object> nodes;
         try {
             DitaModelExtractor extractor = new DitaModelExtractor(
                     tempDirFile,
                     drafts,
+                    resolvedMaxDepth,
                     msg -> log(msg, Project.MSG_WARN),
                     msg -> log(msg, Project.MSG_INFO));
             nodes = extractor.extract();
@@ -174,6 +176,27 @@ public class ExtractTask extends Task {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BuildException("dita2graph:extract: interrupted while running dita2graph-core", e);
+        }
+    }
+
+    /**
+     * Parses {@code args.dita2graph.depth} (§2.3): {@code "unlimited"}
+     * (the default, and the value when the attribute is unset) or a
+     * positive integer.
+     */
+    private int parseMaxDepth(String value) throws BuildException {
+        if (value == null || value.isEmpty() || "unlimited".equals(value)) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < 1) {
+                throw new NumberFormatException("must be positive");
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new BuildException("dita2graph:extract: args.dita2graph.depth must be \"unlimited\" "
+                    + "or a positive integer, got \"" + value + "\"");
         }
     }
 

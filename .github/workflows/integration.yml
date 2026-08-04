@@ -183,6 +183,30 @@ jobs:
           print('nested map structure OK:', edges)
           "
 
+      - name: Confirm args.dita2graph.depth limits map containment (§2.3)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          rm -rf /tmp/depth-test
+          "$DITA_BIN" --input=sample-docs-nested/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/depth-test --args.dita2graph.depth=1
+          python3 -c "
+          import json
+          with open('/tmp/depth-test/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          # depth=1: top-level topicrefs still contained (topichead/
+          # topicgroup don't consume a level), but section (nested one
+          # level inside chapter) is not -- it's still a node, just with
+          # no incoming contains edge.
+          assert ('user-guide', 'chapter', 'contains') in edges, edges
+          assert ('chapter', 'section', 'contains') not in edges, edges
+          assert any(n['id'] == 'section' for n in graph['nodes']), 'section should still be extracted as a node'
+          print('depth=1 correctly omitted the nested edge:', edges)
+          "
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |
