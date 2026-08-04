@@ -96,6 +96,24 @@ they'd expose is already reachable through the tool set above, so this
 hasn't blocked real use, but the gap is real and documented, not
 assumed away.
 
+**Found and fixed for real-dataset usability (post-`v0.1.0`):** every
+`tools/call` was independently reopening and reparsing `graph.json`,
+plus (per whichever tool) `rag/chunks.jsonl` and each concept file it
+touched, from scratch — harmless against a small fixture, but a real
+agent session against a real, sizeable bundle issues many tool calls
+against the same data, and `search_topics` alone reads every topic's
+concept file on every call just to display titles. `BundleCache`
+(`mcp/dita2graph-mcp/src/bundle.rs`) now holds one `BundleReader` for
+the server's process lifetime, reopening only when `graph.json`'s mtime
+shows the bundle actually changed (a mid-session rebuild), and falling
+back to the last-loaded bundle rather than failing a call outright if
+that reopen catches the rebuild mid-write. `BundleReader` itself caches
+per-id concept reads and the parsed `rag/chunks.jsonl` for its own
+lifetime. Verified with unit tests proving the caches are real (editing
+a file on disk after the first read doesn't change what a second call
+on the same reader returns) and that reload/fallback behavior is
+correct, plus a live multi-call session against a DITA-OT-built bundle.
+
 ### Phase 4 — Gradle integration + CI hardening
 
 `gradle-build/`'s Kotlin DSL harness runs the entire pipeline for real:

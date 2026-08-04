@@ -24,6 +24,10 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let bundle_root = resolve_bundle_root(&args)?;
+    // One cache for the whole process lifetime, not reopened per
+    // request (bundle::BundleCache's own docs) -- a real agent session
+    // against a real, sizeable bundle issues many tool calls, not one.
+    let mut cache = bundle::BundleCache::new(bundle_root);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
                 continue;
             }
         };
-        if let Some(response) = handle_message(&request, &bundle_root) {
+        if let Some(response) = handle_message(&request, &mut cache) {
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
         }
@@ -111,7 +115,7 @@ fn fs_read_to_string(path: &Path) -> Result<String> {
 
 /// Dispatches one JSON-RPC message, returning the response to write (or
 /// `None` for notifications, which never get one).
-fn handle_message(request: &Value, bundle_root: &std::path::Path) -> Option<Value> {
+fn handle_message(request: &Value, cache: &mut bundle::BundleCache) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
 
@@ -130,7 +134,7 @@ fn handle_message(request: &Value, bundle_root: &std::path::Path) -> Option<Valu
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match tools::call(name, &arguments, bundle_root) {
+            match tools::call(name, &arguments, cache) {
                 Ok(text) => Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "isError": false,
@@ -328,7 +332,7 @@ mod tests {
     fn initialize_reports_capabilities() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         )
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
@@ -338,7 +342,7 @@ mod tests {
     fn notification_gets_no_response() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         );
         assert!(response.is_none());
     }
@@ -347,7 +351,7 @@ mod tests {
     fn tools_list_includes_the_dita_specific_tools() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         )
         .unwrap();
         let names: Vec<&str> = response["result"]["tools"]
@@ -371,7 +375,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_topics", "arguments": { "query": "installing" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -387,7 +391,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "find_related_topics", "arguments": { "topicId": "installing-product", "relation": "requires" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -402,7 +406,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -421,7 +425,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption keys" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -447,7 +451,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption", "topicId": "installing-product" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -465,7 +469,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "anything" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -481,7 +485,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -501,7 +505,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -524,7 +528,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "user-guide" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -539,7 +543,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "does_not_exist", "arguments": {} }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         assert_eq!(response["result"]["isError"], true);

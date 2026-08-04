@@ -3,7 +3,7 @@
 //! pattern in `docs/plugin-specification.md` §5.5 — swap `okf-query`'s
 //! generic graph/search calls for the DITA-relation-aware ones here.
 
-use crate::bundle::BundleReader;
+use crate::bundle::{BundleCache, BundleReader};
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -95,17 +95,25 @@ pub fn list() -> Vec<Value> {
     ]
 }
 
-pub fn call(name: &str, arguments: &Value, bundle_root: &Path) -> Result<String> {
-    let bundle = BundleReader::open(bundle_root)?;
+/// Dispatches one `tools/call`. `validate_bundle` is deliberately
+/// special-cased ahead of `cache.get()`: it's meant to check the
+/// bundle's live on-disk state (`§2.5`/`§6.4`/`§10`), not go through the
+/// cached `BundleReader` at all -- and unlike every other tool here, it
+/// doesn't need `graph.json` to exist to do its job, so it shouldn't
+/// fail just because a `dita2graph-core build` hasn't produced one yet.
+pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<String> {
+    if name == "validate_bundle" {
+        return validate_bundle(cache.root());
+    }
+    let bundle = cache.get()?;
     match name {
-        "search_topics" => search_topics(&bundle, arguments),
-        "search_content" => search_content(&bundle, arguments),
-        "find_related_topics" => find_related_topics(&bundle, arguments),
-        "explain_task" => explain_task(&bundle, arguments),
-        "trace_dependencies" => trace_dependencies(&bundle, arguments),
-        "analyze_impact" => analyze_impact(&bundle, arguments),
-        "generate_summary" => generate_summary(&bundle, arguments),
-        "validate_bundle" => validate_bundle(bundle_root),
+        "search_topics" => search_topics(bundle, arguments),
+        "search_content" => search_content(bundle, arguments),
+        "find_related_topics" => find_related_topics(bundle, arguments),
+        "explain_task" => explain_task(bundle, arguments),
+        "trace_dependencies" => trace_dependencies(bundle, arguments),
+        "analyze_impact" => analyze_impact(bundle, arguments),
+        "generate_summary" => generate_summary(bundle, arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
 }
