@@ -836,7 +836,11 @@ node-level-embeddings direction is explicitly *not* a committed design
 yet, while this is a self-contained improvement over the plain
 substring check it replaces, verified against a live bundle with a
 two-term query where the correct higher-scoring concept ranks first
-even though it would sort second alphabetically.
+even though it would sort second alphabetically. Each hit also carries
+a 200-character text excerpt of the matched chunk (newlines flattened)
+— found missing live: a real Claude Code session got titles/scores back
+with no way to see *what actually matched* short of a second round
+trip, and no other tool filled that gap either.
 
 `analyze_impact(topicId, depth?)` is a reverse graph traversal — every
 edge that points *at* `topicId`, followed transitively up to `depth`
@@ -851,6 +855,15 @@ server-generated summary (this tool doesn't call an LLM); the agent's
 own read of the excerpts is the actual summarization. Of §13.1's four
 pieces, only node-level embeddings remain design only — query routing,
 its ranking, and impact analysis (both halves) are all implemented.
+
+`explain_task(topicId)` also carries a 300-character excerpt of the
+topic's own body text (from `rag/chunks.jsonl`, the same clean-prose
+source `search_content`/`analyze_impact` excerpt from — not the
+concept file's *rendered* markdown, which has its own `# Summary`/
+`# Content` headings mixed in) alongside its title, description, and
+`requires`/`contains`/`applies-to` relations. Same live-session finding
+as above: title and a one-sentence `shortdesc` were the closest
+anything got to "what does this topic actually say" before this.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful

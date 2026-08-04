@@ -148,6 +148,8 @@ issues found this round — the fixes from the last several rounds (bare
 across a 14-call session, the deduplicated `generated-from`/`requires`
 edges) all held under a deliberately adversarial, high-fan-in query.
 
+### Phase 2 — Core engine: OKF bundle generation
+
 `dita2graph-core` normalizes the model, writes a conformant `okf/`
 bundle plus derived `graph.json`, and infers every relation in the
 taxonomy. `contains`/`requires`/`references` come straight from
@@ -281,6 +283,40 @@ same "don't guess" discipline as `relations.rs`'s `applies-to`
 inference. Reverified with a fourth live session, same question: the
 same wrong first guess now self-corrects in one call instead of two,
 confirmed directly in the transcript.
+
+**No tool exposed a topic's own body text — found asking a content
+question against this project's own `sample-docs/` test fixture, not
+the imported corpus.** A live session asked "what are the install
+steps, and what must be configured first" against the `sample-docs`
+bundle. Every tool it had access to fell short of the actual prose:
+`explain_task` fetched a topic's body via `read_concept` and threw it
+away (`let (frontmatter, _body) = ...`) — title, one-sentence
+`shortdesc`, and relations only; `search_content` returned title/id/
+score for every match but never *what* matched; `generate_summary` was
+title + description only. The only tool that surfaced any body text at
+all was `analyze_impact`'s excerpts — and only for topics *affected by*
+the one asked about, not the topic's own content. The session ended up
+explicitly stating the graph "doesn't expose the individual numbered
+install steps as separate indexed content" — accurate, and a real gap:
+"what does this topic actually say" had no first-class answer anywhere
+in the tool set.
+
+Fixed in two places, both reusing `rag/chunks.jsonl`'s already-cached,
+already-clean chunk text (the same source `analyze_impact` excerpts
+from) rather than re-deriving anything from a concept file's *rendered*
+markdown (which has its own `# Summary`/`# Content` headings mixed in,
+not clean prose worth excerpting directly): `search_content` now
+includes a 200-character excerpt under every hit, and `explain_task`
+now includes a 300-character excerpt of the topic's own body.
+Reverified live, same question, same bundle: `explain_task` on the
+install task now directly returns "Download the installer package...
+Run the installer... Verify the installation..." — the agent answered
+correctly in 6 tool calls (down from a much longer, `analyze_impact`-
+routed workaround the first time) and explicitly noted where its own
+300-character excerpt cut off mid-sentence, rather than fabricating
+past it. Adds coverage for two tools that had none before this
+(`explain_task` had zero tests; `search_content` had none for its
+excerpt content specifically) — 39/39 `dita2graph-mcp` tests pass.
 
 ### Phase 4 — Gradle integration + CI hardening
 

@@ -33,7 +33,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "explain_task",
-            "description": "Title, description, and requires/contains relations for a topic id.",
+            "description": "Title, description, a body excerpt, and requires/contains/applies-to relations for a topic id.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "topicId": { "type": "string" } },
@@ -172,7 +172,7 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
 
     let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
 
-    let mut scored: Vec<(i64, &str, &str, &str)> = Vec::new();
+    let mut scored: Vec<(i64, &str, &str, &str, Option<String>)> = Vec::new();
     for chunk in chunks.iter() {
         if let Some(allowed) = &allowed
             && !allowed.contains(&chunk.id)
@@ -188,6 +188,16 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                 chunk.id.as_str(),
                 chunk.title.as_str(),
                 chunk.topic_type.as_str(),
+                // Found live: a real Claude Code session searched for
+                // content, got back title/id/score for every hit, and
+                // still had no way to see *what actually matched*
+                // without a second round trip -- and no other tool
+                // fills that gap either (explain_task/generate_summary
+                // only ever surface title + shortdesc, never body).
+                // This is the one place `search_content` can answer
+                // "what does this topic actually say" directly, so it
+                // should.
+                chunk.text.as_deref().map(|t| excerpt(t, 200)),
             ));
         }
     }
@@ -204,8 +214,12 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     }
     Ok(scored
         .into_iter()
-        .map(|(score, id, title, topic_type)| {
-            format!("{title} ({topic_type}) [{id}] (score: {score})")
+        .map(|(score, id, title, topic_type, text_excerpt)| {
+            let mut line = format!("{title} ({topic_type}) [{id}] (score: {score})");
+            if let Some(text_excerpt) = text_excerpt {
+                line.push_str(&format!("\n  {text_excerpt}"));
+            }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n"))
@@ -296,6 +310,24 @@ fn explain_task(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         .unwrap_or("(no description)");
 
     let mut out = format!("Topic: {title} ({topic_id})\n{description}\n");
+    // Found live: a real Claude Code session asked what a task actually
+    // covers and had no way to see its own body text through this tool
+    // at all -- description above is just the shortdesc (one sentence,
+    // often absent), and `_body` from read_concept is the *rendered*
+    // concept file (its own "# Summary"/"# Content" headings included),
+    // not clean prose worth excerpting directly. `rag/chunks.jsonl`
+    // already holds this topic's clean body text -- the same source
+    // `search_content`/`analyze_impact` excerpt from -- so reuse that
+    // instead of re-deriving anything from the rendered markdown.
+    if let Some(chunk) = bundle
+        .rag_chunks()
+        .unwrap_or_default()
+        .iter()
+        .find(|c| c.id == topic_id)
+        && let Some(text) = chunk.text.as_deref()
+    {
+        out.push_str(&format!("\n{}\n", excerpt(text, 300)));
+    }
     for relation in ["requires", "contains", "applies-to"] {
         let edges = bundle.edges_from(topic_id, Some(relation));
         if !edges.is_empty() {

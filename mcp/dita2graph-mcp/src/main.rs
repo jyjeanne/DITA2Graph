@@ -417,6 +417,57 @@ mod tests {
         assert_eq!(response["result"]["isError"], false);
     }
 
+    /// Found live: a real Claude Code session asking a content question
+    /// got titles/scores back from search_content but no way to see
+    /// *what actually matched* without a second round trip -- and no
+    /// other tool filled that gap either. Each hit should carry a short
+    /// excerpt of the matched text now, not just its title/id/score.
+    #[test]
+    fn search_content_includes_a_text_excerpt_for_each_match() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "encryption" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("Set the encryption key before starting."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Encryption keys must be rotated regularly."),
+            "{text}"
+        );
+    }
+
+    /// Same gap, found in the same live session: explain_task fetched a
+    /// topic's body via read_concept and threw it away (`let
+    /// (frontmatter, _body) = ...`), leaving no tool at all that could
+    /// answer "what does this topic actually say" -- title and a
+    /// one-sentence shortdesc (often absent) was the closest anything
+    /// got.
+    #[test]
+    fn explain_task_includes_a_body_excerpt() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "explain_task", "arguments": { "topicId": "configuration" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("Set the encryption key before starting."),
+            "{text}"
+        );
+    }
+
     #[test]
     fn search_content_ranks_by_multi_term_frequency_not_alphabetically() {
         let dir = content_search_bundle_root();
