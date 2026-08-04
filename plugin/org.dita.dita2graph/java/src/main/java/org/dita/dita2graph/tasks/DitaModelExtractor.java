@@ -42,6 +42,12 @@ import java.util.function.Consumer;
  * {@code applies-to}, {@code related-to}, and {@code generated-from} all
  * require heuristic inference this extractor doesn't attempt (§3.3); they
  * never appear in its output.
+ *
+ * <p>Each topic's body element ({@code conbody}/{@code taskbody}/{@code
+ * refbody}/{@code glossdef}/generic {@code body}, per {@link
+ * #bodyElementTag}) is also captured as whitespace-normalized plain text
+ * -- markup stripped, nothing else cleaned up -- for both the OKF
+ * bundle's body content and the RAG index (§4.4, §13.1).
  */
 final class DitaModelExtractor {
 
@@ -140,6 +146,8 @@ final class DitaModelExtractor {
             topic.title = childText(root, "title", topic.id);
             String shortdesc = directChildText(root, "shortdesc");
             topic.shortdesc = shortdesc.isEmpty() ? null : shortdesc;
+            String body = bodyText(root, topic.topicType);
+            topic.body = body.isEmpty() ? null : body;
             topic.audience.addAll(splitAttr(root, "audience"));
             topic.product.addAll(splitAttr(root, "product"));
             topic.sourceFile = file.path;
@@ -305,6 +313,40 @@ final class DitaModelExtractor {
             }
         }
         return "";
+    }
+
+    /**
+     * The topic's body element's full text content, markup stripped and
+     * whitespace collapsed to single spaces -- the "cleaned text" input
+     * for the RAG index (docs/plugin-specification.md §13.1). {@code
+     * shortdesc} is a separate sibling element in DITA and is not
+     * included here (see {@link #directChildText} for that).
+     */
+    private static String bodyText(Element root, String topicType) {
+        String tag = bodyElementTag(topicType);
+        for (Element child : directChildren(root, tag)) {
+            String text = child.getTextContent();
+            if (text == null) {
+                return "";
+            }
+            return text.trim().replaceAll("\\s+", " ");
+        }
+        return "";
+    }
+
+    private static String bodyElementTag(String topicType) {
+        switch (topicType) {
+            case "concept":
+                return "conbody";
+            case "task":
+                return "taskbody";
+            case "reference":
+                return "refbody";
+            case "glossentry":
+                return "glossdef";
+            default:
+                return "body";
+        }
     }
 
     private static String mapTopicType(String rootTagName) {

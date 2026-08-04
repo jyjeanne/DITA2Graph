@@ -27,7 +27,7 @@ export DITA2GRAPH_CORE_BIN=/path/to/dita2graph-core   # or put it on PATH
 
 ./gradlew validateDocs checkLinks   # real, passes
 ./gradlew installDita2Graph          # real, installs the plugin (zips it first, see below)
-./gradlew buildKnowledgeGraph        # real, produces build/dita2graph/okf/ (unfiltered)
+./gradlew buildKnowledgeGraph        # real, produces build/dita2graph/{okf,rag}/ (unfiltered)
 
 ./gradlew buildKnowledgeGraphPublic    # real, filtered with ../sample-docs/public.ditaval
 ./gradlew buildKnowledgeGraphInternal  # real, filtered with ../sample-docs/internal.ditaval
@@ -54,7 +54,27 @@ This is §6.1's point made concrete: the filtering happens during
 DITA-OT preprocessing, before `dita2graph`'s extraction step ever runs
 on the excluded topic — a topic that was never extracted cannot leak
 through the MCP server, regardless of what the server-side query logic
-does or doesn't check.
+does or doesn't check. The same filtered normalized model feeds both
+outputs (§13.1), so `rag/chunks.jsonl` agrees with `okf/topics/` —
+`internal-notes` is absent from `dita2graph-public/rag/chunks.jsonl`
+the same way it's absent from `dita2graph-public/okf/topics/`, not just
+coincidentally similar.
+
+## `rag/` output (§13.1)
+
+`buildKnowledgeGraph` (and the public/internal variants above) also
+write `build/dita2graph/rag/chunks.jsonl` and `rag/metadata.json` —
+the first implemented piece of §13.1's "single pass, two correlated
+outputs" design direction: one enriched, plain-text record per topic
+(title, combined shortdesc+body text, tags, and an `okfNode` field that
+joins it back to the matching `okf/topics/*.md` concept), derived from
+the same in-memory normalized model `okf/` is written from, not a
+second parse of the DITA source. Nothing consumes this file yet — no
+search, no embeddings, no MCP tool — it exists so that layer has real
+data to work with when it's built. `dita2graph-core`'s secret scan
+(§6.4) covers `rag/` the same as `okf/`, run as a separate pass since
+`rag/`'s JSONL isn't OKF-conformant format so `okf-validator` doesn't
+apply to it.
 
 `build/` and `.gradle/` are gitignored — `build/dita-ot/dita-ot-4.4/` in
 particular is an ~80MB downloaded DITA-OT install, not something to

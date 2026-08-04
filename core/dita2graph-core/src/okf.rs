@@ -149,6 +149,13 @@ fn render_concept(
         body.push_str(desc);
         body.push_str("\n\n");
     }
+    if let NormalizedNode::Topic(t) = node
+        && let Some(content) = &t.body
+    {
+        body.push_str("# Content\n\n");
+        body.push_str(content);
+        body.push_str("\n\n");
+    }
 
     // Group links by relation, preserving first-seen order within a
     // relation, so each relation the node actually has gets exactly one
@@ -310,6 +317,9 @@ mod tests {
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
                 shortdesc: Some("Steps to install the product in a production environment.".into()),
+                body: Some(
+                    "Download the installer package for your platform. Run the installer.".into(),
+                ),
                 audience: vec!["admin".into()],
                 product: vec!["enterprise".into()],
                 keys: vec!["install-task".into()],
@@ -330,6 +340,7 @@ mod tests {
                 topic_type: TopicType::Topic,
                 title: "Installing Product: Prerequisites".into(),
                 shortdesc: None,
+                body: None,
                 audience: vec!["admin".into()],
                 product: vec!["enterprise".into()],
                 keys: vec![],
@@ -344,6 +355,7 @@ mod tests {
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
                 shortdesc: None,
+                body: Some("Configuration overview content goes here.".into()),
                 audience: vec![],
                 product: vec![],
                 keys: vec!["config-concept".into()],
@@ -391,6 +403,26 @@ mod tests {
         // `references` is a plain body link, not a frontmatter `relations` entry.
         assert!(!prereqs.contains("relations:"));
         assert!(prereqs.contains("# References"));
+    }
+
+    #[test]
+    fn topic_body_renders_under_a_content_heading() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at).unwrap();
+
+        let task = fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(task.contains("# Content\n\nDownload the installer package"));
+        // "# Content" must come after "# Summary" (shortdesc), before the relation sections.
+        assert!(task.find("# Summary").unwrap() < task.find("# Content").unwrap());
+        assert!(task.find("# Content").unwrap() < task.find("# Requires").unwrap());
+
+        let configuration =
+            fs::read_to_string(dir.path().join("okf/topics/configuration.md")).unwrap();
+        // No shortdesc on this topic, so no "# Summary" -- just "# Content".
+        assert!(!configuration.contains("# Summary"));
+        assert!(configuration.contains("# Content\n\nConfiguration overview content goes here."));
     }
 
     #[test]

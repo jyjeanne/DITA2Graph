@@ -16,15 +16,16 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | Component | Status |
 |---|---|
 | `docs/plugin-specification.md` | Design spec, complete |
-| `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `build`/`validate`/`query` CLI, passing tests |
+| `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set, passing tests |
 | `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested |
 | `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, and produces a real `okf_validator`-passing bundle |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
 | CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split and the broken-input negative test) against a live DITA-OT 4.4 |
-| Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
+| Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
+| Hybrid graph+RAG architecture (§13.1) | In progress: body-text extraction and `rag/chunks.jsonl` + `rag/metadata.json` shipped (same single pass as `okf/`); query routing, `analyze_impact`, and node-level embeddings are still design-only |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions (relation types, nested map structures, `depth`/
@@ -57,6 +58,10 @@ export DITA2GRAPH_CORE_BIN="$PWD/target/release/dita2graph-core"
 # Inspect the real, generated, validated bundle
 cat gradle-build/build/dita2graph/okf/topics/installing-product.md
 ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph/okf
+
+# Inspect the RAG content index written alongside it (§13.1, not yet
+# consumed by anything -- no search/embeddings/MCP tool built on it yet)
+cat gradle-build/build/dita2graph/rag/chunks.jsonl
 
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \

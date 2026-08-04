@@ -10,9 +10,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
-use dita2graph_core::{NormalizedNode, scan_bundle, write_bundle};
+use dita2graph_core::{NormalizedNode, scan_bundle, write_bundle, write_rag_index};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -30,7 +30,8 @@ enum Command {
         /// Path to a JSON file containing an array of normalized nodes.
         #[arg(long)]
         input: PathBuf,
-        /// Output directory; `okf/` and `graph.json` are written under it (§2.4).
+        /// Output directory; `okf/`, `graph.json`, and `rag/` (§13.1) are
+        /// written under it (§2.4).
         #[arg(long)]
         output: PathBuf,
         /// Backing store for the query index. `sqlite`/`rocksdb` are
@@ -97,7 +98,12 @@ fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode>
     let nodes: Vec<NormalizedNode> =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", input.display()))?;
 
-    let summary = write_bundle(&nodes, &output, Utc::now())?;
+    // Single pass over `nodes` feeding two correlated outputs (§13.1):
+    // the OKF graph and the RAG content index share the same in-memory
+    // normalized model rather than each re-deriving it.
+    let generated_at = Utc::now();
+
+    let summary = write_bundle(&nodes, &output, generated_at)?;
     println!(
         "wrote {} topics, {} maps, {} edges to {}",
         summary.topics_written,
@@ -106,16 +112,39 @@ fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode>
         output.join("okf").display()
     );
 
+    let rag_summary = write_rag_index(&nodes, &output, generated_at)?;
+    println!(
+        "wrote {} chunk(s) to {}",
+        rag_summary.chunks_written,
+        output.join("rag").display()
+    );
+
     // A bundle that fails validation isn't a complete build (§2.5): run
-    // the same check `validate` does before declaring success.
-    validate_and_report(&output.join("okf"))
+    // the same okf-validator + secret-scan checks `validate` does on
+    // okf/, plus a secret scan over rag/ -- okf-validator only knows
+    // okf/'s format, so rag/ gets its own scan, not folded into
+    // validate_and_report (§6.4, §13.1).
+    let okf_ok = validate_and_report(&output.join("okf"))?;
+    let rag_ok = scan_rag_and_report(&output.join("rag"))?;
+    Ok(if okf_ok && rag_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn run_validate(bundle: PathBuf) -> Result<ExitCode> {
-    validate_and_report(&bundle)
+    Ok(if validate_and_report(&bundle)? {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
-fn validate_and_report(bundle: &std::path::Path) -> Result<ExitCode> {
+/// Runs `okf-validator` conformance checks plus the secret scan (§6.4)
+/// against an `okf/` bundle directory, printing results as it goes.
+/// Returns whether the bundle passed both checks.
+fn validate_and_report(bundle: &Path) -> Result<bool> {
     let report = okf_validator::validate_bundle(bundle)
         .with_context(|| format!("validating {}", bundle.display()))?;
     for issue in &report.issues {
@@ -130,33 +159,52 @@ fn validate_and_report(bundle: &std::path::Path) -> Result<ExitCode> {
                 bundle.display()
             ),
         );
-        return Ok(ExitCode::from(1));
+        return Ok(false);
     }
 
     // A bundle can be format-valid per `okf-validator` and still leak a
     // secret into generated prose (§6.4); that's a build-breaking error,
     // not a warning, so it's checked separately and still fails the build.
-    let secret_findings = scan_bundle(bundle)?;
-    if !secret_findings.is_empty() {
-        for finding in &secret_findings {
-            println!(
-                "Error {}: possible secret leak ({})",
-                finding.file, finding.pattern
-            );
-        }
-        diagnostics::emit(
-            POSSIBLE_SECRET_LEAK,
-            &format!(
-                "{} file(s) in {} match a high-confidence secret pattern",
-                secret_findings.len(),
-                bundle.display()
-            ),
-        );
-        return Ok(ExitCode::from(1));
+    if !scan_and_report(bundle)? {
+        return Ok(false);
     }
 
     println!("bundle OK: {}", bundle.display());
-    Ok(ExitCode::SUCCESS)
+    Ok(true)
+}
+
+/// Runs just the secret scan (§6.4) against `dir`, printing results.
+/// Used both by `validate_and_report` (for `okf/`) and directly (for
+/// `rag/`, which isn't OKF-conformant format so `okf-validator` doesn't
+/// apply to it, §13.1).
+fn scan_and_report(dir: &Path) -> Result<bool> {
+    let findings = scan_bundle(dir)?;
+    if findings.is_empty() {
+        return Ok(true);
+    }
+    for finding in &findings {
+        println!(
+            "Error {}: possible secret leak ({})",
+            finding.file, finding.pattern
+        );
+    }
+    diagnostics::emit(
+        POSSIBLE_SECRET_LEAK,
+        &format!(
+            "{} file(s) in {} match a high-confidence secret pattern",
+            findings.len(),
+            dir.display()
+        ),
+    );
+    Ok(false)
+}
+
+fn scan_rag_and_report(rag_dir: &Path) -> Result<bool> {
+    let ok = scan_and_report(rag_dir)?;
+    if ok {
+        println!("rag index OK: {}", rag_dir.display());
+    }
+    Ok(ok)
 }
 
 fn run_query(output_dir: PathBuf, topic: String, relation: Option<String>) -> Result<ExitCode> {

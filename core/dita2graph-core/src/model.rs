@@ -71,6 +71,13 @@ pub struct NormalizedTopic {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortdesc: Option<String>,
+    /// Whitespace-normalized body text (`conbody`/`taskbody`/`refbody`/
+    /// `glossdef`/generic `body`), markup stripped -- the "cleaned text"
+    /// input for both the OKF bundle's body content and the RAG index
+    /// (§4.4, §13.1). Distinct from `shortdesc`, a separate sibling
+    /// element in DITA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]
@@ -192,6 +199,7 @@ mod tests {
             "topicType": "task",
             "title": "Installing Product",
             "shortdesc": "Steps to install the product in a production environment.",
+            "body": "Download the installer package for your platform. Run the installer.",
             "audience": ["admin"],
             "product": ["enterprise"],
             "keys": ["install-task"],
@@ -206,6 +214,30 @@ mod tests {
         assert_eq!(node.okf_type(), "Task");
         assert_eq!(node.links().len(), 2);
         assert_eq!(node.links()[0].relation.as_str(), "requires");
+        match &node {
+            NormalizedNode::Topic(t) => assert_eq!(
+                t.body.as_deref(),
+                Some("Download the installer package for your platform. Run the installer.")
+            ),
+            NormalizedNode::Map(_) => panic!("expected a topic"),
+        }
+    }
+
+    #[test]
+    fn body_is_optional_for_backward_compatibility_with_older_normalized_models() {
+        let json = r#"{
+            "type": "topic",
+            "id": "configuration",
+            "topicType": "concept",
+            "title": "Configuration Overview",
+            "sourceFile": "topics/configuration.dita",
+            "links": []
+        }"#;
+        let node: NormalizedNode = serde_json::from_str(json).unwrap();
+        match &node {
+            NormalizedNode::Topic(t) => assert_eq!(t.body, None),
+            NormalizedNode::Map(_) => panic!("expected a topic"),
+        }
     }
 
     #[test]

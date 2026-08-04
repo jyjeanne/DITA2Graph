@@ -47,6 +47,17 @@ jobs:
           grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
           grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
 
+      - name: Confirm the RAG index looks right (§13.1)
+        run: |
+          set -euo pipefail
+          test -f gradle-build/build/dita2graph/rag/chunks.jsonl
+          test -f gradle-build/build/dita2graph/rag/metadata.json
+          # one chunk line per topic in sample-docs/ (installing-product,
+          # configuration, installing-product-prereqs, internal-notes)
+          test "$(wc -l < gradle-build/build/dita2graph/rag/chunks.jsonl)" -eq 4
+          grep -q '"id":"installing-product"' gradle-build/build/dita2graph/rag/chunks.jsonl
+          grep -q '"okfNode":"topics/installing-product.md"' gradle-build/build/dita2graph/rag/chunks.jsonl
+
       - name: Build the public/internal DITAVAL split (§6.1)
         working-directory: gradle-build
         env:
@@ -61,6 +72,15 @@ jobs:
             exit 1
           fi
           test -f gradle-build/build/dita2graph-internal/okf/topics/internal-notes.md
+          # The DITAVAL split (§6.1) applies before dita2graph:extract ever
+          # runs on the excluded topic, so it's equally absent from the
+          # RAG index, not just the OKF graph (§13.1's "single pass, two
+          # correlated outputs" -- one filtered input, both outputs agree).
+          if grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-public/rag/chunks.jsonl; then
+            echo "::error::internal-notes leaked into the public DITAVAL rag/chunks.jsonl"
+            exit 1
+          fi
+          grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-internal/rag/chunks.jsonl
 
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build

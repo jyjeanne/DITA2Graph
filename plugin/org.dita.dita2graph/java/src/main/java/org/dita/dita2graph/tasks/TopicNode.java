@@ -17,6 +17,14 @@ final class TopicNode {
     String title = "";
     /** Nullable: omitted from JSON entirely when absent, matching the Rust side's Option&lt;String&gt;. */
     String shortdesc;
+    /**
+     * Whitespace-normalized text content of the topic's body element
+     * (concept/task/reference/glossentry/generic-topic, per {@link
+     * DitaModelExtractor#bodyElementTag}) -- markup stripped, no
+     * further cleanup. Nullable and omitted when empty, same convention
+     * as {@link #shortdesc}.
+     */
+    String body;
     final List<String> audience = new ArrayList<>();
     final List<String> product = new ArrayList<>();
     final List<String> keys = new ArrayList<>();
@@ -33,6 +41,9 @@ final class TopicNode {
         sb.append(",\"title\":").append(Json.string(title));
         if (shortdesc != null && !shortdesc.isEmpty()) {
             sb.append(",\"shortdesc\":").append(Json.string(shortdesc));
+        }
+        if (body != null && !body.isEmpty()) {
+            sb.append(",\"body\":").append(Json.string(body));
         }
         sb.append(",\"audience\":").append(Json.stringArray(audience));
         sb.append(",\"product\":").append(Json.stringArray(product));

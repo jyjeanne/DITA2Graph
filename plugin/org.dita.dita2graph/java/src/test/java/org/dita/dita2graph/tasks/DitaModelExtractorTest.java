@@ -51,6 +51,8 @@ class DitaModelExtractorTest {
         assertEquals("task", installingProduct.topicType);
         assertEquals("Installing Product", installingProduct.title);
         assertEquals("Steps to install the product in a production environment.", installingProduct.shortdesc);
+        assertTrue(installingProduct.body.contains("Download the installer."),
+                "taskbody text should be extracted: " + installingProduct.body);
         assertEquals(List.of("admin"), installingProduct.audience);
         assertEquals(List.of("enterprise"), installingProduct.product);
         assertEquals(List.of("install-task"), installingProduct.keys);
@@ -65,11 +67,17 @@ class DitaModelExtractorTest {
         assertEquals("concept", configuration.topicType);
         assertEquals(List.of("config-concept"), configuration.keys);
         assertNull(configuration.shortdesc);
+        assertEquals("Configuration overview content goes here.", configuration.body);
 
         TopicNode prereqs = findTopic(nodes, "installing-product-prereqs");
         assertEquals("topic", prereqs.topicType);
         assertTrue(prereqs.links.stream()
                 .anyMatch(l -> l.relation.equals("requires") && l.target.equals("configuration")));
+        // Generic <topic> uses <body> (not <conbody>/<taskbody>); getTextContent()
+        // includes the <xref> element's own link text inline with the
+        // surrounding prose, since DOM text extraction doesn't distinguish
+        // link text from plain text.
+        assertEquals("See Configuration Overview.", prereqs.body);
     }
 
     @Test

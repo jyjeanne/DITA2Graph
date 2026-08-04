@@ -277,6 +277,9 @@ output/
  │       └── configuration.md
  ├── graph.json              # Flattened nodes+edges view of the bundle, for tooling/debug
  ├── graph.db                  # SQLite/RocksDB index built from okf/ (fast MCP queries)
+ ├── rag/                     # Content-search artifact (§13.1), same extraction pass as okf/
+ │   ├── chunks.jsonl           # One enriched, plain-text record per topic
+ │   └── metadata.json
  └── mcp/
      ├── mcp-server.toml    # MCP server configuration bound to graph.db + okf/
      └── manifest.json      # Declared resources & tools (see section 5)
@@ -286,7 +289,10 @@ The **bundle** (`okf/`) is the portable, human-readable, git-diffable
 artifact — plain markdown, per the OKF v0.2 spec. `graph.db` is a derived,
 disposable index the MCP server queries for speed; it can always be
 rebuilt from `okf/` alone, the same relationship `okf-rs` itself uses
-between its bundle and its `okf-search`/`okf-graph` indices.
+between its bundle and its `okf-search`/`okf-graph` indices. `rag/` is
+likewise derived and rebuildable from the same normalized model as
+`okf/` (§13.1) — no MCP tool reads it yet, but `dita2graph-core build`
+writes it today.
 
 ### 2.5 Error handling, logging, and exit codes
 
@@ -399,6 +405,7 @@ versioned on its own.
   "topicType": "task",
   "title": "Installing Product",
   "shortdesc": "Steps to install the product in a production environment.",
+  "body": "Download the installer package for your platform. Run the installer and follow the on-screen prompts. Verify the installation by checking the product version.",
   "audience": ["admin"],
   "product": ["enterprise"],
   "keys": ["install-task"],
@@ -554,7 +561,8 @@ topic
 ### 4.4 OKF concept examples
 
 `okf/topics/installing-product.md`, generated from the task topic in
-§3.2:
+§3.2 — real output from a live DITA-OT 4.4 run against `sample-docs/`,
+not a hand-authored illustration:
 
 ````markdown
 ---
@@ -562,42 +570,66 @@ type: Task
 title: Installing Product
 description: Steps to install the product in a production environment.
 resource: topics/installing-product.dita
-tags: [admin, enterprise, install-task]
-sources:
-  - id: config-concept
-    resource: okf/topics/configuration.md
-    title: Configuration Overview
+tags:
+  - admin
+  - enterprise
+  - install-task
 generated:
   by: dita2graph-core/0.1.0
   at: 2026-08-03T00:00:00Z
 relations:
-  requires: [configuration]
-  contains: [installing-product-prereqs]
+  requires:
+    - configuration
 ---
 
 # Summary
 
 Steps to install the product in a production environment.
 
-# Requires
+# Content
 
-- [Configuration Overview](../topics/configuration.md)
+Installing Product: Prerequisites This task requires Configuration
+Overview to be completed first. Download the installer package for
+your platform. Run the installer and follow the on-screen prompts.
+Verify the installation by checking the product version.
 
-# Contains
+# References
 
 - [Installing Product: Prerequisites](installing-product-prereqs.md)
+
+# Requires
+
+- [Configuration Overview](configuration.md)
 ````
 
-`okf/topics/configuration.md`, a plain concept topic with no extension
-fields — still fully conformant per OKF spec §11, since `type` is the
-only required key:
+`# Content` is the topic's whitespace-normalized body text (`body` in
+§3.2's wire format) — note DITA-OT's own preprocessing fills the empty
+`<xref href="installing-product-prereqs.dita" type="topic"/>` in
+`<prereq>` with the target's title before extraction ever sees it,
+which is why "Installing Product: Prerequisites" reads as if it were
+glued onto the next sentence with no punctuation between them: it's
+resolved link text, indistinguishable from surrounding prose once
+`getTextContent()` flattens markup (§13.1). Markup-stripped and
+whitespace-collapsed, nothing else cleaned up.
+
+`okf/topics/configuration.md`, a plain concept topic with no
+`shortdesc` — still fully conformant per OKF spec §11, since `type` is
+the only required key, and `generated`/`resource` are the only ones
+this writer always fills in:
 
 ````markdown
 ---
 type: Concept
 title: Configuration Overview
 resource: topics/configuration.dita
+tags:
+  - config-concept
+generated:
+  by: dita2graph-core/0.1.0
+  at: 2026-08-03T00:00:00Z
 ---
+
+# Content
 
 Configuration overview content goes here.
 ````
@@ -1663,8 +1695,9 @@ answering queries in Claude Code, hitting no undocumented step.
 
 Not a single phase but a backlog, picked up item-by-item based on
 adopter feedback after v0.1.0 — see §13 for the current list: a unified
-graph + RAG architecture with graph-narrowed hybrid retrieval and an
-`analyze_impact` tool (§13.1, the largest single item), plus multi-map
+graph + RAG architecture (§13.1, the largest single item, and already
+partly underway — `rag/chunks.jsonl` extraction is done, graph-narrowed
+hybrid retrieval and an `analyze_impact` tool are not), plus multi-map
 federation, graph diffing, HTTP transport + auth, and a rendered-output
 annotation variant (§13.2). Each item gets its own scoped follow-up
 spec/issue and its own exit criterion before work starts, rather than
@@ -1686,33 +1719,65 @@ to live in the same repository, derive both from the **same single pass**
 over the normalized model (§3.2) that already visits every topic once,
 and use the graph to narrow *before* any content search runs, not after.
 
-**Single-pass extraction, two correlated outputs.** The core engine's
-model walk (§3.3) is already a full traversal of topics, maps, `keyref`,
-`conref`, links, images, and metadata; today it emits `okf/` alone. A
-`rag/` sibling output, populated from the same pass rather than a second
-independent parse of the DITA source, keeps the two representations from
-drifting apart:
+**Single-pass extraction, two correlated outputs — implemented.** The
+core engine's model walk (§3.3) is a full traversal of topics, maps,
+`keyref`, `conref`, links, and metadata (not yet images, §12 tracks
+that gap separately); each topic's body element
+(`conbody`/`taskbody`/`refbody`/`glossdef`/generic `body`) is captured
+as whitespace-normalized plain text by the Java extraction layer (§2.2)
+and carried through the normalized model (§3.2) as `NormalizedTopic.body`.
+`dita2graph-core build` writes `rag/` from the same in-memory `nodes`
+slice `okf/` is rendered from — not a second parse of the DITA source:
 
 ```
 output/
  ├── okf/                # existing (§2.4, §4) — the graph, source of truth
- ├── rag/                 # not implemented: a content-search artifact
+ ├── rag/                 # implemented (§12 Phase 6+): a content-search artifact
  │   ├── chunks.jsonl        # one enriched record per topic
  │   └── metadata.json
  └── mcp/                 # existing (§2.4, §5)
 ```
 
-Each `chunks.jsonl` record would carry the same identity as its OKF
-concept so the two stay joinable, e.g.:
+Each `chunks.jsonl` record carries the same identity as its OKF concept
+so the two stay joinable — `okfNode` is the join key, resolvable to
+`okf/<okfNode>`:
 
 ```json
-{"id": "installing-product.dita", "title": "Installing Product", "body": "...", "product": ["enterprise"], "audience": ["admin"], "okf_node": "topics/installing-product.md"}
+{"id": "installing-product", "title": "Installing Product", "text": "Steps to install the product in a production environment.\n\n...", "topicType": "Task", "audience": ["admin"], "product": ["enterprise"], "okfNode": "topics/installing-product.md"}
 ```
 
-**Query routing in the MCP server.** §5.2's tools already split
-structural lookups (`find_related_topics`, `trace_dependencies`) from
-content questions; a hybrid architecture would route a question to one,
-the other, or both, depending on its shape:
+`text` combines `shortdesc` and body text when both are present (a
+shortdesc is often a one-line abstract that doesn't repeat in the body,
+§4.4) and is omitted entirely when a topic has neither. Maps aren't
+chunked — a ditamap has no body prose of its own, only `contains`
+relations already in the OKF graph. The secret scan (§6.4) covers
+`rag/` the same as `okf/`, as a separate pass since `okf-validator`
+only understands OKF's markdown+frontmatter format, not raw JSONL. The
+DITAVAL split (§6.1) applies before extraction ever runs on an excluded
+topic, so `rag/chunks.jsonl` is filtered consistently with `okf/` —
+confirmed directly, not just assumed, by comparing
+`buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` output.
+
+One rough edge, found while verifying against a live DITA-OT 4.4 run
+rather than assumed away: DITA-OT's preprocessing fills in empty
+`<xref>` elements (e.g. `<xref href="other.dita" type="topic"/>`, no
+link text of its own) with the target topic's title during resolution,
+and `getTextContent()`-based extraction can't distinguish that
+auto-filled link text from surrounding prose — so a body can read
+"Installing Product: Prerequisites This task requires Configuration
+Overview to be completed first." with no punctuation between the
+inlined title and the next sentence. Still whitespace-normalized,
+markup-stripped text as documented, just occasionally run-on; a
+sentence-boundary heuristic is future cleanup, not correctness this
+implementation currently claims.
+
+**Query routing in the MCP server — not yet implemented.** §5.2's tools
+already split structural lookups (`find_related_topics`,
+`trace_dependencies`) from content questions; a hybrid architecture
+would route a question to one, the other, or both, depending on its
+shape. `rag/chunks.jsonl` exists now (above), but no MCP tool reads it
+yet — `search_topics` still only matches against `okf/`'s titles/ids
+(§5.2):
 
 - Purely structural ("what topics use this key?") → graph traversal
   only, using §5.2's existing tools as-is.
@@ -1750,11 +1815,14 @@ direction under consideration, not a committed design — §10 would need
 its own regression corpus and success criteria for this before it's
 scoped as a phase.
 
-**Status:** design only. No code exists for `rag/`, `analyze_impact`, or
-node-level embeddings; `search_topics` remains text matching (§5.2).
-Tracked as Phase 6+ backlog items (§12), each to get its own scoped
-follow-up spec and exit criterion before work starts, per this section's
-existing convention.
+**Status:** `rag/`'s extraction and output side is implemented and
+verified (`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`,
+covered by unit tests and a live DITA-OT 4.4 run including the DITAVAL
+split). Query routing, `analyze_impact`, and node-level embeddings
+remain design only — no MCP tool consumes `rag/` yet, and
+`search_topics` is still plain text matching (§5.2). Each remaining
+piece is tracked as its own Phase 6+ backlog item (§12), to get its own
+scoped follow-up spec and exit criterion before work starts.
 
 ### 13.2 Other extended capabilities
 
