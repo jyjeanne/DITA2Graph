@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE map PUBLIC "-//OASIS//DTD DITA Map//EN" "map.dtd">
+<map id="user-guide">
+  <title>User Guide</title>
+  <topicref href="topics/chapter.dita">
+    <topicref href="topics/section.dita"/>
+  </topicref>
+  <topichead navtitle="Group">
+    <topicref href="topics/grouped.dita"/>
+  </topichead>
+  <topicgroup>
+    <topicref href="topics/another.dita"/>
+  </topicgroup>
+</map>

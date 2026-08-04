@@ -22,6 +22,7 @@ plugins {
 val ditaOtVersion = "4.4"
 val sampleDocs = layout.projectDirectory.dir("../sample-docs")
 val sampleDocsInvalid = layout.projectDirectory.dir("../sample-docs-invalid")
+val sampleDocsNested = layout.projectDirectory.dir("../sample-docs-nested")
 val pluginDir = layout.projectDirectory.dir("../plugin/org.dita.dita2graph")
 
 val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
@@ -106,6 +107,20 @@ val buildKnowledgeGraphInternal = tasks.register<DitaOtTask>("buildKnowledgeGrap
     input(sampleDocs.file("user-guide.ditamap"))
     filter(sampleDocs.file("internal.ditaval"))
     output(layout.buildDirectory.dir("dita2graph-internal").get().asFile.path)
+    transtype("dita2graph")
+    progressStyle("DETAILED")
+}
+
+// Nested topicref/topichead/topicgroup map-structure guarantee (§3.3,
+// §12 Phase 1 status) and the related-links exclusion it depends on --
+// see ../sample-docs-nested/README.md for what a genuinely nested map
+// makes DITA-OT auto-generate that a flat map like sample-docs/ never
+// does, and why that would silently corrupt the graph without the fix.
+val buildKnowledgeGraphNested = tasks.register<DitaOtTask>("buildKnowledgeGraphNested") {
+    dependsOn(installDita2Graph)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocsNested.file("user-guide.ditamap"))
+    output(layout.buildDirectory.dir("dita2graph-nested").get().asFile.path)
     transtype("dita2graph")
     progressStyle("DETAILED")
 }

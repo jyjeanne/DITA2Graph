@@ -154,6 +154,35 @@ jobs:
           assert text.index('installing-product]') < text.index('installing-product-prereqs]'), 'expected installing-product ranked first'
           "
 
+      - name: Build the nested map structure fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphNested --no-daemon
+
+      - name: Confirm nested topicref/topichead/topicgroup produce the real hierarchy (§3.3)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-nested/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          expected = {
+              ('user-guide', 'chapter', 'contains'),
+              ('user-guide', 'grouped', 'contains'),   # skips through <topichead>
+              ('user-guide', 'another', 'contains'),   # skips through <topicgroup>
+              ('chapter', 'section', 'contains'),      # nested topicref -> chapter, not the map
+          }
+          assert edges == expected, f'edges did not match: {edges}'
+          # DITA-OT auto-generates <related-links> parent/child navigation
+          # for this genuinely nested map (confirmed directly,
+          # sample-docs-nested/README.md); it must never show up as a
+          # references/requires edge duplicating the containment above.
+          assert not any(r in ('references', 'requires') for _, _, r in edges), f'spurious edge: {edges}'
+          print('nested map structure OK:', edges)
+          "
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |

@@ -81,6 +81,56 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void nestedTopicrefTopicheadAndTopicgroupAreAllWalked(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", JOB_XML_NESTED);
+        write(tempDir, "user-guide.ditamap", MAP_XML_NESTED);
+        // chapter/section carry a <related-links> block shaped exactly
+        // like DITA-OT 4.4's own auto-generated parent/child navigation
+        // links for a nested topicref (confirmed against a live run,
+        // not guessed) -- proves isInsideRelatedLinks actually excludes
+        // them, not just that the fixture never had any to begin with.
+        write(tempDir, "topics/chapter.dita", CHAPTER_XML_WITH_RELATED_LINKS);
+        write(tempDir, "topics/section.dita", SECTION_XML_WITH_RELATED_LINKS);
+        write(tempDir, "topics/grouped.dita", topicXml("grouped", "Grouped"));
+        write(tempDir, "topics/another.dita", topicXml("another", "Another"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+        assertTrue(warnings.isEmpty(), "no unresolved links expected: " + warnings);
+        assertEquals(5, nodes.size(), "map + 4 topics");
+
+        MapNode map = (MapNode) nodes.get(0);
+        // "chapter" is a top-level topicref -> map contains it directly.
+        // "grouped" is nested inside a <topichead> (no topic of its own)
+        // and "another" inside a <topicgroup> -- both skip through to
+        // the map, same as if the wrapper weren't there. "section" is
+        // NOT here: it's nested *inside* the "chapter" topicref, so it
+        // belongs to chapter, not the map.
+        assertEquals(3, map.links.size(), "map: " + map.links);
+        assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("chapter")));
+        assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("grouped")));
+        assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("another")));
+
+        TopicNode chapter = findTopic(nodes, "chapter");
+        // Exactly the "contains" edge to section -- NOT also a spurious
+        // "references"/"requires" edge from the <related-links> child
+        // link DITA-OT generated for the same relationship.
+        assertEquals(1, chapter.links.size(), "chapter: " + chapter.links);
+        assertTrue(chapter.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("section")));
+
+        TopicNode section = findTopic(nodes, "section");
+        // section's own <related-links> has a "parent" link back to
+        // chapter; that must not become a references/requires edge
+        // either -- section has no real links of its own here.
+        assertTrue(section.links.isEmpty(), "section: " + section.links);
+    }
+
+    private static String topicXml(String id, String title) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><topic id=\"" + id + "\">"
+                + "<title>" + title + "</title><body><p>" + title + " content.</p></body></topic>";
+    }
+
+    @Test
     void draftTopicsAreExcludedUnlessIncludeDraftsIsSet(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_DRAFT_ONLY);
         write(tempDir, "user-guide.ditamap", MAP_XML_DRAFT_ONLY);
@@ -151,6 +201,59 @@ class DitaModelExtractorTest {
             + "<steps><step><cmd>Download the installer.</cmd></step></steps>"
             + "</taskbody>"
             + "</task>";
+
+    // Shaped after a real DITA-OT 4.4 resolved topic for a nested
+    // topicref parent (captured directly from a live run against a
+    // scratch project, not guessed): a <related-links> block with a
+    // "child" role link to the nested topicref's target.
+    private static final String CHAPTER_XML_WITH_RELATED_LINKS = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<topic id=\"chapter\"><title>Chapter</title>"
+            + "<body><p>Chapter content.</p></body>"
+            + "<related-links><linkpool mapkeyref=\"user-guide\"><linkpool>"
+            + "<link format=\"dita\" href=\"section.dita\" role=\"child\" scope=\"local\" type=\"topic\">"
+            + "<linktext>Section</linktext></link>"
+            + "</linkpool></linkpool></related-links>"
+            + "</topic>";
+
+    // Same shape, "parent" role, for the nested child's own resolved output.
+    private static final String SECTION_XML_WITH_RELATED_LINKS = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<topic id=\"section\"><title>Section</title>"
+            + "<body><p>Section content.</p></body>"
+            + "<related-links><linkpool mapkeyref=\"user-guide\">"
+            + "<link format=\"dita\" href=\"chapter.dita\" role=\"parent\" scope=\"local\" type=\"topic\">"
+            + "<linktext>Chapter</linktext></link>"
+            + "</linkpool></related-links>"
+            + "</topic>";
+
+    private static final String JOB_XML_NESTED = "<?xml version=\"1.0\" ?><job><files>"
+            + "<file src=\"file:/src/topics/chapter.dita\" uri=\"topics/chapter.dita\" "
+            + "path=\"topics/chapter.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/topics/section.dita\" uri=\"topics/section.dita\" "
+            + "path=\"topics/section.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/topics/grouped.dita\" uri=\"topics/grouped.dita\" "
+            + "path=\"topics/grouped.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/topics/another.dita\" uri=\"topics/another.dita\" "
+            + "path=\"topics/another.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+            + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+            + "</files></job>";
+
+    // A top-level <topicref> ("chapter") with a nested child <topicref>
+    // ("section") -- section should attach to chapter, not the map. A
+    // <topichead> and a <topicgroup>, each wrapping one <topicref> with
+    // no topic of their own -- both should skip through to the map.
+    private static final String MAP_XML_NESTED = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<map id=\"user-guide\"><title>User Guide</title>"
+            + "<topicref href=\"topics/chapter.dita\">"
+            + "<topicref href=\"topics/section.dita\"/>"
+            + "</topicref>"
+            + "<topichead navtitle=\"Group\">"
+            + "<topicref href=\"topics/grouped.dita\"/>"
+            + "</topichead>"
+            + "<topicgroup>"
+            + "<topicref href=\"topics/another.dita\"/>"
+            + "</topicgroup>"
+            + "</map>";
 
     private static final String JOB_XML_DRAFT_ONLY = "<?xml version=\"1.0\" ?><job><files>"
             + "<file src=\"file:/src/topics/configuration.dita\" uri=\"topics/configuration.dita\" "

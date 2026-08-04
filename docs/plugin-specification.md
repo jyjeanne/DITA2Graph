@@ -256,7 +256,7 @@ Key parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `args.dita2graph.depth` | `unlimited` | Max relationship traversal depth captured in the graph. Accepted and logged, not yet functionally wired to `dita2graph-core` — has no well-defined meaning against today's flat, non-recursive extraction (§3.3, deep/nested `topicref`/`topichead`/`topicgroup` aren't walked yet) |
+| `args.dita2graph.depth` | `unlimited` | Max relationship traversal depth captured in the graph. Accepted and logged, not yet functionally wired to `dita2graph-core`. Nested `topicref`/`topichead`/`topicgroup` map structures are walked now (§3.3, §12 Phase 1 status), so this has a well-defined meaning — limiting how many levels of the map hierarchy get walked — but wiring it is separate follow-up work, not yet done |
 | `args.dita2graph.mcp` | `false` | Whether to also emit an MCP server bundle. Accepted and logged, not yet functionally wired — would write an `mcp/mcp-server.toml` that `dita2graph-mcp` doesn't read yet (it takes a bundle path directly, no `--config`, §5.4) |
 | `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1). **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --emit-graph-json`, verified against a live DITA-OT 4.4 run |
 | `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
@@ -1607,14 +1607,35 @@ Extraction itself is intentionally narrow, not a shortcut taken
 silently: `contains` (map `<topicref>`), `requires` and `references`
 (`<xref>`/`<link>`, gated on `keyref`) are the only relations derived,
 leaving `applies-to`/`related-to`/`generated-from` as documented future
-inference work (§3.3, §13) rather than guessed. Nested
-`topicref`/`topichead`/`topicgroup` map structures aren't walked either
-(direct `<topicref>` children only) — a real gap for maps deeper than
-`sample-docs/`'s flat one. The exit criterion's "validates against a
-JSON Schema" is met in spirit but not literally: there's no standalone
-`.schema.json` file, only the Rust side's `serde` struct definitions
-acting as the de facto (and enforced) schema — worth formalizing if a
-second producer of the normalized model ever appears.
+inference work (§3.3, §13) rather than guessed. The exit criterion's
+"validates against a JSON Schema" is met in spirit but not literally:
+there's no standalone `.schema.json` file, only the Rust side's `serde`
+struct definitions acting as the de facto (and enforced) schema — worth
+formalizing if a second producer of the normalized model ever appears.
+
+**Nested map structures — since closed** (`docs/dev/phase-0-findings.md`
+finding 11): `topicref`/`topichead`/`topicgroup` nesting, at any depth,
+is now walked recursively, not just the map's direct `<topicref>`
+children. A `contains` edge attaches to the *nearest real containing
+topic* — a nested `<topicref>` belongs to its parent `<topicref>`'s own
+target, matching real DITA map semantics (a chapter containing
+sections, not a flat list); `<topichead>`/`<topicgroup>`/a bare
+href-less `<topicref>` have no topic of their own, so `contains` skips
+through them to the nearest real container. Verified against a live
+DITA-OT 4.4 run with a genuinely nested map
+(`sample-docs-nested/`, gated in CI's `buildKnowledgeGraphNested`), and
+that same run surfaced a second, more consequential bug the nesting fix
+made necessary: DITA-OT auto-generates a `<related-links>` block of
+parent/child navigation `<link>` elements for any topic that's part of
+a real map hierarchy — content `sample-docs/`'s flat map never
+triggers — and the extractor's `<xref>`/`<link>` scanner was picking
+these up as authored `references`/`requires` edges, duplicating (and
+mislabeling) the containment relationship as author-declared content.
+Fixed by excluding anything inside `<related-links>` from
+cross-reference extraction (`DitaModelExtractor.isInsideRelatedLinks`).
+`<navref>`/`<anchorref>`/`<mapref>` (map composition via navigation,
+anchors, or sub-maps) remain out of scope, same "verify before you
+infer" discipline as `applies-to`/`related-to`/`generated-from`.
 
 A later, separate finding (`docs/dev/phase-0-findings.md` finding 10):
 the `args.dita2graph.*` family's CLI overrides never actually worked

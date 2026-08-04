@@ -31,14 +31,25 @@ import java.util.function.Consumer;
  * you infer" discipline this codebase has followed throughout (see
  * {@code docs/dev/phase-0-findings.md}):
  * <ul>
- *   <li>a map's direct {@code <topicref>} children -&gt; {@code contains}
- *       (deep/nested {@code topicref}, {@code topichead}, and
- *       {@code topicgroup} are not walked -- future work, §13);
+ *   <li>every {@code <topicref>} anywhere in the map tree (nested
+ *       arbitrarily deep, through {@code <topicref>}, {@code
+ *       <topichead>}, and {@code <topicgroup>} ancestors) with a
+ *       resolvable {@code href} -&gt; {@code contains}, attached to its
+ *       *nearest* containing topic (the map itself for a top-level
+ *       {@code topicref}, or the closest ancestor {@code topicref}'s own
+ *       target topic for a nested one) -- {@code topichead}/{@code
+ *       topicgroup} and a bare, href-less {@code topicref} have no
+ *       topic of their own, so a {@code contains} edge skips through
+ *       them to the nearest real container, per real DITA map
+ *       semantics (a chapter containing sections, not a flat list);
  *   <li>an {@code <xref>}/{@code <link>} carrying a {@code keyref}
  *       attribute -&gt; {@code requires} (using a key rather than a bare
  *       {@code href} signals an intentional, named dependency);
  *   <li>any other local {@code <xref>}/{@code <link>} -&gt; {@code references}.
  * </ul>
+ * {@code <navref>/<anchorref>/<mapref>} (map composition via a separate
+ * navigation/anchor/sub-map mechanism, not simple containment) are
+ * deliberately out of scope, same discipline.
  * {@code applies-to}, {@code related-to}, and {@code generated-from} all
  * require heuristic inference this extractor doesn't attempt (§3.3); they
  * never appear in its output.
@@ -83,6 +94,25 @@ final class DitaModelExtractor {
         }
     }
 
+    /**
+     * One "container contains this topicref's target" record collected
+     * while recursively walking the map tree ({@link #walkMapChildren}),
+     * resolved into a real {@code contains} edge once every topic's id
+     * is known. {@code containerPath} is {@code null} for a top-level
+     * {@code topicref} (the map itself is the container); otherwise it's
+     * the resolved path of the nearest ancestor {@code topicref}'s own
+     * target topic.
+     */
+    private static final class RawContainment {
+        final String containerPath;
+        final String targetPath;
+
+        RawContainment(String containerPath, String targetPath) {
+            this.containerPath = containerPath;
+            this.targetPath = targetPath;
+        }
+    }
+
     List<Object> extract() throws Exception {
         File jobXml = findJobXml();
         List<JobFile> files = parseJobXml(jobXml);
@@ -109,21 +139,9 @@ final class DitaModelExtractor {
         mapNode.title = childText(mapRoot, "title", mapNode.id);
         mapNode.sourceFile = mapFile.path;
 
-        List<String> topicrefHrefs = new ArrayList<>();
-        for (Element topicref : directChildren(mapRoot, "topicref")) {
-            String href = topicref.getAttribute("href");
-            if (!href.isEmpty()) {
-                topicrefHrefs.add(resolve(mapFile.path, href));
-            }
-        }
+        List<RawContainment> containments = new ArrayList<>();
         Map<String, List<String>> keysByPath = new HashMap<>();
-        for (Element topicref : directChildren(mapRoot, "topicref")) {
-            String href = topicref.getAttribute("href");
-            String keys = topicref.getAttribute("keys");
-            if (!href.isEmpty() && !keys.isEmpty()) {
-                keysByPath.put(resolve(mapFile.path, href), List.of(keys.trim().split("\\s+")));
-            }
-        }
+        walkMapChildren(mapRoot, mapFile.path, null, containments, keysByPath);
 
         // Pass 2: parse every topic file for its own metadata, deferring
         // link resolution (target ids may not be known yet).
@@ -158,6 +176,21 @@ final class DitaModelExtractor {
             }
 
             for (Element xref : descendants(root, "xref", "link")) {
+                if (isInsideRelatedLinks(xref)) {
+                    // DITA-OT's own preprocessing auto-generates a
+                    // <related-links> block of parent/child/sibling
+                    // navigation <link> elements from the map hierarchy
+                    // itself (confirmed directly: a genuinely nested
+                    // topicref/topichead/topicgroup map produces these
+                    // in every affected topic's resolved output, even
+                    // though sample-docs/'s flat map never triggers it
+                    // at all). These are auto-generated TOC navigation,
+                    // not authored cross-references -- extracting them
+                    // as "references"/"requires" edges would mislabel
+                    // generated navigation as author intent, the exact
+                    // "guessy" inference this extractor otherwise avoids.
+                    continue;
+                }
                 String href = xref.getAttribute("href");
                 String scope = xref.getAttribute("scope");
                 if (href.isEmpty() || href.startsWith("http://") || href.startsWith("https://")
@@ -177,13 +210,25 @@ final class DitaModelExtractor {
 
         // Pass 3: resolve map topicrefs and topic-body links now that
         // every topic's real id is known.
-        for (String targetPath : topicrefHrefs) {
-            TopicNode target = topicsByPath.get(targetPath);
+        for (RawContainment containment : containments) {
+            TopicNode target = topicsByPath.get(containment.targetPath);
             if (target == null) {
-                warn.accept("DITA2GRAPH010W: unresolved topicref target " + targetPath + " in " + mapFile.path);
+                warn.accept("DITA2GRAPH010W: unresolved topicref target " + containment.targetPath
+                        + " in " + mapFile.path);
                 continue;
             }
-            mapNode.links.add(new Link("contains", target.id));
+            if (containment.containerPath == null) {
+                mapNode.links.add(new Link("contains", target.id));
+                continue;
+            }
+            TopicNode container = topicsByPath.get(containment.containerPath);
+            if (container == null) {
+                // The containing topicref's own target never resolved;
+                // already warned about that when its own RawContainment
+                // record was processed above.
+                continue;
+            }
+            container.links.add(new Link("contains", target.id));
         }
         for (RawLink raw : rawLinks) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
@@ -257,6 +302,66 @@ final class DitaModelExtractor {
 
     private Document parse(DocumentBuilder builder, File file) throws Exception {
         return builder.parse(file);
+    }
+
+    /**
+     * Recursively walks {@code parent}'s element children looking for
+     * {@code <topicref>}/{@code <topichead>}/{@code <topicgroup>},
+     * collecting one {@link RawContainment} per {@code topicref} that
+     * has an {@code href} and descending into every one of the three
+     * (arbitrarily deep) so nested map structures are captured, not just
+     * the top level. {@code containerPath} is the resolved path of the
+     * nearest containing real topic so far ({@code null} means "the map
+     * itself" -- true only before the first real topicref is seen);
+     * {@code topichead}/{@code topicgroup}/an href-less {@code
+     * topicref} have no topic of their own, so their children keep the
+     * *same* {@code containerPath}, skipping through them.
+     */
+    private static void walkMapChildren(Element parent, String mapPath, String containerPath,
+            List<RawContainment> containments, Map<String, List<String>> keysByPath) {
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node n = children.item(i);
+            if (n.getNodeType() != Node.ELEMENT_NODE) {
+                continue;
+            }
+            Element child = (Element) n;
+            switch (child.getNodeName()) {
+                case "topicref": {
+                    String href = child.getAttribute("href");
+                    if (href.isEmpty()) {
+                        walkMapChildren(child, mapPath, containerPath, containments, keysByPath);
+                        break;
+                    }
+                    String targetPath = resolve(mapPath, href);
+                    containments.add(new RawContainment(containerPath, targetPath));
+                    String keys = child.getAttribute("keys");
+                    if (!keys.isEmpty()) {
+                        keysByPath.put(targetPath, List.of(keys.trim().split("\\s+")));
+                    }
+                    walkMapChildren(child, mapPath, targetPath, containments, keysByPath);
+                    break;
+                }
+                case "topichead":
+                case "topicgroup":
+                    walkMapChildren(child, mapPath, containerPath, containments, keysByPath);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    /** Whether {@code el} has a {@code <related-links>} ancestor (see the caller). */
+    private static boolean isInsideRelatedLinks(Element el) {
+        Node n = el.getParentNode();
+        while (n != null) {
+            if (n.getNodeType() == Node.ELEMENT_NODE && "related-links".equals(n.getNodeName())) {
+                return true;
+            }
+            n = n.getParentNode();
+        }
+        return false;
     }
 
     private static List<Element> directChildren(Element parent, String tagName) {

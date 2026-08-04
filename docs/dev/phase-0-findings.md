@@ -450,3 +450,60 @@ What's left for a complete MVP (§11), now that extraction itself works:
     output). This unblocks CLI-level configurability for all five
     `args.dita2graph.*` parameters, not just the one that prompted the
     investigation.
+
+11. **Does walking nested `topicref`/`topichead`/`topicgroup` map
+    structures (§3.3's long-standing "direct children only" gap) work
+    the same way it does for a flat map, once actually tried against a
+    real nested project?** No — building a scratch fixture
+    (`user-guide.ditamap` with a `<topicref>` nested inside another
+    `<topicref>`, one wrapped in `<topichead>`, one wrapped in
+    `<topicgroup>`, later checked in as `sample-docs-nested/`) and
+    running it through a live DITA-OT 4.4 surfaced a second, more
+    consequential bug the recursive walk made visible for the first
+    time: DITA-OT auto-generates a `<related-links>` block of
+    parent/child navigation `<link>` elements in every topic that's
+    part of a genuine map hierarchy. Confirmed directly by inspecting
+    the resolved temp directory (`--clean.temp=no`) — `chapter.dita`'s
+    resolved output gained a `<related-links><linkpool
+    mapkeyref="user-guide">...<link href="section.dita" role="child"
+    .../>` block neither the source nor `sample-docs/`'s flat map ever
+    produces (confirmed the negative too: re-ran `sample-docs/` through
+    `html5` with `--clean.temp=no` and grepped for `related-links` —
+    zero matches, since a flat map has no parent/child hierarchy for
+    DITA-OT to generate navigation for).
+
+    `DitaModelExtractor`'s existing `<xref>`/`<link>` scanner
+    (`descendants(root, "xref", "link")`, unchanged since Phase 1) has
+    no way to distinguish DITA-OT's auto-generated navigation from
+    authored content — it picked up the `related-links` block's `<link
+    role="child">`/`<link role="parent">` elements as if they were
+    ordinary cross-references, producing a spurious
+    `chapter --references--> section` / `section --references-->
+    chapter` pair in the graph that duplicated (and mislabeled as
+    author-declared) the exact containment relationship the new
+    recursive walk was already capturing correctly as `contains`. This
+    was a real, pre-existing extraction bug -- not introduced by the
+    nesting work -- that had simply never been triggered before, since
+    `sample-docs/`'s flat map never has a parent/child hierarchy for
+    DITA-OT to generate `related-links` for in the first place.
+
+    **Result:** two fixes landed together, verified against the same
+    live nested fixture before/after:
+    - `DitaModelExtractor.walkMapChildren` recursively walks
+      `topicref`/`topichead`/`topicgroup` at any depth, attaching each
+      `contains` edge to the nearest real containing topic (or the map,
+      for a top-level `topicref`) — `topichead`/`topicgroup`/a bare
+      href-less `topicref` have no topic of their own, so `contains`
+      skips through them.
+    - `DitaModelExtractor.isInsideRelatedLinks` excludes any
+      `<xref>`/`<link>` found inside a `<related-links>` ancestor from
+      cross-reference extraction entirely.
+
+    `graph.json` for the nested fixture went from a mix of correct
+    `contains` edges plus two spurious `references` edges (before the
+    second fix) to exactly `user-guide --contains--> {chapter, grouped,
+    another}` and `chapter --contains--> section`, nothing else —
+    checked in as `sample-docs-nested/` and gated in CI
+    (`buildKnowledgeGraphNested` in `gradle-build/build.gradle.kts`,
+    `.github/workflows/integration.yml`) the same way `validateBrokenDoc`
+    gates the Phase 4 validation claim.
