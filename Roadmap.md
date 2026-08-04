@@ -131,7 +131,22 @@ naive same-file link-uniqueness check.) Reverified live: `trace_
 dependencies` on the topic that used to show 13 duplicated entries now
 returns exactly 5, matching the deduplicated bundle file exactly.
 
-### Phase 2 — Core engine: OKF bundle generation
+**A fifth live MCP session, clean.** One more `claude -p` run against a
+freshly rebuilt `dita-ot/docs` bundle, deliberately aimed at the
+heaviest fan-in case in the corpus: "Conref file for tasks" (topic id
+`ID` — the un-disambiguated first occurrence from the duplicate-id fix,
+Task type, the real conref source dozens of other task topics pull
+shared content from). 14 tool calls — `search_topics`,
+`find_related_topics`, `analyze_impact`, `explain_task`,
+`generate_summary`, `search_content`, `trace_dependencies` — zero
+errors, zero parameter mistakes. `analyze_impact` correctly reverse-
+traversed 45 direct edges (44 `generated-from` + 1 `contains`,
+confirmed directly against `graph.json`) out to 91 transitively
+affected concepts, and produced an accurate blast-radius answer. No new
+issues found this round — the fixes from the last several rounds (bare
+`ID` as a topic id, `topicId` naming, `BundleCache` holding correctly
+across a 14-call session, the deduplicated `generated-from`/`requires`
+edges) all held under a deliberately adversarial, high-fan-in query.
 
 `dita2graph-core` normalizes the model, writes a conformant `okf/`
 bundle plus derived `graph.json`, and infers every relation in the
