@@ -273,9 +273,11 @@ Status of the Phase 0 exit criteria from `docs/plugin-specification.md`
   `dita2graph-core`. Relation extraction is deliberately limited to what
   DITA markup states directly — map `<topicref>` → `contains`;
   `<xref>`/`<link>` → `requires` if it carries a `keyref`, `references`
-  otherwise — leaving `applies-to`/`related-to`/`generated-from` as
-  documented future inference work (§3.3, §13), not half-implemented
-  guesses. Covered by a real unit test (`DitaModelExtractorTest`, fixture
+  otherwise — leaving `applies-to`/`generated-from` as documented future
+  inference work (§3.3, §13), not half-implemented guesses. `related-to`
+  is inferred separately, downstream in the Rust core rather than the
+  Java extraction layer, from `product` metadata the extractor already
+  captures (finding 13). Covered by a real unit test (`DitaModelExtractorTest`, fixture
   shaped like actual DITA-OT 4.4 output) and by the end-to-end run below.
 - `gradle-build/`: the real Gradle 9.6.1 project (Kotlin DSL, wrapper
   pinned) used for findings 5–7 — see its own README for how to re-run
@@ -323,13 +325,18 @@ normalized model ever shows up; not blocking today's single producer
 
 What's left for a complete MVP (§11), now that extraction itself works:
 
-- Relation extraction is intentionally narrow (`contains`/`requires`/
+- ~~Relation extraction is intentionally narrow (`contains`/`requires`/
   `references` only, per finding 6/7's result) — `applies-to`,
   `related-to`, and `generated-from` remain unimplemented, as documented
-  in `DitaModelExtractor`'s own class docs and §3.3/§13.
-- Nested `topicref`/`topichead`/`topicgroup` map structures aren't walked
+  in `DitaModelExtractor`'s own class docs and §3.3/§13.~~
+  `related-to` closed (finding 13): inferred in the Rust core from
+  shared `product` values. `applies-to`/`generated-from` remain
+  unimplemented — both need extraction work (`<uicontrol>` scanning;
+  `conref`/`conkeyref` provenance) that doesn't exist yet.
+- ~~Nested `topicref`/`topichead`/`topicgroup` map structures aren't walked
   (only direct children of `<map>`) — fine for `sample-docs/`'s flat
-  structure, a real gap for deeper maps.
+  structure, a real gap for deeper maps.~~ Closed (finding 11): walked
+  recursively at any depth now, verified against `sample-docs-nested/`.
 - ~~`depth`/`mcp`/`emit-graph-json` are read and logged by `ExtractTask`
   but not yet functionally wired to `dita2graph-core`'s CLI, which only
   accepts `--input`/`--output`/`--store` today.~~ Closed (findings 10,
@@ -560,3 +567,56 @@ What's left for a complete MVP (§11), now that extraction itself works:
     §5.1's Resources remain undocumented-as-real until they're actually
     implemented (or removed from the spec) — see the honesty note added
     to §5.1 itself rather than leaving it only here.
+
+13. **Of the three relation-inference gaps §3.3 has always left open
+    (`applies-to`/`related-to`/`generated-from`, findings 6/7 and the
+    Phase 1 backlog), which one is actually buildable with data already
+    flowing through the pipeline, and which two would require guessing?**
+    Checked what `NormalizedTopic` already carries before writing any
+    inference code: `product: Vec<String>` (`core/dita2graph-core/src/
+    model.rs`) has been extracted by `DitaModelExtractor` since Phase 1
+    (`splitAttr(root, "product")`) and flows through to the Rust core
+    unused. §3.3's own example — "topics sharing a `product` value are
+    `related-to`" — is directly computable from that field alone, no new
+    extraction needed. The other two aren't: `applies-to` ("a task's
+    `<cmd>` referencing a `<uicontrol>` defined in a reference topic")
+    needs `<uicontrol>` element scanning the Java extractor has never
+    done, and `generated-from` ("topic → conref/conkeyref source
+    fragment") needs `conref`/`conkeyref` provenance tracking that's
+    also never been implemented (§3.3's "Deduplication & reuse tracking"
+    responsibility, separately still open). Building either without that
+    underlying data would mean guessing at a heuristic on partial
+    information — exactly what this project's "verify before you infer"
+    discipline (§13, findings 6/7) exists to avoid — so both stay
+    documented gaps rather than half-implemented guesses.
+
+    Implemented `related-to` inference (`core/dita2graph-core/src/
+    relations.rs`, new `infer_related_to`, called from `run_build` in
+    `main.rs` before the bundle/graph.json/rag index are written): every
+    pair of topics sharing at least one `product` value gets a
+    bidirectional `related-to` edge (matching how a real
+    `<related-links role="related">` block would appear in both
+    topics), unless the pair is already connected by some other relation
+    in either direction — an explicit or previously-inferred edge is
+    always a stronger signal than "shares a product tag", so it takes
+    precedence and the inference is skipped rather than stacked on top.
+    The rule is deterministic (share a value or don't), so it never
+    needed `DITA2GRAPH010W`'s ambiguity handling — that stays reserved
+    for `applies-to`'s genuinely ambiguous case once implemented.
+
+    **Result:** 8 new unit tests (`relations.rs`) cover the shared/
+    unshared/no-product cases, the already-connected skip in both
+    directions, multiple shared values, and transitive pairwise linking
+    across three topics sharing a product. Verified live against a real
+    DITA-OT 4.4 run: added `product="enterprise"` to `sample-docs/
+    topics/internal-notes.dita` (already `product="enterprise"` on
+    `installing-product.dita`, and the two aren't connected by any
+    author-declared relation) and rebuilt both the public and internal
+    DITAVAL profiles. The internal build's `graph.json` gained exactly
+    the two expected edges (`internal-notes --related-to-->
+    installing-product` and the reverse), rendered correctly in both
+    topics' `# Related` body sections and `okf-validator`-clean; the
+    public build — which never sees `internal-notes` at all, per the
+    DITAVAL filter (finding 9) — correctly inferred zero `related-to`
+    edges, not just omitted the excluded topic's own. Both checks are
+    gated in CI (`.github/workflows/integration.yml`).

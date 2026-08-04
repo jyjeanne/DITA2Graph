@@ -130,6 +130,33 @@ jobs:
           fi
           grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-internal/rag/chunks.jsonl
 
+      - name: Confirm related-to relation inference from shared product values (§3.3, §4.3)
+        run: |
+          set -euo pipefail
+          # sample-docs/topics/internal-notes.dita and installing-product.dita
+          # both carry product="enterprise" and have no other author-declared
+          # relation between them, so the internal build (the only one with
+          # both topics present) must infer a related-to edge both ways.
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph-internal/graph.json') as f:
+              edges = json.load(f)['edges']
+          pairs = {(e['from'], e['to']) for e in edges if e['relation'] == 'related-to'}
+          expected = {('internal-notes', 'installing-product'), ('installing-product', 'internal-notes')}
+          assert pairs == expected, f'expected {expected}, got {pairs}'
+          PYEOF
+          grep -q 'installing-product.md' gradle-build/build/dita2graph-internal/okf/topics/internal-notes.md
+
+          # The public build never sees internal-notes at all (DITAVAL-excluded
+          # above), so it must infer zero related-to edges, not just omit that
+          # one topic's own edges.
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph-public/graph.json') as f:
+              edges = json.load(f)['edges']
+          assert not [e for e in edges if e['relation'] == 'related-to'], edges
+          PYEOF
+
       - name: Confirm analyze_impact finds transitive dependents and content excerpts (§13.1)
         run: |
           set -euo pipefail
