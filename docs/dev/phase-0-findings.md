@@ -412,3 +412,41 @@ What's left for a complete MVP (§11), now that extraction itself works:
    profiles, asserts `internal-notes.md` is absent from the public
    bundle and present in the internal one) the same way `validateBrokenDoc`
    gates Phase 4's validation claim.
+
+10. **Does `--args.dita2graph.*=...` actually work from the CLI, the way
+    §2.3's invocation example has always shown it?** Checked while
+    wiring `args.dita2graph.emit-graph-json` end to end (§12 Phase 1
+    status) — and the answer was no, for any of the five parameters,
+    not just the new one. `plugin.xml`'s `<transtype
+    name="dita2graph">` had no `<param>` children declaring the
+    `args.dita2graph.*` family, and DITA-OT 4.4's own CLI parser
+    validates `--args.*` values against each transtype's declared
+    params before the build even starts: a real run rejected
+    `--args.dita2graph.store=none` (an existing parameter, long since
+    given a working default in `build.xml`) with `Unsupported option`,
+    exactly like the brand-new `--args.dita2graph.emit-graph-json`
+    flag. `build.xml`'s Ant `<property>` defaults were never the
+    problem — they work fine — but nothing ever reached them from a CLI
+    override, because DITA-OT refused the argument outright first. This
+    had been true since Phase 1 and was never caught, because every
+    prior test of these parameters exercised only the default-value
+    path, never an actual CLI override.
+
+    Confirmed the fix by reading `org.dita.html5/plugin.xml`'s own
+    `<param>` declarations for its `args.*` family (not guessed): each
+    is a `<param name="args.*" desc="..." type="...">` child of
+    `<transtype>`, with `<val>`/`<val default="true">` children for
+    `type="enum"`. Added the matching five `<param>` declarations to
+    `org.dita.dita2graph`'s `<transtype>`. Hit the recurring `--`
+    (em dash, not a literal double-hyphen CLI flag this time) inside an
+    XML comment bug for a third time writing the explanatory comment —
+    same fix.
+
+    **Result:** confirmed directly against a live DITA-OT 4.4, before
+    and after: `--args.dita2graph.store=none` and
+    `--args.dita2graph.emit-graph-json=false` both went from
+    `Unsupported option` failures to accepted, correctly-applied
+    overrides (the latter verified by `graph.json`'s absence from the
+    output). This unblocks CLI-level configurability for all five
+    `args.dita2graph.*` parameters, not just the one that prompted the
+    investigation.

@@ -57,12 +57,15 @@ pub struct BundleSummary {
     pub edges_written: usize,
 }
 
-/// Writes `nodes` to `<output_dir>/okf/` as an OKF v0.2 bundle, plus the
-/// derived `<output_dir>/graph.json` flattened view (§2.4, §4.4).
+/// Writes `nodes` to `<output_dir>/okf/` as an OKF v0.2 bundle, plus
+/// (when `emit_graph_json` is true) the derived
+/// `<output_dir>/graph.json` flattened view (§2.3's
+/// `args.dita2graph.emit-graph-json`, default `true`; §2.4, §4.4).
 pub fn write_bundle(
     nodes: &[NormalizedNode],
     output_dir: &Path,
     generated_at: DateTime<Utc>,
+    emit_graph_json: bool,
 ) -> Result<BundleSummary> {
     let bundle_dir = output_dir.join("okf");
     fs::create_dir_all(bundle_dir.join("topics")).context("creating okf/topics")?;
@@ -90,7 +93,9 @@ pub fn write_bundle(
 
     write_okf_toml(&bundle_dir)?;
     write_index(&bundle_dir, nodes, generated_at)?;
-    write_graph_json(output_dir, nodes)?;
+    if emit_graph_json {
+        write_graph_json(output_dir, nodes)?;
+    }
 
     Ok(summary)
 }
@@ -371,7 +376,7 @@ mod tests {
         let nodes = sample_nodes();
         let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
 
-        let summary = write_bundle(&nodes, dir.path(), generated_at).unwrap();
+        let summary = write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
         assert_eq!(summary.maps_written, 1);
         assert_eq!(summary.topics_written, 3);
 
@@ -388,7 +393,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = sample_nodes();
         let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
-        write_bundle(&nodes, dir.path(), generated_at).unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
 
         let task = fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
         assert!(task.contains("type: Task"));
@@ -410,7 +415,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = sample_nodes();
         let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
-        write_bundle(&nodes, dir.path(), generated_at).unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
 
         let task = fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
         assert!(task.contains("# Content\n\nDownload the installer package"));
@@ -430,7 +435,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = sample_nodes();
         let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
-        write_bundle(&nodes, dir.path(), generated_at).unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
 
         let map = fs::read_to_string(dir.path().join("okf/maps/user-guide.md")).unwrap();
         assert!(map.contains("../topics/installing-product.md"));
@@ -442,7 +447,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = sample_nodes();
         let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
-        write_bundle(&nodes, dir.path(), generated_at).unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
 
         let graph: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.path().join("graph.json")).unwrap())
@@ -457,5 +462,18 @@ mod tests {
                     && e["to"] == "configuration"
                     && e["relation"] == "requires")
         );
+    }
+
+    #[test]
+    fn emit_graph_json_false_skips_writing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, false).unwrap();
+
+        assert!(!dir.path().join("graph.json").exists());
+        // The okf/ bundle itself is unaffected -- emit_graph_json only
+        // controls the derived, disposable graph.json (§2.3, §2.4).
+        assert!(dir.path().join("okf/topics/configuration.md").exists());
     }
 }

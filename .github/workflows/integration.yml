@@ -58,6 +58,27 @@ jobs:
           grep -q '"id":"installing-product"' gradle-build/build/dita2graph/rag/chunks.jsonl
           grep -q '"okfNode":"topics/installing-product.md"' gradle-build/build/dita2graph/rag/chunks.jsonl
 
+      - name: Confirm args.dita2graph.* CLI overrides are accepted (§2.3)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          # Without plugin.xml's <param> declarations for the
+          # args.dita2graph.* family, DITA-OT 4.4's CLI parser rejects
+          # any of these outright with "Unsupported option" -- a real
+          # bug found and fixed in this repo's history
+          # (docs/dev/phase-0-findings.md finding 10), not a
+          # hypothetical one. Confirm directly, not just via the
+          # Gradle-driven Ant property defaults every other step here
+          # exercises.
+          rm -rf /tmp/args-override-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/args-override-test \
+            --args.dita2graph.emit-graph-json=false
+          test ! -f /tmp/args-override-test/graph.json
+          test -d /tmp/args-override-test/okf
+
       - name: Build the public/internal DITAVAL split (§6.1)
         working-directory: gradle-build
         env:

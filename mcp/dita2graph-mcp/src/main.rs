@@ -155,7 +155,7 @@ mod tests {
                 links: vec![],
             }),
         ];
-        write_bundle(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
         dir
     }
 
@@ -222,7 +222,7 @@ mod tests {
                 links: vec![],
             }),
         ];
-        write_bundle(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
         write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
         dir
     }

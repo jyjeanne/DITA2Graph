@@ -37,9 +37,15 @@ enum Command {
         /// Backing store for the query index. `sqlite`/`rocksdb` are
         /// planned (§7 implementation stack) and not yet implemented in
         /// this scaffold; `none` is the only value that does anything
-        /// today (`graph.json` is always written regardless).
+        /// today.
         #[arg(long, default_value = "none")]
         store: String,
+        /// Whether to also write graph.json alongside the OKF bundle
+        /// (§2.3's `args.dita2graph.emit-graph-json`). Accepts
+        /// "true"/"false", matching the Ant property's own string
+        /// values (`ExtractTask` forwards it verbatim).
+        #[arg(long, default_value = "true")]
+        emit_graph_json: String,
     },
     /// Validate an existing OKF bundle with `okf-validator` (§2.5, §6.4, §10).
     Validate {
@@ -69,7 +75,8 @@ fn main() -> ExitCode {
             input,
             output,
             store,
-        } => run_build(input, output, store),
+            emit_graph_json,
+        } => run_build(input, output, store, emit_graph_json),
         Command::Validate { bundle } => run_validate(bundle),
         Command::Query {
             output_dir,
@@ -86,13 +93,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode> {
+fn run_build(
+    input: PathBuf,
+    output: PathBuf,
+    store: String,
+    emit_graph_json: String,
+) -> Result<ExitCode> {
     if store != "none" {
         eprintln!(
             "dita2graph-core: note: --store={store} is not implemented yet (see spec section 7); \
-             writing graph.json only, no {store} index."
+             no {store} index will be written."
         );
     }
+    let emit_graph_json = parse_bool_arg(&emit_graph_json, "--emit-graph-json")?;
 
     let raw = fs::read_to_string(&input).with_context(|| format!("reading {}", input.display()))?;
     let nodes: Vec<NormalizedNode> =
@@ -103,7 +116,7 @@ fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode>
     // normalized model rather than each re-deriving it.
     let generated_at = Utc::now();
 
-    let summary = write_bundle(&nodes, &output, generated_at)?;
+    let summary = write_bundle(&nodes, &output, generated_at, emit_graph_json)?;
     println!(
         "wrote {} topics, {} maps, {} edges to {}",
         summary.topics_written,
@@ -131,6 +144,17 @@ fn run_build(input: PathBuf, output: PathBuf, store: String) -> Result<ExitCode>
     } else {
         ExitCode::from(1)
     })
+}
+
+/// Parses a `"true"`/`"false"` CLI value, matching the Ant property
+/// string convention `ExtractTask` forwards these args in, rather than
+/// clap's own flag/switch parsing (§2.3).
+fn parse_bool_arg(value: &str, flag: &str) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => anyhow::bail!("{flag}: expected \"true\" or \"false\", got {other:?}"),
+    }
 }
 
 fn run_validate(bundle: PathBuf) -> Result<ExitCode> {
@@ -209,8 +233,12 @@ fn scan_rag_and_report(rag_dir: &Path) -> Result<bool> {
 
 fn run_query(output_dir: PathBuf, topic: String, relation: Option<String>) -> Result<ExitCode> {
     let graph_path = output_dir.join("graph.json");
-    let raw = fs::read_to_string(&graph_path)
-        .with_context(|| format!("reading {} (run `build` first)", graph_path.display()))?;
+    let raw = fs::read_to_string(&graph_path).with_context(|| {
+        format!(
+            "reading {} (run `build` first, without --emit-graph-json=false)",
+            graph_path.display()
+        )
+    })?;
     let graph: serde_json::Value = serde_json::from_str(&raw)?;
 
     let edges = graph["edges"].as_array().cloned().unwrap_or_default();
