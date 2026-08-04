@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="shared-content">
+  <title>Shared Content</title>
+  <conbody>
+    <p id="warning-note">Changes are not saved automatically; use the Save Task to persist them.</p>
+  </conbody>
+</concept>

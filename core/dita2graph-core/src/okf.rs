@@ -328,6 +328,8 @@ mod tests {
                 audience: vec!["admin".into()],
                 product: vec!["enterprise".into()],
                 keys: vec!["install-task".into()],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
@@ -349,6 +351,8 @@ mod tests {
                 audience: vec!["admin".into()],
                 product: vec!["enterprise".into()],
                 keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![Link {
                     relation: Relation::References,
@@ -364,6 +368,8 @@ mod tests {
                 audience: vec![],
                 product: vec![],
                 keys: vec!["config-concept".into()],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),

@@ -11,7 +11,8 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
 use dita2graph_core::{
-    NormalizedNode, infer_related_to, scan_bundle, write_bundle, write_mcp_config, write_rag_index,
+    NormalizedNode, infer_applies_to, infer_related_to, scan_bundle, write_bundle,
+    write_mcp_config, write_rag_index,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -123,10 +124,17 @@ fn run_build(
 
     // Relation inference (§3.3) augments the model in place, before
     // either the OKF bundle or graph.json is written, so inferred edges
-    // show up in both rather than needing a separate pass.
-    let inferred = infer_related_to(&mut nodes);
-    if inferred > 0 {
-        println!("inferred {inferred} related-to edge(s)");
+    // show up in both rather than needing a separate pass. applies-to
+    // runs first: it's the higher-confidence, directional, type-scoped
+    // signal, so it gets first claim on a pair before the broader,
+    // symmetric related-to sweep considers it (relations.rs).
+    let applies_to_inferred = infer_applies_to(&mut nodes);
+    if applies_to_inferred > 0 {
+        println!("inferred {applies_to_inferred} applies-to edge(s)");
+    }
+    let related_to_inferred = infer_related_to(&mut nodes);
+    if related_to_inferred > 0 {
+        println!("inferred {related_to_inferred} related-to edge(s)");
     }
 
     // Single pass over `nodes` feeding two correlated outputs (§13.1):

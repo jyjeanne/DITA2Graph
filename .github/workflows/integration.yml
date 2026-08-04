@@ -267,6 +267,45 @@ jobs:
           "
           ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-mapref/okf
 
+      - name: Build the applies-to/generated-from relation-inference fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphRelations --no-daemon
+
+      - name: Confirm applies-to matches unambiguously and drops ambiguous candidates (§3.3, finding 15)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-relations/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          # 'Save' (in save-task's <cmd>) matches only ui-reference's body
+          # -> a real applies-to edge. 'Cancel' matches BOTH ui-reference
+          # and other-ui-reference -> ambiguous, dropped per DITA2GRAPH010W,
+          # so neither gets an edge from that term (sample-docs-relations/README.md).
+          assert ('save-task', 'ui-reference', 'applies-to') in edges, edges
+          assert ('save-task', 'other-ui-reference', 'applies-to') not in edges, edges
+          applies_to_edges = [e for e in edges if e[2] == 'applies-to']
+          assert len(applies_to_edges) == 1, f'expected exactly one applies-to edge: {applies_to_edges}'
+          print('applies-to OK:', applies_to_edges)
+          "
+
+      - name: Confirm generated-from is detected from conref xtrf provenance (§3.3, finding 15)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-relations/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          assert ('reuser', 'shared-content', 'generated-from') in edges, edges
+          print('generated-from OK')
+          "
+          grep -q 'Shared Content' gradle-build/build/dita2graph-relations/okf/topics/reuser.md
+          ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-relations/okf
+
       - name: Confirm args.dita2graph.depth limits map containment (§2.3)
         env:
           DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core

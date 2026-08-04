@@ -180,6 +180,43 @@ class DitaModelExtractorTest {
         assertEquals(2, included.size(), "draft topic included with includeDrafts=true");
     }
 
+    @Test
+    void generatedFromIsExtractedFromXtrfMismatches(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", SOURCE_XML);
+        write(tempDir, "topics/reuser.dita", REUSER_XML);
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode source = findTopic(nodes, "source");
+        assertTrue(source.links.isEmpty(), "source's own content should have no generated-from edges: " + source.links);
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        // Exactly one generated-from edge to "source" -- not two, even
+        // though two of reuser's elements carry source.dita's xtrf
+        // (finding 15's per-topic dedup, not one edge per reused element).
+        assertEquals(1, reuser.links.size(), "reuser: " + reuser.links);
+        assertTrue(reuser.links.stream()
+                .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")));
+    }
+
+    @Test
+    void uicontrolsAreExtractedFromTheWholeBodyAndCmdUicontrolsOnlyFromCmd(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", JOB_XML_UICONTROL);
+        write(tempDir, "user-guide.ditamap", MAP_XML_UICONTROL);
+        write(tempDir, "topics/save-task.dita", SAVE_TASK_XML);
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode task = findTopic(nodes, "save-task");
+        assertEquals(List.of("Save"), task.cmdUicontrols, "only the <cmd>-scoped uicontrol: " + task.cmdUicontrols);
+        // The whole body also picks up "Mentioned Elsewhere", found
+        // outside <cmd> (in <context>, which comes first in document
+        // order), which cmdUicontrols must not.
+        assertEquals(List.of("Mentioned Elsewhere", "Save"), task.uicontrols, "task: " + task.uicontrols);
+    }
+
     private static TopicNode findTopic(List<Object> nodes, String id) {
         return nodes.stream()
                 .filter(TopicNode.class::isInstance)
@@ -304,4 +341,63 @@ class DitaModelExtractorTest {
     private static final String DRAFT_CONFIGURATION_XML = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
             + "<concept id=\"configuration\" status=\"draft\">"
             + "<title>Configuration Overview</title><conbody><p>Draft content.</p></conbody></concept>";
+
+    private static final String JOB_XML_GENERATED_FROM = "<?xml version=\"1.0\" ?><job><files>"
+            + "<file src=\"file:/src/topics/source.dita\" uri=\"topics/source.dita\" "
+            + "path=\"topics/source.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/topics/reuser.dita\" uri=\"topics/reuser.dita\" "
+            + "path=\"topics/reuser.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+            + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+            + "</files></job>";
+
+    private static final String MAP_XML_GENERATED_FROM = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<map id=\"user-guide\"><title>User Guide</title>"
+            + "<topicref href=\"topics/source.dita\"/>"
+            + "<topicref href=\"topics/reuser.dita\"/>"
+            + "</map>";
+
+    // source.dita's own paragraph carries an xtrf matching its own src --
+    // real DITA-OT output tags every element this way, reused or not
+    // (confirmed directly, docs/dev/phase-0-findings.md finding 15).
+    private static final String SOURCE_XML = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<concept id=\"source\">"
+            + "<title>Source Topic</title>"
+            + "<conbody><p xtrf=\"file:/src/topics/source.dita\">Reusable content.</p></conbody>"
+            + "</concept>";
+
+    // Two elements carry source.dita's xtrf (simulating two separate
+    // conref/conkeyref pulls from the same source topic) -- must
+    // collapse to exactly one generated-from edge, not two. A third
+    // element carries reuser's own xtrf (its own, non-reused content)
+    // and must not produce a self-referential edge.
+    private static final String REUSER_XML = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<concept id=\"reuser\">"
+            + "<title>Reuser Topic</title>"
+            + "<conbody>"
+            + "<p xtrf=\"file:/src/topics/source.dita\">This paragraph is reused elsewhere via conref.</p>"
+            + "<p xtrf=\"file:/src/topics/source.dita\">Another reused paragraph via conkeyref.</p>"
+            + "<p xtrf=\"file:/src/topics/reuser.dita\">Own content not reused.</p>"
+            + "</conbody>"
+            + "</concept>";
+
+    private static final String JOB_XML_UICONTROL = "<?xml version=\"1.0\" ?><job><files>"
+            + "<file src=\"file:/src/topics/save-task.dita\" uri=\"topics/save-task.dita\" "
+            + "path=\"topics/save-task.dita\" format=\"dita\" target=\"true\"></file>"
+            + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+            + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+            + "</files></job>";
+
+    private static final String MAP_XML_UICONTROL = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<map id=\"user-guide\"><title>User Guide</title>"
+            + "<topicref href=\"topics/save-task.dita\"/></map>";
+
+    private static final String SAVE_TASK_XML = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<task id=\"save-task\">"
+            + "<title>Save Task</title>"
+            + "<taskbody>"
+            + "<context><p>See <uicontrol>Mentioned Elsewhere</uicontrol> in the toolbar.</p></context>"
+            + "<steps><step><cmd>Click <uicontrol>Save</uicontrol> to store your changes.</cmd></step></steps>"
+            + "</taskbody>"
+            + "</task>";
 }

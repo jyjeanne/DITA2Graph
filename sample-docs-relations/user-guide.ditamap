@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE map PUBLIC "-//OASIS//DTD DITA Map//EN" "map.dtd">
+<map id="user-guide">
+  <title>User Guide</title>
+  <topicref href="topics/save-task.dita" keys="save-task-concept"/>
+  <topicref href="topics/ui-reference.dita" keys="ui-reference-concept"/>
+  <topicref href="topics/other-ui-reference.dita" keys="other-ui-reference-concept"/>
+  <topicref href="topics/shared-content.dita" keys="shared-content-concept"/>
+  <topicref href="topics/reuser.dita" keys="reuser-concept"/>
+</map>

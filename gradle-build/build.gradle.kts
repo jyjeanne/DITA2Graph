@@ -24,6 +24,7 @@ val sampleDocs = layout.projectDirectory.dir("../sample-docs")
 val sampleDocsInvalid = layout.projectDirectory.dir("../sample-docs-invalid")
 val sampleDocsNested = layout.projectDirectory.dir("../sample-docs-nested")
 val sampleDocsMapref = layout.projectDirectory.dir("../sample-docs-mapref")
+val sampleDocsRelations = layout.projectDirectory.dir("../sample-docs-relations")
 val pluginDir = layout.projectDirectory.dir("../plugin/org.dita.dita2graph")
 
 val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
@@ -136,6 +137,18 @@ val buildKnowledgeGraphMapref = tasks.register<DitaOtTask>("buildKnowledgeGraphM
     ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
     input(sampleDocsMapref.file("user-guide.ditamap"))
     output(layout.buildDirectory.dir("dita2graph-mapref").get().asFile.path)
+    transtype("dita2graph")
+    progressStyle("DETAILED")
+}
+
+// applies-to/generated-from relation inference (§3.3, finding 15) -- see
+// ../sample-docs-relations/README.md for the unambiguous-match,
+// ambiguous-drop, and conref-provenance cases this exercises.
+val buildKnowledgeGraphRelations = tasks.register<DitaOtTask>("buildKnowledgeGraphRelations") {
+    dependsOn(installDita2Graph)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocsRelations.file("user-guide.ditamap"))
+    output(layout.buildDirectory.dir("dita2graph-relations").get().asFile.path)
     transtype("dita2graph")
     progressStyle("DETAILED")
 }

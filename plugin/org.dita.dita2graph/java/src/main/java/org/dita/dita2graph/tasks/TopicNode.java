@@ -28,6 +28,18 @@ final class TopicNode {
     final List<String> audience = new ArrayList<>();
     final List<String> product = new ArrayList<>();
     final List<String> keys = new ArrayList<>();
+    /**
+     * Distinct {@code <uicontrol>} text found anywhere in this topic's
+     * body -- what a reference topic "defines" (§3.3's {@code applies-to}
+     * inference target side, {@code core/dita2graph-core/src/relations.rs}).
+     */
+    final List<String> uicontrols = new ArrayList<>();
+    /**
+     * Distinct {@code <uicontrol>} text found specifically inside
+     * {@code <cmd>} elements -- what a task step "invokes" (§3.3's
+     * {@code applies-to} inference source side).
+     */
+    final List<String> cmdUicontrols = new ArrayList<>();
     String sourceFile;
     final List<Link> links = new ArrayList<>();
     /** DITA {@code status} attribute, e.g. "draft" -- used for include-drafts filtering, not serialized. */
@@ -48,6 +60,8 @@ final class TopicNode {
         sb.append(",\"audience\":").append(Json.stringArray(audience));
         sb.append(",\"product\":").append(Json.stringArray(product));
         sb.append(",\"keys\":").append(Json.stringArray(keys));
+        sb.append(",\"uicontrols\":").append(Json.stringArray(uicontrols));
+        sb.append(",\"cmdUicontrols\":").append(Json.stringArray(cmdUicontrols));
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {

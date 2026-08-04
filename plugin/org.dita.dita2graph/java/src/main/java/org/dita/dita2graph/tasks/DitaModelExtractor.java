@@ -12,9 +12,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -58,11 +61,25 @@ import java.util.function.Consumer;
  * unsupported -- DITA-OT never resolves it for this transtype at all,
  * so the referenced map/topics never reach this extractor's input in
  * the first place.
- * {@code applies-to} and {@code generated-from} require heuristic
- * inference this extractor doesn't attempt (§3.3); they never appear in
- * its output. {@code related-to} is inferred too, but downstream in the
- * Rust core from {@code product} metadata this class already extracts
- * (finding 13), not here.
+ * {@code generated-from} *is* extracted here too (finding 15), just not
+ * from markup directly: every resolved element carries an {@code xtrf}
+ * attribute tracing its true source file, and DITA-OT replaces a
+ * {@code conref}/{@code conkeyref}-resolved element wholesale with the
+ * referenced one (inheriting its {@code xtrf}), while a plain {@code
+ * keyref}-resolved {@code <keyword>}/{@code <ph>} (variable substitution,
+ * not reuse) keeps its own -- so a descendant element whose {@code xtrf}
+ * differs from its containing topic's own file is real, deterministic
+ * proof of conref/conkeyref reuse, not a guess.
+ * {@code applies-to} and {@code related-to} both require actual
+ * heuristic inference and are computed downstream in the Rust core
+ * instead (§3.3, {@code relations.rs}): {@code related-to} from {@code
+ * product} metadata (finding 13), {@code applies-to} from {@code
+ * uicontrols}/{@code cmdUicontrols} (this class extracts both -- the
+ * former from anywhere in a topic's body, the latter scoped to {@code
+ * <cmd>} elements only, matching "a task's {@code <cmd>} referencing a
+ * {@code <uicontrol>} defined in a reference topic" precisely -- but the
+ * actual cross-topic matching, including the ambiguous-match-drop rule,
+ * happens in Rust, finding 15).
  *
  * <p>Each topic's body element ({@code conbody}/{@code taskbody}/{@code
  * refbody}/{@code glossdef}/generic {@code body}, per {@link
@@ -107,6 +124,8 @@ final class DitaModelExtractor {
         String path;
         String format;
         boolean input;
+        /** The {@code src} attribute (an absolute {@code file:} URI) -- matches resolved elements' own {@code xtrf} values verbatim (finding 15). */
+        String src;
     }
 
     /** Raw, unresolved xref/link found while parsing a topic, resolved in a second pass. */
@@ -119,6 +138,25 @@ final class DitaModelExtractor {
             this.sourceTopicPath = sourceTopicPath;
             this.href = href;
             this.hasKeyref = hasKeyref;
+        }
+    }
+
+    /**
+     * One "this topic pulled content in from that file" record, found by
+     * scanning a topic's resolved body for descendant elements whose
+     * {@code xtrf} attribute points at a *different* file than the
+     * topic's own -- DITA-OT's own trace of where {@code conref}/{@code
+     * conkeyref}-resolved content really came from (finding 15). Resolved
+     * into a {@code generated-from} edge once every topic's id is known,
+     * same two-pass shape as {@link RawLink}.
+     */
+    private static final class RawGeneratedFrom {
+        final String sourceTopicPath;
+        final String generatedFromPath;
+
+        RawGeneratedFrom(String sourceTopicPath, String generatedFromPath) {
+            this.sourceTopicPath = sourceTopicPath;
+            this.generatedFromPath = generatedFromPath;
         }
     }
 
@@ -171,10 +209,22 @@ final class DitaModelExtractor {
         Map<String, List<String>> keysByPath = new HashMap<>();
         walkMapChildren(mapRoot, mapFile.path, null, 1, containments, keysByPath);
 
+        // Every resolved element DITA-OT writes carries an xtrf attribute
+        // tracing its true source file (as an absolute file: URI,
+        // matching a JobFile's own src verbatim) -- used below to detect
+        // conref/conkeyref-pulled content for generated-from (finding 15).
+        Map<String, String> ditaSrcToPath = new HashMap<>();
+        for (JobFile file : files) {
+            if ("dita".equals(file.format) && !file.src.isEmpty()) {
+                ditaSrcToPath.put(file.src, file.path);
+            }
+        }
+
         // Pass 2: parse every topic file for its own metadata, deferring
         // link resolution (target ids may not be known yet).
         Map<String, TopicNode> topicsByPath = new LinkedHashMap<>();
         List<RawLink> rawLinks = new ArrayList<>();
+        List<RawGeneratedFrom> rawGeneratedFrom = new ArrayList<>();
         for (JobFile file : files) {
             if (!"dita".equals(file.format)) {
                 continue;
@@ -201,6 +251,47 @@ final class DitaModelExtractor {
             List<String> keys = keysByPath.get(file.path);
             if (keys != null) {
                 topic.keys.addAll(keys);
+            }
+
+            List<Element> uicontrolElements = new ArrayList<>();
+            for (Element uicontrol : descendants(root, "uicontrol")) {
+                if (!isInsideRelatedLinks(uicontrol)) {
+                    uicontrolElements.add(uicontrol);
+                }
+            }
+            topic.uicontrols.addAll(collectDistinctText(uicontrolElements));
+
+            List<Element> cmdUicontrolElements = new ArrayList<>();
+            for (Element cmd : descendants(root, "cmd")) {
+                cmdUicontrolElements.addAll(descendants(cmd, "uicontrol"));
+            }
+            topic.cmdUicontrols.addAll(collectDistinctText(cmdUicontrolElements));
+
+            // generated-from (finding 15): any descendant element whose
+            // xtrf points at a *different* file than this topic's own
+            // was pulled in via conref/conkeyref -- DITA-OT replaces a
+            // conref'd/conkeyref'd element wholesale with the referenced
+            // one, inheriting *its* xtrf, while a plain keyref-resolved
+            // <keyword>/<ph> (variable substitution, not reuse) keeps its
+            // own xtrf unchanged (confirmed directly, not assumed --
+            // see docs/dev/phase-0-findings.md finding 15). One edge per
+            // distinct source file, not one per reused element.
+            Set<String> generatedFromSeen = new HashSet<>();
+            for (Element el : descendants(root, "*")) {
+                if (isInsideRelatedLinks(el) || "related-links".equals(el.getNodeName())) {
+                    continue;
+                }
+                String xtrf = el.getAttribute("xtrf");
+                if (xtrf.isEmpty()) {
+                    continue;
+                }
+                String fromPath = ditaSrcToPath.get(xtrf);
+                if (fromPath == null || fromPath.equals(file.path)) {
+                    continue;
+                }
+                if (generatedFromSeen.add(fromPath)) {
+                    rawGeneratedFrom.add(new RawGeneratedFrom(file.path, fromPath));
+                }
             }
 
             for (Element xref : descendants(root, "xref", "link")) {
@@ -270,6 +361,19 @@ final class DitaModelExtractor {
             }
             source.links.add(new Link(raw.hasKeyref ? "requires" : "references", target.id));
         }
+        for (RawGeneratedFrom raw : rawGeneratedFrom) {
+            TopicNode source = topicsByPath.get(raw.sourceTopicPath);
+            TopicNode target = topicsByPath.get(raw.generatedFromPath);
+            // Both paths came from the same ditaSrcToPath/topicsByPath
+            // built off the same files list, so an unresolved lookup
+            // here would mean DITA-OT's own xtrf pointed somewhere
+            // outside the job's own dita-format files -- not observed in
+            // practice, so this is a defensive skip, not a warned gap.
+            if (source == null || target == null || source == target) {
+                continue;
+            }
+            source.links.add(new Link("generated-from", target.id));
+        }
 
         List<Object> nodes = new ArrayList<>();
         nodes.add(mapNode);
@@ -306,6 +410,7 @@ final class DitaModelExtractor {
             JobFile f = new JobFile();
             f.path = el.getAttribute("path");
             f.format = el.getAttribute("format");
+            f.src = el.getAttribute("src");
             f.input = "true".equals(el.getAttribute("input"));
             files.add(f);
         }
@@ -454,6 +559,27 @@ final class DitaModelExtractor {
             }
         }
         return "";
+    }
+
+    /**
+     * Each element's whitespace-normalized text content, deduplicated
+     * (first-seen order preserved) and with empty results dropped -- used
+     * for {@code <uicontrol>} text collection (§3.3's {@code applies-to}
+     * inference input).
+     */
+    private static List<String> collectDistinctText(List<Element> elements) {
+        Set<String> distinct = new LinkedHashSet<>();
+        for (Element el : elements) {
+            String text = el.getTextContent();
+            if (text == null) {
+                continue;
+            }
+            String trimmed = text.trim().replaceAll("\\s+", " ");
+            if (!trimmed.isEmpty()) {
+                distinct.add(trimmed);
+            }
+        }
+        return new ArrayList<>(distinct);
     }
 
     /**

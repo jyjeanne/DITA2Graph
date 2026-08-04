@@ -450,34 +450,59 @@ versioned on its own.
   subtypes (concept/task/reference/glossentry/…), and edges for every DITA
   relationship (section 3.4).
 - **Relation inference**: derive implicit relationships DITA doesn't encode
-  explicitly, e.g. "topics sharing a `product` value are `related-to`",
-  or "a task's `<cmd>` referencing a `<uicontrol>` defined in a reference
-  topic is `applies-to`". **`related-to` is implemented** (`core/
-  dita2graph-core/src/relations.rs`, `docs/dev/phase-0-findings.md`
-  finding 13): every pair of topics sharing at least one `product` value
-  gets a bidirectional `related-to` edge, unless some other relation
-  (author-declared or already inferred) already connects that pair, in
-  which case the stronger existing edge wins and the inference is
-  skipped rather than layered on top — verified against a live DITA-OT
-  4.4 run (`sample-docs/`'s `internal-notes`/`installing-product`, both
-  `product="enterprise"`, gain a real `related-to` edge each way; the
-  DITAVAL-filtered public build, which never sees `internal-notes` at
-  all, correctly infers zero). `applies-to` (the `<uicontrol>` example)
-  and `generated-from` remain unimplemented — both need DITA extraction
-  this scaffold doesn't do yet (`<uicontrol>` scanning; `conref`/
-  `conkeyref` provenance tracking), so guessing at them without that
-  data would be exactly the kind of unverified inference this project
-  avoids. `related-to`'s rule is deterministic (share a `product` value
-  and no existing relation, or don't), so it never emits
-  `DITA2GRAPH010W` — that diagnostic is reserved for a genuinely
-  ambiguous case, such as `applies-to`'s "two candidate targets", once
-  that's implemented. Low-confidence inferences are dropped rather than
-  guessed (`DITA2GRAPH010W`, §2.5), so inferred edges never masquerade as
+  explicitly. **Both `related-to` and `applies-to` are implemented**
+  (`core/dita2graph-core/src/relations.rs`, `docs/dev/
+  phase-0-findings.md` findings 13 and 15):
+  - `related-to`: every pair of topics sharing at least one `product`
+    value gets a bidirectional `related-to` edge, unless some other
+    relation (author-declared or already inferred) already connects
+    that pair, in which case the stronger existing edge wins and the
+    inference is skipped rather than layered on top — verified against
+    a live DITA-OT 4.4 run (`sample-docs/`'s `internal-notes`/
+    `installing-product`, both `product="enterprise"`, gain a real
+    `related-to` edge each way; the DITAVAL-filtered public build,
+    which never sees `internal-notes` at all, correctly infers zero).
+    This rule is deterministic (share a `product` value and no existing
+    relation, or don't), so it never emits `DITA2GRAPH010W`.
+  - `applies-to`: a task's `<cmd>`-scoped `<uicontrol>` text (`cmd_
+    uicontrols`, extracted by `DitaModelExtractor`) matched against a
+    Reference topic's whole-body `<uicontrol>` text (`uicontrols`) —
+    "a task's `<cmd>` referencing a `<uicontrol>` defined in a
+    reference topic", made precise. The match must be *unambiguous*
+    (exactly one candidate Reference topic for that term) to become an
+    edge; a term matching two or more Reference topics is
+    `DITA2GRAPH010W`'s own canonical example ("two candidate
+    `applies-to` targets") — dropped and logged, not guessed at by
+    picking one. Runs before `related-to` in `dita2graph-core build`,
+    since it's the higher-confidence, directional, type-scoped signal.
+    Verified against a live DITA-OT 4.4 run
+    (`sample-docs-relations/README.md`): a task using both `Save`
+    (matching exactly one reference topic) and `Cancel` (matching two)
+    correctly gets an `applies-to` edge only for `Save`.
+
+  `generated-from` needs no inference at all — see "Deduplication &
+  reuse tracking" below, since it's derived the same deterministic way.
+  Low-confidence inferences are dropped rather than guessed
+  (`DITA2GRAPH010W`, §2.5), so inferred edges never masquerade as
   author-declared ones.
 - **Deduplication & reuse tracking**: because of `conref`/`conkeyref`, the
-  same content fragment can appear in multiple topics — the engine tracks a
-  single canonical node with multiple `contains` edges rather than
-  duplicating content.
+  same content fragment can appear in multiple topics. **Provenance is
+  tracked** (finding 15): every element DITA-OT resolves carries an
+  `xtrf` attribute tracing its true source file, and a `conref`/
+  `conkeyref`-resolved element inherits *that* source's `xtrf` wholesale
+  (confirmed directly: a plain `keyref`-resolved `<keyword>`/`<ph>` --
+  variable substitution, not reuse -- keeps its own `xtrf` unchanged, so
+  this doesn't false-positive on ordinary keyref use). `DitaModelExtractor`
+  detects any descendant element whose `xtrf` differs from its own
+  topic's source file and adds one `generated-from` edge per distinct
+  source, deterministically, not as an inference. **Not yet
+  implemented**: the engine does *not* yet collapse reused content into
+  a single canonical node — the reusing topic still gets its own full
+  concept document with the pulled-in text rendered inline, same as
+  DITA-OT's own resolved output; `generated-from` records *where it came
+  from*, it doesn't deduplicate storage. True canonical-node
+  deduplication remains future work, alongside incremental rebuild
+  below.
 - **Incremental updates**: on re-run, diff against the existing
   `graph.db` and only recompute changed subgraphs (keyed by source file
   hash), so large doc sets don't require a full rebuild on every publish.
@@ -1649,14 +1674,16 @@ transtype-name Ant target-naming convention, the
 property name, and `dita-ot-gradle`'s local-plugin-install needing a
 ZIP rather than a raw directory.
 
-Extraction itself is intentionally narrow, not a shortcut taken
+Extraction itself was initially narrow by design, not a shortcut taken
 silently: `contains` (map `<topicref>`), `requires` and `references`
-(`<xref>`/`<link>`, gated on `keyref`) are the only relations the Java
-extraction layer derives directly from authored markup, leaving
-`applies-to`/`generated-from` as documented future inference work (§3.3,
-§13) rather than guessed. `related-to` is inferred separately, in the
-Rust core (`relations.rs`, finding 13) from `product` metadata the
-extractor already captures, rather than from markup at all. The exit
+(`<xref>`/`<link>`, gated on `keyref`) are the relations the Java
+extraction layer derives directly from authored markup. `generated-from`
+joined them later (finding 15), also derived directly and
+deterministically by the Java layer, but from DITA-OT's own `xtrf`
+source-trace attributes rather than markup structure. `related-to` and
+`applies-to` are inferred separately, downstream in the Rust core
+(`relations.rs`, findings 13 and 15) from `product`/`uicontrol` metadata
+the extractor captures, rather than from markup directly. The exit
 criterion's
 "validates against a JSON Schema" is met in spirit but not literally:
 there's no standalone `.schema.json` file, only the Rust side's `serde`
@@ -1755,21 +1782,25 @@ re-run touches zero unchanged concept files.
 
 **Status:** mostly done, ahead of Phase 1. `core/dita2graph-core`
 implements the normalized model (`src/model.rs`), the bundle writer
-(`src/okf.rs`), relation inference for `related-to` (`src/relations.rs`,
-finding 13), the `DITA2GRAPHnnnX` diagnostics catalog
-(`src/diagnostics.rs`), and a `build`/`validate`/`query` CLI
-(`src/main.rs`); `cargo test -p dita2graph-core` passes, including a test
-that builds a bundle and round-trips it through `okf_validator::
-validate_bundle` with zero errors. **Not done:** `applies-to`/
-`generated-from` relation inference (both need DITA extraction that
-doesn't exist yet — `<uicontrol>` scanning and `conref`/`conkeyref`
-provenance, respectively), incremental rebuild, and SQLite/RocksDB
-storage (`query` currently reads `graph.json` directly, not a
-database). No golden-fixture byte-for-byte test yet either. This phase
-got ahead of Phase 1 because it could be developed and tested against a
-hand-authored fixture without needing a live DITA-OT install — closing
-Phase 1's gap may still change `dita2graph-core`'s input shape at the
-edges.
+(`src/okf.rs`), relation inference for `related-to` and `applies-to`
+(`src/relations.rs`, findings 13 and 15), the `DITA2GRAPHnnnX`
+diagnostics catalog (`src/diagnostics.rs`), and a `build`/`validate`/
+`query` CLI (`src/main.rs`); `cargo test -p dita2graph-core` passes,
+including a test that builds a bundle and round-trips it through
+`okf_validator::validate_bundle` with zero errors. `generated-from`
+needs no Rust-side inference at all — `DitaModelExtractor` derives it
+deterministically from DITA-OT's own `xtrf` source-trace attributes
+(finding 15), so all four relations beyond `contains` are now covered.
+**Not done:** true canonical-node deduplication for reused content (a
+`generated-from` edge records provenance, but the reusing topic still
+gets its own full concept document with the pulled-in text rendered
+inline — see §3.3's "Deduplication & reuse tracking"), incremental
+rebuild, and SQLite/RocksDB storage (`query` currently reads
+`graph.json` directly, not a database). No golden-fixture byte-for-byte
+test yet either. This phase got ahead of Phase 1 because it could be
+developed and tested against a hand-authored fixture without needing a
+live DITA-OT install — closing Phase 1's gap may still change
+`dita2graph-core`'s input shape at the edges.
 
 ### Phase 3 — MCP server (2–3 weeks)
 

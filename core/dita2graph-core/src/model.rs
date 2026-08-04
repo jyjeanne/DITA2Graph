@@ -84,6 +84,16 @@ pub struct NormalizedTopic {
     pub product: Vec<String>,
     #[serde(default)]
     pub keys: Vec<String>,
+    /// Distinct `<uicontrol>` text found anywhere in this topic's body
+    /// (§3.3's `applies-to` inference target side, `relations.rs`) --
+    /// what a reference topic "defines".
+    #[serde(default)]
+    pub uicontrols: Vec<String>,
+    /// Distinct `<uicontrol>` text found specifically inside `<cmd>`
+    /// elements (§3.3's `applies-to` inference source side) -- what a
+    /// task step "invokes".
+    #[serde(default, rename = "cmdUicontrols")]
+    pub cmd_uicontrols: Vec<String>,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
     #[serde(default)]

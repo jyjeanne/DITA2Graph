@@ -1,18 +1,22 @@
 //! Relation inference (`docs/plugin-specification.md` §3.3, §4.3):
 //! deriving edges DITA doesn't state explicitly, as opposed to the
-//! `contains`/`requires`/`references` edges `DitaModelExtractor` already
-//! reads directly off authored markup.
+//! `contains`/`requires`/`references`/`generated-from` edges
+//! `DitaModelExtractor` already derives directly and deterministically
+//! (from markup and DITA-OT's own `xtrf` source-trace attributes
+//! respectively, finding 15) before this crate ever sees the model.
 //!
-//! Only `related-to` is implemented so far -- the §3.3 example "topics
-//! sharing a `product` value are `related-to`" is directly computable
-//! from data already flowing through the normalized model
-//! (`NormalizedTopic::product`), unlike `applies-to` (needs `<uicontrol>`
-//! extraction the Java side doesn't do yet) or `generated-from` (needs
-//! `conref`/`conkeyref` provenance tracking, also not implemented). Both
-//! remain documented gaps rather than guessed at (`docs/dev/
-//! phase-0-findings.md`).
+//! Two heuristics are implemented here: `related-to` (§3.3's "topics
+//! sharing a `product` value are `related-to`", from `NormalizedTopic::
+//! product`) and `applies-to` (§3.3's "a task's `<cmd>` referencing a
+//! `<uicontrol>` defined in a reference topic", from `NormalizedTopic::
+//! cmd_uicontrols`/`uicontrols` -- both populated by the Java extractor,
+//! finding 15). `applies-to` runs first (main.rs's `run_build`): it's a
+//! higher-confidence, directional, type-scoped signal, so it gets first
+//! claim on a pair before the broader, symmetric `related-to` sweep
+//! considers it.
 
-use crate::model::{Link, NormalizedNode, Relation};
+use crate::diagnostics::{self, AMBIGUOUS_RELATION};
+use crate::model::{Link, NormalizedNode, Relation, TopicType};
 use std::collections::BTreeSet;
 
 /// Adds a `related-to` `Link` to every pair of topics that share at
@@ -73,6 +77,100 @@ pub fn infer_related_to(nodes: &mut [NormalizedNode]) -> usize {
     count
 }
 
+/// Adds an `applies-to` `Link` from a Task topic to a Reference topic
+/// when a `<uicontrol>` term the task uses in a `<cmd>` (`
+/// cmd_uicontrols`) also appears anywhere in that reference topic's body
+/// (`uicontrols`) -- §3.3's "a task's `<cmd>` referencing a `<uicontrol>`
+/// defined in a reference topic" example, made precise: the match must
+/// be *unambiguous* (exactly one candidate Reference topic for that
+/// term) to become an edge. A term matching two or more Reference
+/// topics is the canonical `DITA2GRAPH010W` case (§2.5's own example is
+/// literally "two candidate `applies-to` targets") -- dropped and
+/// logged, not guessed at by picking one. Same "an existing relation (in
+/// either direction) wins" precedence as `infer_related_to`, checked
+/// once against the model's state *before* this function runs (a term
+/// match doesn't get to invalidate another term match found earlier in
+/// the same call). At most one edge per (task, reference) pair even if
+/// several distinct terms all resolve to the same reference topic.
+/// Returns the number of edges added.
+pub fn infer_applies_to(nodes: &mut [NormalizedNode]) -> usize {
+    let tasks: Vec<(String, Vec<String>)> = nodes
+        .iter()
+        .filter_map(|n| match n {
+            NormalizedNode::Topic(t) if t.topic_type == TopicType::Task => {
+                Some((t.id.clone(), t.cmd_uicontrols.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let references: Vec<(String, Vec<String>)> = nodes
+        .iter()
+        .filter_map(|n| match n {
+            NormalizedNode::Topic(t) if t.topic_type == TopicType::Reference => {
+                Some((t.id.clone(), t.uicontrols.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut connected: BTreeSet<(String, String)> = BTreeSet::new();
+    for n in nodes.iter() {
+        for link in n.links() {
+            connected.insert(ordered_pair(n.id(), &link.target));
+        }
+    }
+
+    let mut new_edges: Vec<(String, String)> = Vec::new();
+    let mut added_pairs: BTreeSet<(String, String)> = BTreeSet::new();
+    for (task_id, terms) in &tasks {
+        for term in terms {
+            let matches: Vec<&String> = references
+                .iter()
+                .filter(|(_, uicontrols)| uicontrols.contains(term))
+                .map(|(id, _)| id)
+                .collect();
+            match matches.as_slice() {
+                [reference_id] => {
+                    if task_id != *reference_id
+                        && !connected.contains(&ordered_pair(task_id, reference_id))
+                        && added_pairs.insert((task_id.clone(), (*reference_id).clone()))
+                    {
+                        new_edges.push((task_id.clone(), (*reference_id).clone()));
+                    }
+                }
+                [] => {}
+                _ => {
+                    let candidates = matches
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    diagnostics::emit(
+                        AMBIGUOUS_RELATION,
+                        &format!(
+                            "applies-to: uicontrol {term:?} used by task {task_id:?} matches \
+                             {} reference topics ({candidates}); dropping rather than guessing",
+                            matches.len()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    let count = new_edges.len();
+    for (task_id, reference_id) in new_edges {
+        if let Some(NormalizedNode::Topic(t)) = nodes.iter_mut().find(|n| n.id() == task_id) {
+            t.links.push(Link {
+                relation: Relation::AppliesTo,
+                target: reference_id,
+            });
+        }
+    }
+    count
+}
+
 fn ordered_pair(a: &str, b: &str) -> (String, String) {
     if a < b {
         (a.to_string(), b.to_string())
@@ -96,6 +194,42 @@ mod tests {
             audience: vec![],
             product: product.iter().map(|s| s.to_string()).collect(),
             keys: vec![],
+            uicontrols: vec![],
+            cmd_uicontrols: vec![],
+            source_file: format!("topics/{id}.dita"),
+            links: vec![],
+        })
+    }
+
+    fn task_topic(id: &str, cmd_uicontrols: &[&str]) -> NormalizedNode {
+        NormalizedNode::Topic(NormalizedTopic {
+            id: id.into(),
+            topic_type: TopicType::Task,
+            title: id.into(),
+            shortdesc: None,
+            body: None,
+            audience: vec![],
+            product: vec![],
+            keys: vec![],
+            uicontrols: vec![],
+            cmd_uicontrols: cmd_uicontrols.iter().map(|s| s.to_string()).collect(),
+            source_file: format!("topics/{id}.dita"),
+            links: vec![],
+        })
+    }
+
+    fn reference_topic(id: &str, uicontrols: &[&str]) -> NormalizedNode {
+        NormalizedNode::Topic(NormalizedTopic {
+            id: id.into(),
+            topic_type: TopicType::Reference,
+            title: id.into(),
+            shortdesc: None,
+            body: None,
+            audience: vec![],
+            product: vec![],
+            keys: vec![],
+            uicontrols: uicontrols.iter().map(|s| s.to_string()).collect(),
+            cmd_uicontrols: vec![],
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -197,5 +331,139 @@ mod tests {
         for node in &nodes {
             assert_eq!(node.links().len(), 2);
         }
+    }
+
+    #[test]
+    fn unambiguous_uicontrol_match_creates_an_applies_to_edge() {
+        let mut nodes = vec![
+            task_topic("save-task", &["Save"]),
+            reference_topic("ui-reference", &["Save"]),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 1);
+        assert_eq!(nodes[0].links().len(), 1);
+        assert_eq!(nodes[0].links()[0].relation, Relation::AppliesTo);
+        assert_eq!(nodes[0].links()[0].target, "ui-reference");
+        assert!(
+            nodes[1].links().is_empty(),
+            "applies-to is directional: task -> reference only"
+        );
+    }
+
+    #[test]
+    fn no_edge_when_no_reference_topic_documents_the_uicontrol() {
+        let mut nodes = vec![
+            task_topic("save-task", &["Save"]),
+            reference_topic("ui-reference", &["Cancel"]),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 0);
+    }
+
+    #[test]
+    fn ambiguous_uicontrol_match_across_two_reference_topics_is_dropped() {
+        let mut nodes = vec![
+            task_topic("save-task", &["Cancel"]),
+            reference_topic("ui-reference", &["Cancel"]),
+            reference_topic("other-ui-reference", &["Cancel"]),
+        ];
+        assert_eq!(
+            infer_applies_to(&mut nodes),
+            0,
+            "two candidate reference topics for the same term must be dropped, not guessed"
+        );
+        assert!(nodes[0].links().is_empty());
+    }
+
+    #[test]
+    fn one_unambiguous_term_and_one_ambiguous_term_on_the_same_task_only_the_unambiguous_one_links()
+    {
+        let mut nodes = vec![
+            task_topic("save-task", &["Save", "Cancel"]),
+            reference_topic("ui-reference", &["Save", "Cancel"]),
+            reference_topic("other-ui-reference", &["Cancel"]),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 1);
+        assert_eq!(nodes[0].links().len(), 1);
+        assert_eq!(nodes[0].links()[0].target, "ui-reference");
+    }
+
+    #[test]
+    fn multiple_terms_resolving_to_the_same_reference_produce_one_edge_not_two() {
+        let mut nodes = vec![
+            task_topic("save-task", &["Save", "Discard"]),
+            reference_topic("ui-reference", &["Save", "Discard"]),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 1);
+        assert_eq!(nodes[0].links().len(), 1);
+    }
+
+    #[test]
+    fn only_cmd_scoped_uicontrols_count_as_source_terms() {
+        // "Save" is in the task's whole-body uicontrols (e.g. a <result>
+        // paragraph mentioning it) but not cmd_uicontrols -- a casual
+        // mention outside <cmd> must not trigger applies-to.
+        let mut nodes = vec![
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "save-task".into(),
+                topic_type: TopicType::Task,
+                title: "save-task".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec!["Save".into()],
+                cmd_uicontrols: vec![],
+                source_file: "topics/save-task.dita".into(),
+                links: vec![],
+            }),
+            reference_topic("ui-reference", &["Save"]),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 0);
+    }
+
+    #[test]
+    fn only_reference_topics_count_as_valid_targets() {
+        // A Concept topic happening to mention "Save" as a uicontrol
+        // must not become an applies-to target -- only Reference topics
+        // do, matching §3.3's wording precisely.
+        let mut nodes = vec![
+            task_topic("save-task", &["Save"]),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "some-concept".into(),
+                topic_type: TopicType::Concept,
+                title: "some-concept".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec!["Save".into()],
+                cmd_uicontrols: vec![],
+                source_file: "topics/some-concept.dita".into(),
+                links: vec![],
+            }),
+        ];
+        assert_eq!(infer_applies_to(&mut nodes), 0);
+    }
+
+    #[test]
+    fn skips_a_pair_already_connected_by_another_relation() {
+        let mut nodes = vec![
+            task_topic("save-task", &["Save"]),
+            reference_topic("ui-reference", &["Save"]),
+        ];
+        if let NormalizedNode::Topic(t) = &mut nodes[0] {
+            t.links.push(Link {
+                relation: Relation::References,
+                target: "ui-reference".into(),
+            });
+        }
+        assert_eq!(
+            infer_applies_to(&mut nodes),
+            0,
+            "an existing references edge should take precedence over the inferred applies-to"
+        );
+        assert_eq!(nodes[0].links().len(), 1);
+        assert_eq!(nodes[0].links()[0].relation, Relation::References);
     }
 }

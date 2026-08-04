@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE reference PUBLIC "-//OASIS//DTD DITA Reference//EN" "reference.dtd">
+<reference id="other-ui-reference">
+  <title>Confirmation Dialog UI Reference</title>
+  <refbody>
+    <section>
+      <p><uicontrol>Cancel</uicontrol> closes the confirmation dialog without saving.</p>
+    </section>
+  </refbody>
+</reference>

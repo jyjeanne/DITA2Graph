@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE task PUBLIC "-//OASIS//DTD DITA Task//EN" "task.dtd">
+<task id="save-task">
+  <title>Save Task</title>
+  <shortdesc>Save or discard your changes.</shortdesc>
+  <taskbody>
+    <steps>
+      <step>
+        <cmd>Click <uicontrol>Save</uicontrol> to store your changes.</cmd>
+      </step>
+      <step>
+        <cmd>Click <uicontrol>Cancel</uicontrol> to discard your changes.</cmd>
+      </step>
+    </steps>
+  </taskbody>
+</task>

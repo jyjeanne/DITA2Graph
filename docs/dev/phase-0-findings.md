@@ -328,11 +328,12 @@ What's left for a complete MVP (§11), now that extraction itself works:
 - ~~Relation extraction is intentionally narrow (`contains`/`requires`/
   `references` only, per finding 6/7's result) — `applies-to`,
   `related-to`, and `generated-from` remain unimplemented, as documented
-  in `DitaModelExtractor`'s own class docs and §3.3/§13.~~
-  `related-to` closed (finding 13): inferred in the Rust core from
-  shared `product` values. `applies-to`/`generated-from` remain
-  unimplemented — both need extraction work (`<uicontrol>` scanning;
-  `conref`/`conkeyref` provenance) that doesn't exist yet.
+  in `DitaModelExtractor`'s own class docs and §3.3/§13.~~ All three
+  closed. `related-to` (finding 13) and `applies-to` (finding 15) are
+  inferred in the Rust core from `product`/`uicontrol` metadata;
+  `generated-from` (finding 15) is derived deterministically by the Java
+  extractor from DITA-OT's own `xtrf` source-trace attributes, no
+  inference needed.
 - ~~Nested `topicref`/`topichead`/`topicgroup` map structures aren't walked
   (only direct children of `<map>`) — fine for `sample-docs/`'s flat
   structure, a real gap for deeper maps.~~ Closed (finding 11): walked
@@ -692,3 +693,87 @@ What's left for a complete MVP (§11), now that extraction itself works:
     `DitaModelExtractor`'s class doc and the spec's §3.3/§12 Phase 1
     status accordingly — `<navref>` is the only one of the three still
     genuinely out of scope.
+
+15. **Of the two remaining relation-inference gaps (`applies-to`,
+    `generated-from`, findings 6/7 and 13), what would each actually
+    need to become real rather than guessed, and does the DITA-OT
+    resolved output already carry the data to build it deterministically?**
+    Checked both against real resolved output before writing any
+    extraction or inference code, the same discipline as finding 14.
+
+    **`generated-from` needed no inference at all, once the right
+    signal was found.** Built a scratch `<p conref="...#.../id"/>`
+    fixture and inspected DITA-OT's resolved output directly
+    (`--clean.temp=no`): every element it writes carries an `xtrf`
+    attribute tracing its *true* source file as an absolute `file:` URI
+    — and a `conref`/`conkeyref`-resolved element is replaced wholesale
+    by the referenced element, inheriting *its* `xtrf`, not the
+    referencing topic's own. Confirmed the negative case mattered too:
+    a plain `keyref`-resolved `<keyword keyref="...">`/`<ph>` (ordinary
+    variable substitution, not content reuse) keeps its *own* `xtrf`
+    unchanged — DITA-OT resolves the `keyref` into an `href` attribute
+    and injects text as a child node, but doesn't replace the element
+    itself the way conref/conkeyref do. This is the precise
+    discriminator §3.3 wants ("topic -> conref/conkeyref source
+    fragment", not "topic -> anything referencing a key"), and it's
+    deterministic, not a heuristic: `DitaModelExtractor` now builds a
+    `src -> path` map from `job.xml`'s own `<file src="...">` entries
+    (the same absolute-URI scheme `xtrf` uses, confirmed by comparing
+    them directly), scans every descendant element of a topic's body for
+    an `xtrf` resolving to a *different* topic than its own, and adds
+    one `generated-from` edge per distinct source (deduped per topic,
+    not one edge per reused element). Also checked that DITA-OT's
+    auto-generated `<related-links>` block (finding 11) doesn't
+    contaminate this: its content's `xtrf` points at the *ditamap*, not
+    a topic, and it's excluded by the same `isInsideRelatedLinks` check
+    the `<xref>`/`<link>` scanner already uses, so it can never resolve
+    to a bogus generated-from target anyway.
+
+    **`applies-to` needed real new extraction (`uicontrols`/
+    `cmdUicontrols`), then a matching rule precise enough to avoid
+    false positives.** `DitaModelExtractor` now collects two per-topic
+    fields: `uicontrols` (distinct `<uicontrol>` text anywhere in a
+    topic's body -- what a Reference topic "defines") and
+    `cmdUicontrols` (distinct `<uicontrol>` text specifically inside
+    `<cmd>` elements -- what a Task topic's steps "invoke"), scoping the
+    match to §3.3's literal wording rather than any casual mention
+    anywhere in a task's prose. `core/dita2graph-core/src/relations.rs`
+    gained `infer_applies_to`: for each Task's `cmd_uicontrols` term,
+    find every Reference topic whose `uicontrols` contains it. Exactly
+    one candidate -> a real edge (once per task/reference pair, even if
+    several terms resolve to the same reference). Two or more
+    candidates is `DITA2GRAPH010W`'s own canonical example -- the
+    catalog entry has said "e.g. two candidate `applies-to` targets"
+    since Phase 0, before this was ever built -- so it's dropped and
+    logged, not guessed at by picking one. Same "an existing relation in
+    either direction wins" precedence as `related-to` (finding 13).
+    `applies-to` runs *before* `related-to` in `run_build` (main.rs): a
+    directional, type-scoped, unambiguous `<uicontrol>` match is a
+    stronger signal than a shared `product` tag, so it gets first claim
+    on a pair.
+
+    **Result:** 8 new Rust unit tests (`relations.rs`) cover the
+    unambiguous match, the no-match case, the ambiguous-drop (verified
+    the diagnostic is actually emitted, not just that no edge appears),
+    one task with both an unambiguous and an ambiguous term at once,
+    multiple terms deduping to one edge, `cmd`-scoping on the source
+    side, Reference-only gating on the target side, and the
+    already-connected-elsewhere precedence rule. 2 new Java unit tests
+    (`DitaModelExtractorTest`) cover `generated-from`'s per-topic dedup
+    (two reused elements from the same source collapse to one edge) and
+    `uicontrols`/`cmdUicontrols` extraction scoping. Verified live
+    against a real DITA-OT 4.4 run with a purpose-built fixture
+    (`sample-docs-relations/`, checked in): a task using `Save`
+    (matching exactly one reference topic) and `Cancel` (matching two)
+    produces exactly one `applies-to` edge, for `Save` only -- `graph.json`
+    has no edge at all involving the second `Cancel`-matching topic, and
+    the dropped-match diagnostic shows up in the real `dita` build log.
+    A separate `conref`-based reuse in the same fixture produces exactly
+    one `generated-from` edge, rendered correctly in both the frontmatter
+    link and body of the reusing topic's OKF concept, `okf-validator`-clean.
+    Gated in CI (`gradle-build/build.gradle.kts`'s
+    `buildKnowledgeGraphRelations`, `.github/workflows/integration.yml`).
+    Every relation in §4.3's taxonomy is now real: `contains`,
+    `requires`, `references`, `applies-to`, `related-to`, and
+    `generated-from`. Canonical-node deduplication for reused content
+    and incremental rebuild remain open (§3.3, §12 Phase 2 status).
