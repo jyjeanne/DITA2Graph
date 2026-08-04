@@ -74,11 +74,34 @@ DITA-OT's own `xtrf` source-trace attributes, no inference needed
 reference topic, with an ambiguous match dropped and logged rather than
 guessed, finding 15) are both inferred, downstream, in Rust.
 
-**Deferred to Phase 6+:** true canonical-node deduplication for
-`conref`/`conkeyref`-reused content (`generated-from` records
-provenance today, but doesn't yet collapse storage), incremental
-rebuild (source-hash keyed), and SQLite/RocksDB-backed storage (`query`
-currently reads `graph.json` directly).
+**Deferred to Phase 6+:** incremental rebuild (source-hash keyed) and
+SQLite/RocksDB-backed storage (`query` currently reads `graph.json`
+directly). Canonical-node deduplication for `conref`/`conkeyref`-reused
+content is done, see Phase 6+ below.
+
+**Found and fixed for real-dataset usability (post-`v0.1.0`):**
+`infer_related_to` (`relations.rs`) was an unconditional O(n²) sweep
+over every topic pair, flagged in its own doc comment as "fine for the
+corpus sizes this scaffold targets; revisit... if that stops being
+true" — exactly the kind of thing meant to be revisited once tested
+against real corpus sizes, not before. Rewritten around a `product ->
+topic indices` bucket index (built once, O(n)) so a topic is only ever
+compared against others that actually share a `product` value, not
+every topic in the corpus regardless of overlap; the apply phase also
+moved from an O(edges × n) linear `find()` per edge to an O(edges)
+id-index lookup. Verified empirically, not just reasoned about: a
+synthetic 5,000-topic corpus with a realistic tag-like `product` spread
+(300 distinct values) completes the whole `build` — inference, writing
+5,000 concept files, the RAG index, validation — in ~1.1s; the genuine
+degenerate worst case (all 5,000 topics sharing one `product` value,
+producing 24,995,000 edges — a corpus where `product` carries no
+distinguishing information at all) takes ~2m10s, which is inherent to
+that case's actual output size, not a complexity regression. Verified
+correct with a dedicated bucketing test (two separate product groups
+plus an unrelated topic — every within-group pair found, zero
+cross-group edges) alongside the existing suite, all deterministic
+(`BTreeMap`/`BTreeSet` throughout, matching the old loop's edge order
+exactly).
 
 ### Phase 3 — MCP server
 
