@@ -141,6 +141,35 @@ impl BundleReader {
         None
     }
 
+    /// When `attempted` doesn't exist but is exactly the un-disambiguated
+    /// tail of one real id, suggests that real id -- the shape
+    /// `DitaModelExtractor`'s duplicate-topic-id disambiguation
+    /// (`DITA2GRAPH070W`) produces is `{original-id}--{source-path}`, and
+    /// a real live Claude Code session (not a hypothetical) guessed the
+    /// bare `{source-path}` tail after `search_topics` showed it the
+    /// full `[ID--topics-troubleshooting-overview.dita]` id -- a
+    /// reasonable-looking but wrong guess that a plain "no concept file
+    /// found" error gives no way to self-correct from except trial and
+    /// error. Only fires on an *unambiguous* single match (mirrors
+    /// `relations.rs`'s "an ambiguous match is dropped, not guessed at"
+    /// discipline) -- two disambiguated ids can't share a suffix in
+    /// practice (the source path is unique per topic), so this is
+    /// effectively always unambiguous when it fires at all, but the
+    /// check costs nothing and keeps the guarantee explicit.
+    fn suggest_id(&self, attempted: &str) -> Option<&str> {
+        let suffix = format!("--{attempted}");
+        let mut matches = self
+            .nodes
+            .keys()
+            .filter(|id| id.ends_with(&suffix))
+            .map(String::as_str);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first)
+    }
+
     /// Splits a concept file into (frontmatter YAML, body markdown) --
     /// cached per id after the first read (see `concept_cache` above),
     /// since the same `BundleReader` now serves every tool call for as
@@ -152,7 +181,12 @@ impl BundleReader {
         }
         let path = self
             .concept_path(id)
-            .with_context(|| format!("no concept file found for id `{id}`"))?;
+            .with_context(|| match self.suggest_id(id) {
+                Some(suggestion) => {
+                    format!("no concept file found for id `{id}` -- did you mean `{suggestion}`?")
+                }
+                None => format!("no concept file found for id `{id}`"),
+            })?;
         let content =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         let content = content.strip_prefix("---\n").unwrap_or(&content);
@@ -546,5 +580,93 @@ mod tests {
             "Title A",
             "a bundle with no rag/ should still be cached across calls, not reopened every time"
         );
+    }
+
+    /// Caught live, not hypothesized: a real Claude Code session saw
+    /// `search_topics` display `[ID--topics-troubleshooting-overview.dita]`
+    /// and guessed the bare `topics-troubleshooting-overview.dita` tail
+    /// -- a reasonable-looking wrong guess at what
+    /// `DitaModelExtractor`'s duplicate-id disambiguation (`DITA2GRAPH070W`)
+    /// produces. The error for that guess should point straight at the
+    /// real id instead of leaving the caller to trial-and-error it.
+    #[test]
+    fn read_concept_suggests_the_real_id_for_a_disambiguation_prefix_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(
+            dir.path(),
+            "ID--topics-troubleshooting-overview.dita",
+            "Troubleshooting",
+        );
+        let reader = BundleReader::open(dir.path()).unwrap();
+
+        let err = reader
+            .read_concept("topics-troubleshooting-overview.dita")
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("did you mean `ID--topics-troubleshooting-overview.dita`"),
+            "{err}"
+        );
+    }
+
+    /// No suggestion at all for a genuinely wrong id that isn't the tail
+    /// of any real one -- a made-up guess shouldn't get a confident-
+    /// looking "did you mean" pointing nowhere useful.
+    #[test]
+    fn read_concept_suggests_nothing_for_an_id_with_no_plausible_match() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        let reader = BundleReader::open(dir.path()).unwrap();
+
+        let err = reader
+            .read_concept("completely-unrelated-guess")
+            .unwrap_err();
+        assert!(!err.to_string().contains("did you mean"), "{err}");
+    }
+
+    /// Two different disambiguated ids sharing the same tail (a real,
+    /// if unusual, possibility: two topics with different original ids
+    /// that both happen to end in the same source-path suffix) must not
+    /// produce a confident single suggestion -- the same "don't guess at
+    /// an ambiguous match" discipline `relations.rs`'s `applies-to`
+    /// inference already follows.
+    #[test]
+    fn read_concept_suggests_nothing_when_the_tail_is_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = vec![
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "first--shared-tail".into(),
+                topic_type: TopicType::Concept,
+                title: "First".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/first.dita".into(),
+                links: vec![],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "second--shared-tail".into(),
+                topic_type: TopicType::Concept,
+                title: "Second".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/second.dita".into(),
+                links: vec![],
+            }),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        let reader = BundleReader::open(dir.path()).unwrap();
+
+        let err = reader.read_concept("shared-tail").unwrap_err();
+        assert!(!err.to_string().contains("did you mean"), "{err}");
     }
 }

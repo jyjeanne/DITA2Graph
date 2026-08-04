@@ -220,6 +220,27 @@ right parameter, so a caller that still gets it wrong can self-correct
 from the error alone). Reverified with a second live session, which
 called it correctly on the first try.
 
+**Reverified again with a third, different live session** (a different
+question — "summarize the troubleshooting topic and what's related to
+it" — no tool named, and a fresh bundle rebuilt from the same corpus)
+specifically to confirm the `topicId` fix holds under different, less
+directed usage. It did: 17 tool calls across a much deeper exploration
+(the agent pulled summaries for every related sub-topic and traversed
+a second hop of relations), zero `id`/`topicId` parameter errors. That
+run surfaced one more real, if smaller, friction point: `search_topics`
+displays a duplicate-disambiguated id (`DITA2GRAPH070W`, Phase 1 above)
+as `[ID--topics-troubleshooting-overview.dita]`, and the agent
+reasonably but wrongly guessed the bare `topics-troubleshooting-
+overview.dita` tail, hitting "no concept file found" before
+self-correcting via `search_content`. Fixed with a `suggest_id` check
+in `BundleReader::read_concept`: when a missing id is exactly the
+undisambiguated tail of exactly one real id, the error now says so
+(`did you mean \`ID--...\`?`) — never fires on an ambiguous match,
+same "don't guess" discipline as `relations.rs`'s `applies-to`
+inference. Reverified with a fourth live session, same question: the
+same wrong first guess now self-corrects in one call instead of two,
+confirmed directly in the transcript.
+
 ### Phase 4 — Gradle integration + CI hardening
 
 `gradle-build/`'s Kotlin DSL harness runs the entire pipeline for real:
