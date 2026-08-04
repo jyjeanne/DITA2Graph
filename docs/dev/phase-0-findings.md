@@ -620,3 +620,75 @@ What's left for a complete MVP (§11), now that extraction itself works:
     DITAVAL filter (finding 9) — correctly inferred zero `related-to`
     edges, not just omitted the excluded topic's own. Both checks are
     gated in CI (`.github/workflows/integration.yml`).
+
+14. **Of the three map-composition mechanisms the spec has always
+    listed as "out of scope, same discipline as `applies-to`/
+    `related-to`/`generated-from`" (`<navref>`/`<anchorref>`/
+    `<mapref>`), does that blanket claim actually hold once checked
+    against real DITA-OT 4.4 behavior, the same way finding 11 checked
+    nested map structures instead of assuming they'd need new code?**
+    It didn't, for two of the three. Built three small fixtures (not
+    checked in as-is; folded into one final fixture below) and ran each
+    through a live DITA-OT with `--clean.temp=no` to inspect the actual
+    resolved output, rather than reasoning from the DITA spec's prose
+    alone:
+
+    - **`<mapref href="submap.ditamap"/>`**: DITA-OT's own preprocessing
+      (its `mapref` build step — confirmed present via `dita --help`'s
+      `--build-step.mapref=<yes|no>`) flattens the referenced submap's
+      `<topicref>` elements directly into the resolved base map before
+      this plugin's extractor ever runs. `submap.ditamap` itself still
+      appears in `job.xml` as an intermediate file, but never as
+      `input="true"`, so `DitaModelExtractor`'s existing map-file
+      selection (which only treats the `input` ditamap as *the* map)
+      already ignores it correctly, and the existing recursive walk
+      (finding 11) already picks up the merged `<topicref>` tree the
+      same way it picks up ordinary nesting. **Zero code changes
+      needed** — this was already fully supported, and the spec's "out
+      of scope" claim for it was simply wrong.
+    - **`anchorref`**: the DTD (`map.mod`) clarifies this isn't a
+      separate topicref-like element as the spec's prose implied — it's
+      an attribute on a submap's *root* `<map>` element
+      (`anchorref="some-id"`), paired with an `<anchor id="some-id"/>`
+      marker placed somewhere in the base map, intended to splice the
+      submap's content at that exact position rather than wherever the
+      `<mapref>`/`<topicref>` including it textually sits. Tested with
+      the anchor in two different positions (at map level, and nested
+      inside a topicref) — both times, DITA-OT merged the submap's
+      content in at the *including* topicref/mapref's own location, not
+      the anchor's, leaving the `<anchor>` element inert. Since this
+      plugin's `contains` edges encode only *which container* a topic
+      belongs to, not sibling order, the graph this plugin produces is
+      correct either way — so `anchorref` is functionally supported the
+      same way `mapref` is, with the one real, verified caveat that its
+      documented positional-splicing behavior isn't honored by DITA-OT
+      itself (at least not by default, for this transtype).
+    - **`<navref mapref="nav.ditamap"/>`**: genuinely unsupported,
+      confirmed by the same method — the `<navref>` element survives
+      completely unresolved in the resolved base map's output, and the
+      referenced map/topics never enter `job.xml` at all. DITA-OT only
+      resolves `<navref>` inside output-specific transforms (webhelp/
+      eclipsehelp TOC generation), not generically during preprocessing
+      the way `mapref` is. Supporting it here would mean this plugin
+      parsing and merging referenced navigation maps itself, entirely
+      outside DITA-OT's own pipeline — a materially larger, different
+      undertaking than the other two, and not attempted. This is the
+      one part of the original "out of scope" claim that actually holds.
+
+    **Result:** checked in `sample-docs-mapref/` (`user-guide.ditamap`
+    `<mapref>`-including `submap.ditamap`, whose root `<map>` carries
+    `anchorref="insert-point"` targeting an `<anchor>` nested inside
+    `user-guide.ditamap`'s own `intro` topicref — exercising both
+    mechanisms in one fixture, since they behave identically for graph
+    purposes) with a `README.md` documenting exactly what was confirmed
+    above. `graph.json` for it is exactly `user-guide --contains-->
+    {intro, after, spliced}` — `spliced` (from the submap) attaches
+    directly to `user-guide`, not nested under `intro` despite the
+    anchor's position, matching the caveat above precisely.
+    `okf-validator`-clean. Gated in CI
+    (`gradle-build/build.gradle.kts`'s `buildKnowledgeGraphMapref`,
+    `.github/workflows/integration.yml`) the same way
+    `buildKnowledgeGraphNested` gates finding 11. Updated
+    `DitaModelExtractor`'s class doc and the spec's §3.3/§12 Phase 1
+    status accordingly — `<navref>` is the only one of the three still
+    genuinely out of scope.

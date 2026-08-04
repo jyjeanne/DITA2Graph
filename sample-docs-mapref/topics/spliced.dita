@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="spliced">
+  <title>Spliced Topic</title>
+  <conbody>
+    <p>Content pulled in from submap.ditamap via mapref/anchorref.</p>
+  </conbody>
+</concept>

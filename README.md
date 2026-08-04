@@ -18,24 +18,25 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to` relation inference from shared `product` values (`relations.rs`, finding 13), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
-| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested `topicref`/`topichead`/`topicgroup` map structures at any depth, not just the top level, excludes DITA-OT's auto-generated `related-links` navigation from cross-reference extraction, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11) |
+| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested `topicref`/`topichead`/`topicgroup` map structures at any depth, not just the top level, excludes DITA-OT's auto-generated `related-links` navigation from cross-reference extraction, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14) |
 | `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all five, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
-| `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) |
+| `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref` for map-structure fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
 | `sample-docs-nested/` | A fixture exercising nested `topicref`/`topichead`/`topicgroup` and the `related-links` exclusion (finding 11) |
-| CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split, the nested-map fixture, and the broken-input negative test) against a live DITA-OT 4.4 |
+| `sample-docs-mapref/` | A fixture exercising `mapref`/`anchorref` submap composition (finding 14) |
+| CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split, the nested-map and mapref/anchorref fixtures, and the broken-input negative test) against a live DITA-OT 4.4 |
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
 | Hybrid graph+RAG architecture (§13.1) | Nearly done: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency-ranked content search), and `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept). Still design-only: node-level embeddings (the heavier, not-yet-committed direction) |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions (`applies-to`/`generated-from` relation inference —
-`related-to` is done, finding 13 — `navref`/`anchorref`/`mapref` map
-composition, and §5.1's MCP Resources — `dita://topics` etc. — which
-`dita2graph-mcp` doesn't implement at all, only the §5.2 tools) — real
-gaps, documented rather than hidden. All five `args.dita2graph.*`
-parameters, including `mcp`, are now functionally wired end to end
-(finding 12).
+`related-to` is done, finding 13 — `<navref>` map composition —
+`mapref`/`anchorref` are done, finding 14 — and §5.1's MCP Resources —
+`dita://topics` etc. — which `dita2graph-mcp` doesn't implement at all,
+only the §5.2 tools) — real gaps, documented rather than hidden. All
+five `args.dita2graph.*` parameters, including `mcp`, are now
+functionally wired end to end (finding 12).
 
 ## Toolchain requirements
 

@@ -237,6 +237,36 @@ jobs:
           print('nested map structure OK:', edges)
           "
 
+      - name: Build the mapref/anchorref map composition fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphMapref --no-daemon
+
+      - name: Confirm mapref/anchorref submap content merges into the base map (§3.3, finding 14)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-mapref/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          expected = {
+              ('user-guide', 'intro', 'contains'),
+              ('user-guide', 'after', 'contains'),
+              # 'spliced' comes from submap.ditamap, pulled in via
+              # <mapref>, whose root <map anchorref=\"insert-point\">
+              # targets the <anchor> nested inside intro's topicref --
+              # DITA-OT merges it in at the mapref's own location (a
+              # direct child of user-guide), not spliced under intro at
+              # the anchor's actual position (sample-docs-mapref/README.md).
+              ('user-guide', 'spliced', 'contains'),
+          }
+          assert edges == expected, f'edges did not match: {edges}'
+          print('mapref/anchorref composition OK:', edges)
+          "
+          ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-mapref/okf
+
       - name: Confirm args.dita2graph.depth limits map containment (§2.3)
         env:
           DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core

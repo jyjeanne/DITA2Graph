@@ -1683,9 +1683,31 @@ these up as authored `references`/`requires` edges, duplicating (and
 mislabeling) the containment relationship as author-declared content.
 Fixed by excluding anything inside `<related-links>` from
 cross-reference extraction (`DitaModelExtractor.isInsideRelatedLinks`).
-`<navref>`/`<anchorref>`/`<mapref>` (map composition via navigation,
-anchors, or sub-maps) remain out of scope, same "verify before you
-infer" discipline as `applies-to`/`related-to`/`generated-from`.
+
+**`mapref`/`anchorref` map composition — since closed**
+(`docs/dev/phase-0-findings.md` finding 14, `sample-docs-mapref/`):
+checking actual DITA-OT 4.4 behavior (rather than assuming these needed
+new extractor code, the same discipline as finding 11) found that
+`<mapref>`-included submap content is *already* flattened directly into
+the resolved base map's `<topicref>` tree by DITA-OT's own preprocessing,
+before this plugin's extractor ever runs — the existing recursive map
+walk (finding 11) picks it up for free, no code change needed.
+`anchorref` (the attribute a submap's root `<map>` carries, paired with
+an `<anchor id="...">` marker in the base map) behaves the same way for
+containment purposes, with one confirmed caveat: DITA-OT does not honor
+the anchor's *positional* splicing — the submap's content merges in at
+the `<mapref>`'s own location, not nested under wherever the `<anchor>`
+actually sits. Since `contains` edges don't encode sibling order, only
+which container a topic belongs to, this doesn't affect the graph this
+plugin produces, but it's a real, verified gap from `anchorref`'s
+documented DITA semantics, stated plainly rather than assumed correct.
+`<navref>` is different: confirmed unresolved by DITA-OT entirely for
+this transtype (the referenced map/topics never even enter `job.xml`),
+since DITA-OT only resolves it inside output-specific transforms
+(webhelp/eclipsehelp TOC generation), not generically during
+preprocessing — supporting it would mean this plugin parsing and
+merging navigation maps itself, a materially larger undertaking than
+`mapref`/`anchorref`, and remains out of scope.
 
 With real nesting in place, `args.dita2graph.depth` (§2.3) stopped
 being an open question and became a direct follow-up: `ExtractTask`

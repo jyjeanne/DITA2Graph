@@ -23,6 +23,7 @@ val ditaOtVersion = "4.4"
 val sampleDocs = layout.projectDirectory.dir("../sample-docs")
 val sampleDocsInvalid = layout.projectDirectory.dir("../sample-docs-invalid")
 val sampleDocsNested = layout.projectDirectory.dir("../sample-docs-nested")
+val sampleDocsMapref = layout.projectDirectory.dir("../sample-docs-mapref")
 val pluginDir = layout.projectDirectory.dir("../plugin/org.dita.dita2graph")
 
 val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
@@ -121,6 +122,20 @@ val buildKnowledgeGraphNested = tasks.register<DitaOtTask>("buildKnowledgeGraphN
     ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
     input(sampleDocsNested.file("user-guide.ditamap"))
     output(layout.buildDirectory.dir("dita2graph-nested").get().asFile.path)
+    transtype("dita2graph")
+    progressStyle("DETAILED")
+}
+
+// mapref/anchorref map composition (§3.3, finding 14) -- see
+// ../sample-docs-mapref/README.md for what's actually confirmed to work
+// (both, via DITA-OT's own mapref preprocessing step) versus navref
+// (not supported at all, confirmed separately, no fixture needed since
+// nothing happens for it to regress).
+val buildKnowledgeGraphMapref = tasks.register<DitaOtTask>("buildKnowledgeGraphMapref") {
+    dependsOn(installDita2Graph)
+    ditaOt(layout.buildDirectory.dir("dita-ot/dita-ot-$ditaOtVersion"))
+    input(sampleDocsMapref.file("user-guide.ditamap"))
+    output(layout.buildDirectory.dir("dita2graph-mapref").get().asFile.path)
     transtype("dita2graph")
     progressStyle("DETAILED")
 }

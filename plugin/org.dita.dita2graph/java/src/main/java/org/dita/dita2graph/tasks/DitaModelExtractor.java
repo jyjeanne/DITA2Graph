@@ -47,12 +47,22 @@ import java.util.function.Consumer;
  *       {@code href} signals an intentional, named dependency);
  *   <li>any other local {@code <xref>}/{@code <link>} -&gt; {@code references}.
  * </ul>
- * {@code <navref>/<anchorref>/<mapref>} (map composition via a separate
- * navigation/anchor/sub-map mechanism, not simple containment) are
- * deliberately out of scope, same discipline.
- * {@code applies-to}, {@code related-to}, and {@code generated-from} all
- * require heuristic inference this extractor doesn't attempt (§3.3); they
- * never appear in its output.
+ * {@code <mapref>}/{@code anchorref} submap composition needs no extra
+ * code here at all: DITA-OT's own preprocessing flattens a
+ * {@code <mapref>}-included submap's {@code <topicref>} tree directly
+ * into the resolved base map before this class ever runs, so the
+ * recursive walk above picks it up the same way it picks up ordinary
+ * nesting -- confirmed against a live DITA-OT 4.4
+ * ({@code sample-docs-mapref/README.md}, {@code docs/dev/
+ * phase-0-findings.md} finding 14). {@code <navref>} is genuinely
+ * unsupported -- DITA-OT never resolves it for this transtype at all,
+ * so the referenced map/topics never reach this extractor's input in
+ * the first place.
+ * {@code applies-to} and {@code generated-from} require heuristic
+ * inference this extractor doesn't attempt (§3.3); they never appear in
+ * its output. {@code related-to} is inferred too, but downstream in the
+ * Rust core from {@code product} metadata this class already extracts
+ * (finding 13), not here.
  *
  * <p>Each topic's body element ({@code conbody}/{@code taskbody}/{@code
  * refbody}/{@code glossdef}/generic {@code body}, per {@link
