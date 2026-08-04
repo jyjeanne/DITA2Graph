@@ -33,6 +33,19 @@ pub struct GraphEdge {
     pub relation: String,
 }
 
+/// One record from `rag/chunks.jsonl` (§13.1) -- the content-search
+/// artifact `dita2graph-core build` writes alongside `okf/`, from the
+/// same normalized model, not a second parse of the DITA source.
+#[derive(Deserialize, Clone)]
+pub struct RagChunk {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(rename = "topicType")]
+    pub topic_type: String,
+}
+
 pub struct BundleReader {
     /// The directory containing `okf/` and `graph.json` (i.e. what
     /// `dita2graph-core build --output` pointed at).
@@ -107,6 +120,25 @@ impl BundleReader {
         let frontmatter: serde_yaml::Value = serde_yaml::from_str(yaml)
             .with_context(|| format!("parsing frontmatter in {}", path.display()))?;
         Ok((frontmatter, body.trim_start().to_string()))
+    }
+
+    /// Loads `rag/chunks.jsonl` (§13.1). Returns an empty `Vec`, not an
+    /// error, when the file is missing -- a bundle built before `rag/`
+    /// existed, or built by a `dita2graph-core` that predates it, should
+    /// degrade content search to "no results" rather than fail every
+    /// tool call that touches it.
+    pub fn rag_chunks(&self) -> Result<Vec<RagChunk>> {
+        let path = self.root.join("rag").join("chunks.jsonl");
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(_) => return Ok(Vec::new()),
+        };
+        raw.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line).with_context(|| format!("parsing {}", path.display()))
+            })
+            .collect()
     }
 
     pub fn title(&self, id: &str) -> Result<String> {

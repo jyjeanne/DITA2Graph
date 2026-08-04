@@ -91,6 +91,25 @@ jobs:
           echo "$response" | grep -q '"isError":false'
           echo "$response" | grep -q 'installing-product'
 
+      - name: Confirm search_content narrows via the graph first (§13.1)
+        run: |
+          set -euo pipefail
+          # "download" only appears in installing-product's body text
+          # (rag/chunks.jsonl); scoping the search to configuration (which
+          # requires nothing forward) must find zero matches, proving the
+          # graph-narrowing step actually restricts the candidate set
+          # rather than search_content silently searching everything.
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"download","topicId":"configuration"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q 'no content matched'
+
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"download","topicId":"installing-product"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'installing-product'
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |

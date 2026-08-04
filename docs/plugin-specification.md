@@ -712,6 +712,7 @@ trusting an answer's completeness (§6.1).
 
 ```
 search_topics(query)
+search_content(query, topicId?, relation?, depth?)
 find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
@@ -728,14 +729,28 @@ matching against titles/ids, not embedding-based semantic search;
 `list_key_definitions` tool were part of an earlier draft of this
 contract and were never implemented, so they're not listed here.
 
+`search_content(query, topicId?, relation?, depth?)` is §13.1's
+query-routing piece, implemented: full-text search over
+`rag/chunks.jsonl`'s topic text, which `search_topics` never looks at
+(title/id only). Without `topicId` it searches the whole `rag/` index —
+the "purely about content" case. With `topicId` (optionally scoped
+further by `relation`, up to `depth` hops, default 3) it first computes
+every topic forward-reachable from `topicId` via the graph, then
+searches only within that narrowed set — the "hybrid" case §13.1
+describes: cheap, deterministic graph narrowing before the more
+expensive content match, not a fuzzy search over the whole bundle.
+Degrades to a plain "no rag/chunks.jsonl found" message, not an error,
+against a bundle built before `rag/` existed.
+
 `analyze_impact(topicId, depth?)` is a reverse graph traversal — every
 edge that points *at* `topicId`, followed transitively up to `depth`
 (default 5) — answering "if I change this topic, what breaks?" (§13.1):
 dependents via `requires`, containing maps via `contains`, and any
 other relation a topic participates in, not just declared
 prerequisites the way `trace_dependencies` (forward, `requires`-only)
-does. It's the first implemented tool from §13.1's design direction;
-query routing over `rag/` and node-level embeddings remain design only.
+does. Query routing and this tool are §13.1's second and first
+implemented pieces; only node-level embeddings and summarizing
+`analyze_impact`'s output through the content layer remain design only.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -908,10 +923,10 @@ pub fn list() -> Vec<Value> {
                 "required": ["id"],
             },
         }),
-        // dita2graph-mcp would declare search_topics, find_related_topics,
-        // explain_task, trace_dependencies, analyze_impact,
-        // generate_summary, and validate_bundle here, in the same shape
-        // (§5.2), dispatched to dita2graph-core instead of okf-rs's
+        // dita2graph-mcp would declare search_topics, search_content,
+        // find_related_topics, explain_task, trace_dependencies,
+        // analyze_impact, generate_summary, and validate_bundle here, in
+        // the same shape (§5.2), dispatched to dita2graph-core instead of okf-rs's
         // generic okf-query layer.
     ]
 }
@@ -1706,12 +1721,13 @@ answering queries in Claude Code, hitting no undocumented step.
 
 Not a single phase but a backlog, picked up item-by-item based on
 adopter feedback after v0.1.0 — see §13 for the current list: a unified
-graph + RAG architecture (§13.1, the largest single item, and already
-partly underway — `rag/chunks.jsonl` extraction and `analyze_impact`
-are done, graph-narrowed hybrid query routing and node-level embeddings
-are not), plus multi-map federation, graph diffing, HTTP transport +
-auth, and a rendered-output annotation variant (§13.2). Each item gets
-its own scoped follow-up
+graph + RAG architecture (§13.1, the largest single item, and mostly
+underway — `rag/chunks.jsonl` extraction, `search_content`'s
+graph-narrowed query routing, and `analyze_impact` are done;
+node-level embeddings and ranked/semantic content matching are not),
+plus multi-map federation, graph diffing, HTTP transport + auth, and a
+rendered-output annotation variant (§13.2). Each item gets its own
+scoped follow-up
 spec/issue and its own exit criterion before work starts, rather than
 being bundled into one open-ended phase.
 
@@ -1783,28 +1799,37 @@ markup-stripped text as documented, just occasionally run-on; a
 sentence-boundary heuristic is future cleanup, not correctness this
 implementation currently claims.
 
-**Query routing in the MCP server — not yet implemented.** §5.2's tools
-already split structural lookups (`find_related_topics`,
-`trace_dependencies`) from content questions; a hybrid architecture
-would route a question to one, the other, or both, depending on its
-shape. `rag/chunks.jsonl` exists now (above), but no MCP tool reads it
-yet — `search_topics` still only matches against `okf/`'s titles/ids
-(§5.2):
+**Query routing in the MCP server — implemented, in its basic form.**
+§5.2's tools split structural lookups (`find_related_topics`,
+`trace_dependencies`, `analyze_impact`) from content questions
+(`search_content`, §5.2), and `search_content(query, topicId?, ...)`
+implements the routing itself, not just a second search endpoint next
+to the first:
 
 - Purely structural ("what topics use this key?") → graph traversal
-  only, using §5.2's existing tools as-is.
-- Purely about content ("summarize the installation procedure") → the
-  `rag/` index only.
+  only, using §5.2's existing tools as-is. Unchanged, `search_content`
+  isn't involved.
+- Purely about content ("summarize the installation procedure") →
+  `search_content(query)` with no `topicId`, searching all of `rag/`.
 - Hybrid ("explain all maintenance procedures for diesel engines") →
-  graph first, to narrow the candidate set (every topic reachable via
-  `applies-to`/`references` from a "diesel engine" concept, §4.3), then
-  the `rag/` index only over that narrowed set, then the LLM only sees
-  that filtered context. The graph does cheap, deterministic narrowing;
-  the content layer does fuzzy relevance ranking *within* an
-  already-small, already-correct candidate set instead of over the
-  whole bundle — the mechanism behind §9.2's token-reduction argument at
-  scale (illustratively: ten thousand topics narrowed to a few dozen by
-  the graph before any content search runs).
+  `search_content(query, topicId: "diesel-engine", relation: "applies-to")`:
+  a forward graph traversal narrows the candidate set first (every
+  topic reachable from the given id via the given relation, up to
+  `depth` hops), then the text match runs only over `rag/` chunks
+  inside that narrowed set. Verified directly: scoping a query to a
+  topic with no path to the matching content returns zero results even
+  though the same query unscoped finds it elsewhere in the bundle —
+  the narrowing is real, not a no-op filter.
+
+What's *not* implemented is the "fuzzy relevance ranking" half of the
+original design text below — `search_content`'s within-scope match is
+still plain substring matching (§5.2), the same limitation
+`search_topics` has, not an embedding-based ranking step. The graph
+narrowing is real; the content layer it hands off to is still simple.
+This is still the mechanism behind §9.2's token-reduction argument at
+scale (illustratively: ten thousand topics narrowed to a few dozen by
+the graph before any content search runs) — narrowing doesn't require
+ranking to already be sophisticated to pay off.
 
 **Impact analysis — implemented, graph-only half.** "If I change
 `engine.dita`, what breaks?" is a graph query — dependents, containing
@@ -1814,12 +1839,13 @@ incoming edge, transitively, up to `depth` hops (default 5), returning
 every concept that (directly or indirectly) depends on the one that
 changed. Verified against a live bundle: changing a topic three other
 concepts depend on at different hop distances reports all three, not
-just the direct dependent. What's still missing from the original
-design-direction text above is the *content* half — having the RAG
-layer summarize each affected topic into a readable report, rather
-than the current output (a flat list of "concept — relation — target"
-lines) — which depends on the still-unimplemented query-routing piece
-two paragraphs up.
+just the direct dependent. What's still missing is the *content* half
+— summarizing each affected topic into a readable report, rather than
+the current output (a flat list of "concept — relation — target"
+lines). `search_content` (above) could in principle be called per
+affected id to fetch each one's text, but nothing wires that
+combination together into one tool call yet; that composition is
+future work, not a currently exposed capability.
 
 **Longer-term direction: converge the two artifacts.** The natural end
 state folds `rag/chunks.jsonl` into the OKF nodes themselves instead of
@@ -1835,18 +1861,23 @@ direction under consideration, not a committed design — §10 would need
 its own regression corpus and success criteria for this before it's
 scoped as a phase.
 
-**Status:** two of this section's four pieces are implemented and
+**Status:** three of this section's four pieces are implemented and
 verified — `rag/`'s extraction and output side
-(`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`) and
-the graph-only half of impact analysis (`analyze_impact` in
-`mcp/dita2graph-mcp/src/tools.rs`), both covered by unit tests and a
-live DITA-OT 4.4 run including the DITAVAL split. Query routing over
-`rag/` and node-level embeddings remain design only — no MCP tool
-reads `rag/chunks.jsonl` yet, `search_topics` is still plain text
-matching against `okf/` (§5.2), and `analyze_impact`'s output isn't
-summarized by a content layer. Each remaining piece is tracked as its
-own Phase 6+ backlog item (§12), to get its own scoped follow-up spec
-and exit criterion before work starts.
+(`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`),
+basic query routing (`search_content` in
+`mcp/dita2graph-mcp/src/tools.rs`), and the graph-only half of impact
+analysis (`analyze_impact`, same file). All three are covered by unit
+tests and a live DITA-OT 4.4 run including the DITAVAL split, and
+`search_content`'s graph-narrowing is specifically verified to
+*narrow* (a scoped query with no matches in scope returns zero
+results even though the same query unscoped finds a match elsewhere).
+Node-level embeddings remain design only, and two smaller gaps remain
+inside the implemented pieces: `search_content`'s within-scope match
+is plain substring matching, not ranked/semantic, and
+`analyze_impact`'s output isn't summarized by the content layer. Each
+remaining piece is tracked as its own Phase 6+ backlog item (§12), to
+get its own scoped follow-up spec and exit criterion before work
+starts.
 
 ### 13.2 Other extended capabilities
 

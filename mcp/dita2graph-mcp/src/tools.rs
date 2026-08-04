@@ -53,6 +53,20 @@ pub fn list() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "search_content",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content. Pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "topicId": { "type": "string", "description": "Optional: narrow the search to topics reachable from this id" },
+                    "relation": { "type": "string", "description": "Optional: restrict narrowing to one relation (default: all)" },
+                    "depth": { "type": "integer", "description": "Max narrowing depth from topicId (default 3)" },
+                },
+                "required": ["query"],
+            },
+        }),
+        json!({
             "name": "analyze_impact",
             "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers), not just its direct links (§13.1).",
             "inputSchema": {
@@ -85,6 +99,7 @@ pub fn call(name: &str, arguments: &Value, bundle_root: &Path) -> Result<String>
     let bundle = BundleReader::open(bundle_root)?;
     match name {
         "search_topics" => search_topics(&bundle, arguments),
+        "search_content" => search_content(&bundle, arguments),
         "find_related_topics" => find_related_topics(&bundle, arguments),
         "explain_task" => explain_task(&bundle, arguments),
         "trace_dependencies" => trace_dependencies(&bundle, arguments),
@@ -116,6 +131,86 @@ fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         return Ok(format!("no topics matched `{query}`"));
     }
     Ok(hits.join("\n"))
+}
+
+/// Content search over `rag/chunks.jsonl` (§13.1), optionally scoped to
+/// the topics reachable from `topicId` via a forward graph traversal --
+/// the "graph narrows first, content search runs only on what's left"
+/// pattern that section describes, made concrete: `search_topics` above
+/// only ever matches titles/ids against `okf/`, never a topic's actual
+/// prose.
+fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
+    let query = arg_str(arguments, "query")?.to_lowercase();
+    let scope_topic = arguments.get("topicId").and_then(|v| v.as_str());
+    let relation = arguments.get("relation").and_then(|v| v.as_str());
+    let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+
+    let chunks = bundle.rag_chunks()?;
+    if chunks.is_empty() {
+        return Ok(
+            "no rag/chunks.jsonl found for this bundle -- run `dita2graph-core build` \
+             (not just `validate`) to produce one (§13.1)"
+                .to_string(),
+        );
+    }
+
+    let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
+
+    let mut hits: Vec<String> = Vec::new();
+    for chunk in &chunks {
+        if let Some(allowed) = &allowed
+            && !allowed.contains(&chunk.id)
+        {
+            continue;
+        }
+        let text = chunk.text.as_deref().unwrap_or_default().to_lowercase();
+        if chunk.title.to_lowercase().contains(&query) || text.contains(&query) {
+            hits.push(format!(
+                "{} ({}) [{}]",
+                chunk.title, chunk.topic_type, chunk.id
+            ));
+        }
+    }
+    hits.sort();
+
+    if hits.is_empty() {
+        return Ok(match scope_topic {
+            Some(id) => format!("no content matched `{query}` within topics reachable from `{id}`"),
+            None => format!("no content matched `{query}`"),
+        });
+    }
+    Ok(hits.join("\n"))
+}
+
+/// Every id reachable from `start` by following outgoing edges
+/// (optionally restricted to one `relation`) up to `depth` hops,
+/// including `start` itself -- the graph-narrowing step in
+/// [`search_content`].
+fn forward_reachable(
+    bundle: &BundleReader,
+    start: &str,
+    relation: Option<&str>,
+    depth: usize,
+) -> std::collections::HashSet<String> {
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start.to_string());
+    let mut frontier = vec![start.to_string()];
+
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for id in &frontier {
+            for edge in bundle.edges_from(id, relation) {
+                if visited.insert(edge.to.clone()) {
+                    next.push(edge.to.clone());
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    visited
 }
 
 fn find_related_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {

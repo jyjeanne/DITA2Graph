@@ -112,6 +112,7 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
+        write_rag_index,
     };
 
     fn sample_bundle_root() -> tempfile::TempDir {
@@ -158,6 +159,74 @@ mod tests {
         dir
     }
 
+    /// A bundle shaped to exercise `search_content`'s graph-narrowing:
+    /// `installing-product` (`requires`) `configuration`, both with
+    /// "encryption" somewhere in their text, plus a third topic with the
+    /// same word that's *not* reachable from `installing-product` --
+    /// scoped search should find the first two and not the third.
+    fn content_search_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = vec![
+            NormalizedNode::Map(NormalizedMap {
+                id: "user-guide".into(),
+                title: "User Guide".into(),
+                source_file: "user-guide.ditamap".into(),
+                links: vec![
+                    Link {
+                        relation: Relation::Contains,
+                        target: "installing-product".into(),
+                    },
+                    Link {
+                        relation: Relation::Contains,
+                        target: "unrelated-topic".into(),
+                    },
+                ],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "installing-product".into(),
+                topic_type: TopicType::Task,
+                title: "Installing Product".into(),
+                shortdesc: Some("Steps to install the product.".into()),
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                source_file: "topics/installing-product.dita".into(),
+                links: vec![Link {
+                    relation: Relation::Requires,
+                    target: "configuration".into(),
+                }],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "configuration".into(),
+                topic_type: TopicType::Concept,
+                title: "Configuration Overview".into(),
+                shortdesc: None,
+                body: Some("Set the encryption key before starting.".into()),
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                source_file: "topics/configuration.dita".into(),
+                links: vec![],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "unrelated-topic".into(),
+                topic_type: TopicType::Concept,
+                title: "Unrelated Topic".into(),
+                shortdesc: None,
+                body: Some("Encryption keys must be rotated regularly.".into()),
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                source_file: "topics/unrelated-topic.dita".into(),
+                links: vec![],
+            }),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
     #[test]
     fn initialize_reports_capabilities() {
         let response = handle_message(
@@ -191,6 +260,7 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"search_topics"));
+        assert!(names.contains(&"search_content"));
         assert!(names.contains(&"find_related_topics"));
         assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
@@ -225,6 +295,59 @@ mod tests {
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Configuration Overview"));
+    }
+
+    #[test]
+    fn search_content_finds_a_match_in_body_text_not_just_the_title() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "encryption" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // Unscoped: both topics containing "encryption" should be found,
+        // even though the query never matches either title.
+        assert!(text.contains("Configuration Overview"), "{text}");
+        assert!(text.contains("Unrelated Topic"), "{text}");
+        assert_eq!(response["result"]["isError"], false);
+    }
+
+    #[test]
+    fn search_content_scoped_to_a_topic_id_narrows_via_the_graph_first() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "encryption", "topicId": "installing-product" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // configuration is reachable from installing-product (requires);
+        // unrelated-topic is not, even though it also matches "encryption".
+        assert!(text.contains("Configuration Overview"), "{text}");
+        assert!(!text.contains("Unrelated Topic"), "{text}");
+    }
+
+    #[test]
+    fn search_content_reports_no_rag_index_when_bundle_predates_rag() {
+        let dir = sample_bundle_root(); // built without write_rag_index
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "anything" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("no rag/chunks.jsonl found"), "{text}");
+        assert_eq!(response["result"]["isError"], false);
     }
 
     #[test]
