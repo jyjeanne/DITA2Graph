@@ -496,14 +496,19 @@ versioned on its own.
   this doesn't false-positive on ordinary keyref use). `DitaModelExtractor`
   detects any descendant element whose `xtrf` differs from its own
   topic's source file and adds one `generated-from` edge per distinct
-  source, deterministically, not as an inference. **Not yet
-  implemented**: the engine does *not* yet collapse reused content into
-  a single canonical node — the reusing topic still gets its own full
-  concept document with the pulled-in text rendered inline, same as
-  DITA-OT's own resolved output; `generated-from` records *where it came
-  from*, it doesn't deduplicate storage. True canonical-node
-  deduplication remains future work, alongside incremental rebuild
-  below.
+  source, deterministically, not as an inference. **Canonical-node
+  deduplication is implemented at topic-level granularity**
+  (`docs/dev/canonical-node-dedup-spec.md`, verified against a live
+  DITA-OT 4.4 run): a reusing topic's OKF body and RAG chunk text
+  exclude any subtree whose `xtrf` points elsewhere — that text lives
+  exactly once, in its source topic's own body, reachable via the
+  `generated-from` edge instead of duplicated inline. **Not yet
+  implemented**: sub-topic/element-level canonical nodes (a standalone
+  node per reused fragment, independent of its containing topic) —
+  `xtrf` only resolves to a source *file*, not a specific element
+  within it, so getting finer than topic-level granularity needs a
+  separate extraction path and its own spec, not a natural extension
+  of this one. Incremental rebuild remains future work too, below.
 - **Incremental updates**: on re-run, diff against the existing
   `graph.db` and only recompute changed subgraphs (keyed by source file
   hash), so large doc sets don't require a full rebuild on every publish.
@@ -1805,11 +1810,12 @@ including a test that builds a bundle and round-trips it through
 needs no Rust-side inference at all — `DitaModelExtractor` derives it
 deterministically from DITA-OT's own `xtrf` source-trace attributes
 (finding 15), so all four relations beyond `contains` are now covered.
-**Not done:** true canonical-node deduplication for reused content (a
-`generated-from` edge records provenance, but the reusing topic still
-gets its own full concept document with the pulled-in text rendered
-inline — see §3.3's "Deduplication & reuse tracking"), incremental
-rebuild, and SQLite/RocksDB storage (`query` currently reads
+**Not done:** sub-topic/element-level canonical-node deduplication —
+topic-level dedup for `conref`/`conkeyref`-reused content is done (see
+§3.3's "Deduplication & reuse tracking" and
+`docs/dev/canonical-node-dedup-spec.md`), but a standalone node per
+reused fragment, independent of its containing topic, is not; nor are
+incremental rebuild or SQLite/RocksDB storage (`query` currently reads
 `graph.json` directly, not a database). No golden-fixture byte-for-byte
 test yet either. This phase got ahead of Phase 1 because it could be
 developed and tested against a hand-authored fixture without needing a

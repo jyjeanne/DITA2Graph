@@ -93,7 +93,15 @@ import java.util.function.Consumer;
  * refbody}/{@code glossdef}/generic {@code body}, per {@link
  * #bodyElementTag}) is also captured as whitespace-normalized plain text
  * -- markup stripped, nothing else cleaned up -- for both the OKF
- * bundle's body content and the RAG index (§4.4, §13.1).
+ * bundle's body content and the RAG index (§4.4, §13.1). Text pulled in
+ * via {@code conref}/{@code conkeyref} is excluded from that capture
+ * (canonical-node deduplication, {@code
+ * docs/dev/canonical-node-dedup-spec.md}): it's already fully
+ * represented in its source topic's own body, and this topic's {@code
+ * generated-from} edge to that source is the pointer, so duplicating the
+ * text here too would just inflate the bundle and RAG index with copies
+ * of identical content -- exactly the failure mode a heavily-reused real
+ * DITA corpus (shared warnings, boilerplate, common steps) would hit.
  *
  * <p>{@code maxDepth} (§2.3's {@code args.dita2graph.depth}) limits how
  * many levels of *real* map containment the {@code contains} edges
@@ -254,7 +262,7 @@ final class DitaModelExtractor {
             topic.title = childText(root, "title", topic.id);
             String shortdesc = directChildText(root, "shortdesc");
             topic.shortdesc = shortdesc.isEmpty() ? null : shortdesc;
-            String body = bodyText(root, topic.topicType);
+            String body = bodyText(root, topic.topicType, file.path, ditaSrcToPath);
             topic.body = body.isEmpty() ? null : body;
             topic.audience.addAll(splitAttr(root, "audience"));
             topic.product.addAll(splitAttr(root, "product"));
@@ -623,22 +631,68 @@ final class DitaModelExtractor {
     }
 
     /**
-     * The topic's body element's full text content, markup stripped and
+     * The topic's body element's own text content, markup stripped and
      * whitespace collapsed to single spaces -- the "cleaned text" input
-     * for the RAG index (docs/plugin-specification.md §13.1). {@code
-     * shortdesc} is a separate sibling element in DITA and is not
-     * included here (see {@link #directChildText} for that).
+     * for both the OKF bundle body and the RAG index
+     * (docs/plugin-specification.md §13.1, §4.4). {@code shortdesc} is a
+     * separate sibling element in DITA and is not included here (see
+     * {@link #directChildText} for that).
+     *
+     * <p>"Own" excludes any subtree pulled in via {@code conref}/{@code
+     * conkeyref} -- canonical-node deduplication
+     * ({@code docs/dev/canonical-node-dedup-spec.md}): that text is
+     * already fully represented in its source topic's own body, reachable
+     * from this topic via the {@code generated-from} edge ({@link
+     * RawGeneratedFrom}, finding 15), so duplicating it here too would
+     * inflate both the OKF bundle and RAG chunk text with copies of
+     * identical content -- the exact real-dataset problem heavily-reused
+     * DITA content (shared warnings, boilerplate, common steps) creates.
+     * Detection reuses the same {@code xtrf}-mismatch signal as {@code
+     * generated-from}: an element whose {@code xtrf} points at a
+     * different source file than this topic's own was replaced wholesale
+     * by DITA-OT with the referenced element (inheriting its {@code
+     * xtrf}), so excluding that element without descending into it is
+     * correct -- there's no "partially own, partially foreign" subtree to
+     * worry about splitting.
      */
-    private static String bodyText(Element root, String topicType) {
+    private static String bodyText(Element root, String topicType, String ownPath, Map<String, String> ditaSrcToPath) {
         String tag = bodyElementTag(topicType);
         for (Element child : directChildren(root, tag)) {
-            String text = child.getTextContent();
-            if (text == null) {
-                return "";
-            }
-            return text.trim().replaceAll("\\s+", " ");
+            StringBuilder text = new StringBuilder();
+            appendOwnText(child, ownPath, ditaSrcToPath, text);
+            return text.toString().trim().replaceAll("\\s+", " ");
         }
         return "";
+    }
+
+    /**
+     * Appends {@code el}'s own text content to {@code out}, depth-first,
+     * the same traversal {@link Node#getTextContent()} does -- except a
+     * subtree whose root element's {@code xtrf} resolves to a source file
+     * other than {@code ownPath} is skipped entirely rather than
+     * descended into (see {@link #bodyText}). An element with no {@code
+     * xtrf} at all (shouldn't happen against real DITA-OT output --
+     * finding 15 -- but handled defensively) is treated as this topic's
+     * own content, matching the equivalent defensive choice already made
+     * in the {@code generated-from} detection loop above.
+     */
+    private static void appendOwnText(Element el, String ownPath, Map<String, String> ditaSrcToPath, StringBuilder out) {
+        String xtrf = el.getAttribute("xtrf");
+        if (!xtrf.isEmpty()) {
+            String fromPath = ditaSrcToPath.get(xtrf);
+            if (fromPath != null && !fromPath.equals(ownPath)) {
+                return;
+            }
+        }
+        NodeList children = el.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node n = children.item(i);
+            if (n.getNodeType() == Node.TEXT_NODE || n.getNodeType() == Node.CDATA_SECTION_NODE) {
+                out.append(n.getTextContent());
+            } else if (n.getNodeType() == Node.ELEMENT_NODE) {
+                appendOwnText((Element) n, ownPath, ditaSrcToPath, out);
+            }
+        }
     }
 
     private static String bodyElementTag(String topicType) {

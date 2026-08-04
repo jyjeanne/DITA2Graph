@@ -208,6 +208,9 @@ class DitaModelExtractorTest {
 
         TopicNode source = findTopic(nodes, "source");
         assertTrue(source.links.isEmpty(), "source's own content should have no generated-from edges: " + source.links);
+        // The source topic keeps its own text in full -- it's the
+        // canonical location this content lives, not a reuser of it.
+        assertEquals("Reusable content.", source.body);
 
         TopicNode reuser = findTopic(nodes, "reuser");
         // Exactly one generated-from edge to "source" -- not two, even
@@ -216,6 +219,43 @@ class DitaModelExtractorTest {
         assertEquals(1, reuser.links.size(), "reuser: " + reuser.links);
         assertTrue(reuser.links.stream()
                 .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")));
+        // Canonical-node deduplication (docs/dev/canonical-node-dedup-spec.md):
+        // reuser's own body text keeps its unreused paragraph but excludes
+        // both conref/conkeyref-pulled ones -- that text already lives in
+        // source's own body above, reachable via the generated-from edge
+        // just asserted, so duplicating it here too would inflate both the
+        // OKF bundle and RAG chunk text with copies of identical content.
+        assertEquals("Own content not reused.", reuser.body,
+                "reuser's body should exclude both conref/conkeyref-pulled paragraphs: " + reuser.body);
+    }
+
+    @Test
+    void bodyTextExcludesOnlyTheReusedSubtreeNotSiblingOwnContent(@TempDir Path tempDir) throws Exception {
+        // A single element (<step>) with one authored child (<cmd>) and
+        // one conref'd child (<info>) -- proves exclusion happens per
+        // reused subtree, not per whole topic: the authored sibling
+        // survives even though it's nested alongside reused content, not
+        // a top-level sibling of it (docs/dev/canonical-node-dedup-spec.md's
+        // "reused element nested inside the reusing topic's own structure"
+        // edge case).
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/source.dita\">Reusable content.</p></conbody>"
+                + "</concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<task id=\"reuser\"><title>Reuser Topic</title>"
+                + "<taskbody><steps><step xtrf=\"file:/src/topics/reuser.dita\">"
+                + "<cmd xtrf=\"file:/src/topics/reuser.dita\">Click Save.</cmd>"
+                + "<info xtrf=\"file:/src/topics/source.dita\">Reusable content.</info>"
+                + "</step></steps></taskbody></task>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertEquals("Click Save.", reuser.body,
+                "authored <cmd> text should survive; conref'd <info> text should not: " + reuser.body);
     }
 
     @Test

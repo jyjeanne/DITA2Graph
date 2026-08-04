@@ -1,9 +1,8 @@
 # Spec: canonical-node deduplication for `conref`/`conkeyref` reuse
 
-Status: **scoped, not started**. Roadmap §6+ item 2
-([`Roadmap.md`](../../Roadmap.md)). Written before implementation per the
-roadmap's own rule ("each item gets its own scoped follow-up spec and
-exit criterion before work starts").
+Status: **implemented, verified against a live DITA-OT 4.4 run** (all
+five exit criteria below met). Roadmap §6+ item 2
+([`Roadmap.md`](../../Roadmap.md)).
 
 ## Problem
 
@@ -139,32 +138,40 @@ frontmatter key.
   across a public and internal build of the same source) — out of
   scope, each bundle build is independent per §5's DITAVAL split.
 
-## Exit criteria
+## Exit criteria — all met
 
-1. **Unit** (`DitaModelExtractorTest.java`): extend
-   `generatedFromIsExtractedFromXtrfMismatches` (or add a sibling
-   test) to assert `reuser`'s extracted `body` contains "Own content
-   not reused." and does **not** contain "Reusable content." /
-   "Another reused paragraph via conkeyref." — while the existing
-   `generated-from` edge assertion continues to pass unchanged.
-2. **Fixture, live DITA-OT 4.4**: extend `sample-docs-relations/`
-   (reusing the existing `shared-content.dita`/`reuser.dita` pair —
-   no new fixture directory needed) and add/extend a Gradle fixture
-   task alongside the existing relation-inference task
-   (`gradle-build/`, Phase 4 pattern) that builds the bundle and
-   asserts on the rendered `okf/topics/reuser.md` body text directly,
-   not just the Java unit test's in-memory model.
-3. **RAG**: `rag/chunks.jsonl`'s `reuser` chunk's `text` field matches
-   the same deduplicated body — no separate code path to verify twice,
-   but assert it explicitly so a future refactor that decouples
-   `rag.rs` from `NormalizedTopic.body` doesn't silently regress this.
-4. **Bundle conformance**: `okf_validator::validate_bundle` still
-   passes on the resulting bundle (dropping text from a concept body
-   doesn't touch frontmatter, links, or reachability — this should be
-   a non-event, but it's cheap to assert).
-5. **CI**: existing full-pipeline live-DITA-OT integration run
-   (Phase 4) continues to pass with the extended fixture folded in,
-   not a separate opt-in check.
+1. **Unit** (`DitaModelExtractorTest.java`): `
+   generatedFromIsExtractedFromXtrfMismatches` extended to assert
+   `reuser.body` equals exactly `"Own content not reused."`, while
+   `source.body` keeps its own `"Reusable content."` unchanged and the
+   existing `generated-from` edge assertion still passes. A second
+   test, `bodyTextExcludesOnlyTheReusedSubtreeNotSiblingOwnContent`,
+   covers the nested-reuse edge case (an authored `<cmd>` sibling to a
+   conref'd `<info>` inside the same `<step>`) — 8/8 tests pass,
+   `./gradlew clean test` under `plugin/org.dita.dita2graph/java/`.
+2. **Fixture, live DITA-OT 4.4**: verified via the existing
+   `buildKnowledgeGraphRelations` Gradle task against
+   `sample-docs-relations/` — no new fixture directory needed, the
+   existing `shared-content.dita`/`reuser.dita` pair already exercises
+   this. Rendered `okf/topics/reuser.md`'s `# Content` section reads
+   exactly `Own content not reused.` (the pulled-in shared-content text
+   is gone), its `# Generated From` section still links to `Shared
+   Content`, and `okf/topics/shared-content.md`'s own `# Content`
+   keeps the full original text, `Changes are not saved automatically;
+   use the Save Task to persist them.`
+3. **RAG**: `rag/chunks.jsonl` from that same live build — the
+   `reuser` chunk's `text` is `"Own content not reused."`, matching
+   the bundle body exactly, confirming the single normalized-model
+   `body` field is the one place this needed fixing.
+4. **Bundle conformance**: `dita2graph-core validate --bundle
+   .../dita2graph-relations/okf` reports `bundle OK` against the live
+   build's output.
+5. **CI**: `cargo test --workspace` (64 tests, Rust core + MCP, none
+   touched) and the full existing fixture set —
+   `buildKnowledgeGraph`/`Nested`/`Mapref`/`Public`/`Internal` in
+   addition to `Relations` — all pass against live DITA-OT 4.4 with no
+   regressions; spot-checked `installing-product.md` (no reuse
+   involved) to confirm its body is byte-for-byte unaffected.
 
 ## Rollout
 

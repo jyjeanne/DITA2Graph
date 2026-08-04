@@ -131,7 +131,16 @@ artifacts attached.
 Not a single phase but a backlog, picked up item by item. Current
 state, most-complete first:
 
-1. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
+1. **Canonical-node deduplication** for `conref`/`conkeyref`-reused
+   content — ✅ done (topic-level granularity), verified against a live
+   DITA-OT 4.4 run. A reusing topic's OKF body and RAG chunk text now
+   exclude spans pulled in via `conref`/`conkeyref` (detected the same
+   way `generated-from` already was, via `xtrf` mismatches); that text
+   continues to live exactly once, in its source topic, with the
+   existing `generated-from` edge as the pointer. See
+   [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)
+   for the design, edge cases, and exit-criteria evidence.
+2. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
    extraction (same single pass as `okf/`), `search_content`'s
    graph-narrowed and keyword-frequency-ranked query routing, and
    `analyze_impact`'s reverse traversal with text excerpts are all
@@ -139,12 +148,6 @@ state, most-complete first:
    similarity ranking, as opposed to keyword overlap) remain — a
    heavier change to the OKF bundle format itself, listed as a
    direction under consideration, not a committed design.
-2. **Canonical-node deduplication** for `conref`/`conkeyref`-reused
-   content — `generated-from` already records *where* reused content
-   came from; collapsing it into a single stored node instead of
-   rendering it inline in every reusing topic is the remaining piece.
-   Scoped (topic-level granularity, not implemented yet):
-   [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md).
 3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
    storage** for the query index.
 4. **Full `<navref>` map composition** — would need this plugin to
