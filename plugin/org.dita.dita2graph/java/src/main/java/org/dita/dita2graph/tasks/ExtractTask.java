@@ -19,17 +19,15 @@ import java.util.List;
  * {@link DitaModelExtractor}, and shells out to the {@code dita2graph-core}
  * Rust binary (§3.4) to write the OKF bundle.
  *
- * <p>{@code emitGraphJson} is forwarded to the Rust core's
- * {@code --emit-graph-json} flag. {@code depth} ("max relationship
- * traversal depth captured in the graph", §2.3) is parsed here and
- * passed to {@link DitaModelExtractor}'s {@code maxDepth}, limiting how
- * many levels of map containment its {@code contains} edges go, now
- * that nested {@code topicref}/{@code topichead}/{@code topicgroup} are
- * actually walked. {@code mcp} is still only accepted and logged, not
- * yet passed through: it would write an {@code mcp/mcp-server.toml}
- * that {@code dita2graph-mcp} doesn't read yet (it takes a bundle path
- * argument directly, no {@code --config}, §5.4) -- an honest gap, not
- * silently dropped, wiring it needs that blocker resolved first.
+ * <p>{@code emitGraphJson} and {@code mcp} are forwarded to the Rust
+ * core's {@code --emit-graph-json} and {@code --mcp} flags. {@code mcp}
+ * writes an {@code mcp/mcp-server.toml} that {@code dita2graph-mcp
+ * --config} can read (§5.4). {@code depth} ("max relationship traversal
+ * depth captured in the graph", §2.3) is parsed here and passed to
+ * {@link DitaModelExtractor}'s {@code maxDepth}, limiting how many
+ * levels of map containment its {@code contains} edges go, now that
+ * nested {@code topicref}/{@code topichead}/{@code topicgroup} are
+ * actually walked.
  */
 public class ExtractTask extends Task {
 
@@ -81,8 +79,7 @@ public class ExtractTask extends Task {
 
         boolean drafts = Boolean.parseBoolean(includeDrafts);
         int resolvedMaxDepth = parseMaxDepth(depth);
-        log("dita2graph:extract: depth=" + depth + " mcp=" + mcp
-                + " (mcp accepted, not yet wired to dita2graph-core, §12) includeDrafts=" + drafts,
+        log("dita2graph:extract: depth=" + depth + " mcp=" + mcp + " includeDrafts=" + drafts,
                 Project.MSG_VERBOSE);
 
         List<Object> nodes;
@@ -112,7 +109,8 @@ public class ExtractTask extends Task {
         String coreBin = resolveCoreBinary();
         String resolvedStore = (store == null || store.isEmpty()) ? "sqlite" : store;
         String resolvedEmitGraphJson = (emitGraphJson == null || emitGraphJson.isEmpty()) ? "true" : emitGraphJson;
-        int exitCode = runCore(coreBin, modelFile, outputDir, resolvedStore, resolvedEmitGraphJson);
+        String resolvedMcp = (mcp == null || mcp.isEmpty()) ? "false" : mcp;
+        int exitCode = runCore(coreBin, modelFile, outputDir, resolvedStore, resolvedEmitGraphJson, resolvedMcp);
         if (exitCode != 0) {
             throw new BuildException("dita2graph:extract: dita2graph-core exited with code " + exitCode
                     + " (§2.5: 0 success, 1 validation failure, 2 internal error)");
@@ -151,14 +149,15 @@ public class ExtractTask extends Task {
         return "dita2graph-core";
     }
 
-    private int runCore(String coreBin, File modelFile, String outputDir, String store, String emitGraphJson)
-            throws BuildException {
+    private int runCore(String coreBin, File modelFile, String outputDir, String store, String emitGraphJson,
+            String mcp) throws BuildException {
         ProcessBuilder pb = new ProcessBuilder(
                 coreBin, "build",
                 "--input", modelFile.getAbsolutePath(),
                 "--output", outputDir,
                 "--store", store,
-                "--emit-graph-json", emitGraphJson);
+                "--emit-graph-json", emitGraphJson,
+                "--mcp", mcp);
         pb.redirectErrorStream(true);
         try {
             Process process = pb.start();

@@ -10,7 +10,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
-use dita2graph_core::{NormalizedNode, scan_bundle, write_bundle, write_rag_index};
+use dita2graph_core::{
+    NormalizedNode, scan_bundle, write_bundle, write_mcp_config, write_rag_index,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -46,6 +48,11 @@ enum Command {
         /// values (`ExtractTask` forwards it verbatim).
         #[arg(long, default_value = "true")]
         emit_graph_json: String,
+        /// Whether to also write mcp/mcp-server.toml (§2.3's
+        /// `args.dita2graph.mcp`), a real config `dita2graph-mcp
+        /// --config` can read. Accepts "true"/"false".
+        #[arg(long, default_value = "false")]
+        mcp: String,
     },
     /// Validate an existing OKF bundle with `okf-validator` (§2.5, §6.4, §10).
     Validate {
@@ -76,7 +83,8 @@ fn main() -> ExitCode {
             output,
             store,
             emit_graph_json,
-        } => run_build(input, output, store, emit_graph_json),
+            mcp,
+        } => run_build(input, output, store, emit_graph_json, mcp),
         Command::Validate { bundle } => run_validate(bundle),
         Command::Query {
             output_dir,
@@ -98,6 +106,7 @@ fn run_build(
     output: PathBuf,
     store: String,
     emit_graph_json: String,
+    mcp: String,
 ) -> Result<ExitCode> {
     if store != "none" {
         eprintln!(
@@ -106,6 +115,7 @@ fn run_build(
         );
     }
     let emit_graph_json = parse_bool_arg(&emit_graph_json, "--emit-graph-json")?;
+    let mcp = parse_bool_arg(&mcp, "--mcp")?;
 
     let raw = fs::read_to_string(&input).with_context(|| format!("reading {}", input.display()))?;
     let nodes: Vec<NormalizedNode> =
@@ -131,6 +141,11 @@ fn run_build(
         rag_summary.chunks_written,
         output.join("rag").display()
     );
+
+    if mcp {
+        write_mcp_config(&output)?;
+        println!("wrote mcp config to {}", output.join("mcp").display());
+    }
 
     // A bundle that fails validation isn't a complete build (§2.5): run
     // the same okf-validator + secret-scan checks `validate` does on

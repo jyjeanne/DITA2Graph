@@ -330,9 +330,12 @@ What's left for a complete MVP (§11), now that extraction itself works:
 - Nested `topicref`/`topichead`/`topicgroup` map structures aren't walked
   (only direct children of `<map>`) — fine for `sample-docs/`'s flat
   structure, a real gap for deeper maps.
-- `depth`/`mcp`/`emit-graph-json` are read and logged by `ExtractTask`
+- ~~`depth`/`mcp`/`emit-graph-json` are read and logged by `ExtractTask`
   but not yet functionally wired to `dita2graph-core`'s CLI, which only
-  accepts `--input`/`--output`/`--store` today.
+  accepts `--input`/`--output`/`--store` today.~~ Closed (findings 10,
+  12; `emit-graph-json`/`depth` were wired earlier in the same effort as
+  finding 10). All five `args.dita2graph.*` parameters are now
+  functionally wired end to end.
 - ~~CI (§8.3, §12 Phase 4) doesn't yet run any of `gradle-build/`'s tasks
   or `plugin/org.dita.dita2graph/java`'s tests — only the Rust workspace
   is covered by `.github/workflows/rust.yml` so far.~~ Closed by finding
@@ -507,3 +510,53 @@ What's left for a complete MVP (§11), now that extraction itself works:
     (`buildKnowledgeGraphNested` in `gradle-build/build.gradle.kts`,
     `.github/workflows/integration.yml`) the same way `validateBrokenDoc`
     gates the Phase 4 validation claim.
+
+12. **What would it actually take to functionally wire
+    `args.dita2graph.mcp` (finding 10 left it accepted-and-logged only),
+    and does §5.1's Resources design hold up once actually checked
+    against `dita2graph-mcp`'s real JSON-RPC handling?** Before writing
+    any wiring code, checked what `dita2graph-mcp` actually implements
+    (`mcp/dita2graph-mcp/src/main.rs`'s `handle_message`) rather than
+    assuming §5's spec prose was current — and found it dispatches only
+    `initialize`, `ping`, `tools/list`, `tools/call`, and notification
+    passthroughs. There is no `resources/list`/`resources/read` handling
+    at all: §5.1's `dita://topics`, `dita://topic/{id}`, etc. describe a
+    design that was never built. This matters directly for `mcp`: it
+    would have been easy to make `--mcp true` write a full
+    `mcp-server.toml` with `[resources]`/`[tools]` sections (matching
+    §5.4's original example) and a `manifest.json` declaring resources —
+    both would have described capabilities the server doesn't have.
+
+    Instead, wired `mcp` to do only what's real: `dita2graph-core`
+    gained a `write_mcp_config` function (`core/dita2graph-core/src/
+    mcp_config.rs`) writing a minimal `mcp/mcp-server.toml` (server
+    name/transport, and `graph.okf` as a path relative to `mcp/`'s own
+    directory) behind a new `--mcp true/false` flag on `build`, mirroring
+    how `--emit-graph-json` already worked. `dita2graph-mcp` gained a
+    `--config <path>` invocation mode (`resolve_bundle_root`/
+    `bundle_root_from_config` in `mcp/dita2graph-mcp/src/main.rs`)
+    alongside its existing plain-bundle-root-argument mode: it parses the
+    TOML, resolves `graph.okf` relative to the config file's directory,
+    and takes *that* resolved path's parent as the bundle root — caught
+    and fixed a path-canonicalization bug while writing the first test
+    for this (`Path::parent()` is purely lexical and doesn't collapse
+    `..` segments, so an unresolved `mcp/../okf` needs `.canonicalize()`
+    before `.parent()` gives the right answer). `ExtractTask` now
+    forwards `--mcp <value>` to the `dita2graph-core build` subprocess
+    the same way it forwards `--emit-graph-json`, defaulting to
+    `"false"` when unset.
+
+    **Result:** confirmed live against a real DITA-OT 4.4 run, both
+    directions. `dita --args.dita2graph.mcp=true` produces a real
+    `mcp/mcp-server.toml`; piping `{"method":"initialize"}`,
+    `{"method":"tools/list"}`, and a `tools/call` for `search_topics`
+    into `dita2graph-mcp --config <that file>` returns genuine results
+    (`search_topics` found "Installing Product" and "Installing Product:
+    Prerequisites" from the sample bundle), confirming the config-file
+    path resolves the bundle root correctly, not just that it parses.
+    Ran the same build with `mcp` left unset and confirmed no `mcp/`
+    directory is written at all — the default stays a no-op. All five
+    `args.dita2graph.*` parameters (§2.3) are now functionally wired;
+    §5.1's Resources remain undocumented-as-real until they're actually
+    implemented (or removed from the spec) — see the honesty note added
+    to §5.1 itself rather than leaving it only here.

@@ -257,7 +257,7 @@ Key parameters:
 | Parameter | Default | Description |
 |---|---|---|
 | `args.dita2graph.depth` | `unlimited` | Max levels of *map containment* captured as `contains` edges — level 1 is a top-level `<topicref>`, level 2 is one nested inside that, and so on (`<topichead>`/`<topicgroup>`/an href-less `<topicref>` don't consume a level, since they never become a graph node themselves). **Implemented**: parsed and enforced entirely in `ExtractTask`/`DitaModelExtractor` (§3.3) — the Rust core never sees or needs it, since the map walk that builds `contains` edges happens before the normalized model is even handed off. A topic beyond the limit is still extracted as its own node; only its `contains` edge from its parent is omitted, the same graceful degradation as an unresolved topicref target |
-| `args.dita2graph.mcp` | `false` | Whether to also emit an MCP server bundle. Accepted and logged, not yet functionally wired — would write an `mcp/mcp-server.toml` that `dita2graph-mcp` doesn't read yet (it takes a bundle path directly, no `--config`, §5.4) |
+| `args.dita2graph.mcp` | `false` | Whether to also write `mcp/mcp-server.toml` (§2.4, §5.4) alongside the bundle. **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --mcp`, verified against a live DITA-OT 4.4 run — `dita2graph-mcp --config <path>` reads the written file, resolves `graph.okf` (a relative path) back to the bundle root, and answers real `tools/list`/`tools/call` requests against it. Note: the file declares only a server name/transport and the `graph.okf` path — it deliberately doesn't declare a `resources` section, since `dita2graph-mcp` doesn't implement the `resources/*` JSON-RPC methods §5.1 describes (only `tools/list`/`tools/call`, §5.2); see §5.1's note and finding 12 |
 | `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1). **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --emit-graph-json`, verified against a live DITA-OT 4.4 run |
 | `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
 | `args.dita2graph.include-drafts` | `false` | Include topics flagged `status="draft"` |
@@ -305,6 +305,15 @@ between its bundle and its `okf-search`/`okf-graph` indices. `rag/` is
 likewise derived and rebuildable from the same normalized model as
 `okf/` (§13.1) — no MCP tool reads it yet, but `dita2graph-core build`
 writes it today.
+
+**Implementation status of the tree above:** `okf/`, `graph.json`, and
+`rag/` are all written today by `dita2graph-core build`. `mcp/` is
+written only when `args.dita2graph.mcp=true` (§2.3), and only as
+`mcp-server.toml` (§5.4) — `graph.db` and `mcp/manifest.json` are not
+written by anything; `graph.db` is planned query-index storage (§7),
+and a `manifest.json` would describe declared resources/tools the way
+§5.1 describes them, but `dita2graph-mcp` answers `tools/list` directly
+at runtime instead (§5.2) and doesn't implement resources at all.
 
 ### 2.5 Error handling, logging, and exit codes
 
@@ -720,6 +729,16 @@ built with (audience/product/platform filters applied), so an agent can
 tell whether it's looking at the public or an internal build before
 trusting an answer's completeness (§6.1).
 
+**Implementation status: not implemented.** `dita2graph-mcp` does not
+handle `resources/list` or `resources/read` — the JSON-RPC methods MCP
+clients use to enumerate and fetch resources — at all; it only
+implements `initialize`, `ping`, `tools/list`, and `tools/call` (§5.2).
+The URIs above describe the intended design, not a working feature.
+Everything a resource would expose is reachable through the §5.2 tools
+instead (e.g. `find_related_topics` instead of
+`dita://relation/{topicId}/{relationType}`), which is why this gap
+hasn't blocked real use so far. See finding 12.
+
 ### 5.2 Tools
 
 ```
@@ -809,32 +828,40 @@ returns:
 
 ### 5.4 Server configuration
 
-The plugin emits `mcp/mcp-server.toml`, generated from `cfg/dita2graph.xml`:
+**Implemented, but minimal.** When `args.dita2graph.mcp=true` (§2.3),
+the plugin writes `mcp/mcp-server.toml`:
 
 ```toml
 [server]
 name = "dita2graph"
-transport = "stdio"   # or "http" for remote/multi-client deployments (§6.3)
+transport = "stdio"
 
 [graph]
-store = "output/graph.db"
-okf = "output/okf"
-
-[resources]
-enable = ["topics", "product", "architecture", "map", "relation", "ditaval"]
-
-[tools]
-enable = ["search_topics", "find_related_topics", "explain_task", "trace_dependencies", "generate_summary", "validate_bundle"]
+okf = "../okf"
 ```
+
+`graph.okf` is relative to the `mcp/` directory the file itself lives
+in (a sibling of `okf/` under the bundle root, §2.4). There is
+deliberately no `[resources]` or `[tools]` section (§5.1's resources
+aren't implemented, and `tools/list` already advertises the real tool
+set at runtime — declaring a static, possibly-stale copy in config
+would be redundant at best), and no `store =` key (§7: no query-index
+backing store is implemented yet).
 
 Running it:
 
 ```bash
-dita2graph-mcp serve --config output/mcp/mcp-server.toml
+dita2graph-mcp --config output/mcp/mcp-server.toml
 ```
 
-which registers as a normal MCP server for Claude Code / Claude Desktop /
-any MCP-compatible client via stdio or HTTP transport.
+`dita2graph-mcp` resolves `graph.okf` relative to the config file's own
+directory, then takes that resolved path's parent as the bundle root —
+the same root `dita2graph-mcp <bundle-root>` (the original,
+still-supported positional-argument form) takes directly. Either form
+registers as a normal MCP server for Claude Code / Claude Desktop / any
+MCP-compatible client over stdio; there is no `serve` subcommand and no
+HTTP transport (§6.3 describes that as a future direction, not
+something built).
 
 ### 5.5 Reference implementation pattern (adapted from `jyjeanne/okf-rs`)
 
@@ -1656,8 +1683,16 @@ any `--args.dita2graph.*=...` value outright, before `build.xml`'s Ant
 `args.*` family); confirmed directly that CLI overrides for all five
 parameters now work. `args.dita2graph.emit-graph-json` was wired at the
 same time, and `args.dita2graph.depth` shortly after once nested map
-structures (above) gave it a well-defined meaning; only `mcp` remains
-accepted-and-logged only, for the reason in §2.3's table.
+structures (above) gave it a well-defined meaning. `args.dita2graph.mcp`
+(`docs/dev/phase-0-findings.md` finding 12) was the last of the five:
+`dita2graph-core build --mcp true` now writes a real, minimal
+`mcp/mcp-server.toml`, and `dita2graph-mcp` gained a `--config <path>`
+mode that reads it back — `ExtractTask` forwards `--mcp` the same way
+it forwards `--emit-graph-json`, verified end to end against a live
+DITA-OT 4.4 run (`dita --args.dita2graph.mcp=true`, then
+`dita2graph-mcp --config` against the written file answering a real
+`tools/call`). All five `args.dita2graph.*` parameters are now
+functionally wired, not just accepted and logged.
 
 ### Phase 2 — Core engine: OKF bundle generation (3–4 weeks)
 
@@ -1709,11 +1744,14 @@ returning small, typed results rather than raw file contents.
 tool tests pass (`cargo test -p dita2graph-mcp`), and it was exercised
 manually end-to-end over real stdin/stdout JSON-RPC against the
 `sample-docs/` bundle, correctly answering a `search_topics`/
-`explain_task` sequence. **Not done:** the exit criterion specifically
-asks for a live Claude Code session registered against it, which hasn't
-been done in this session; `mcp-server.toml` emission (§5.4) also isn't
-wired up yet — the server currently takes the bundle root as a plain CLI
-argument.
+`explain_task` sequence. `mcp-server.toml` emission (§5.4) is now wired
+up too: `dita2graph-core build --mcp true` writes it, and
+`dita2graph-mcp --config <path>` reads it back to resolve the bundle
+root — the server still also accepts the bundle root as a plain CLI
+argument directly, unchanged. **Not done:** the exit criterion
+specifically asks for a live Claude Code session registered against it,
+which hasn't been done in this session; and `resources/*` (§5.1) isn't
+implemented at all, only `tools/list`/`tools/call` (§5.2).
 
 ### Phase 4 — Gradle integration + CI hardening (2 weeks)
 
@@ -2043,10 +2081,10 @@ cat output/okf/topics/installing-product.md
 dita2graph-core validate --bundle output/okf
 
 # 6. Start the MCP server (§5.4)
-dita2graph-mcp serve --config output/mcp/mcp-server.toml
+dita2graph-mcp --config output/mcp/mcp-server.toml
 
 # 7. Register it with Claude Code
-claude mcp add dita2graph -- dita2graph-mcp serve --config output/mcp/mcp-server.toml
+claude mcp add dita2graph -- dita2graph-mcp --config output/mcp/mcp-server.toml
 ```
 
 From here, asking Claude Code a documentation question (§5.3) should

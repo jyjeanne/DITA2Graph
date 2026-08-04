@@ -31,8 +31,8 @@
        args.dita2graph.* default in build.xml worked, but no CLI
        override of any of them ever did. -->
   <transtype name="dita2graph" desc="DITA2Graph knowledge graph extraction (OKF v0.2 + MCP)">
-    <param name="args.dita2graph.depth" desc="Max relationship traversal depth captured in the graph. Not yet wired to dita2graph-core (§12); accepted and logged only." type="string"/>
-    <param name="args.dita2graph.mcp" desc="Whether to also emit an MCP server bundle. Not yet wired to dita2graph-core (§12); accepted and logged only." type="enum">
+    <param name="args.dita2graph.depth" desc="Max relationship traversal depth captured in the graph: &#34;unlimited&#34; (default) or a positive integer, limiting how many levels of map containment the contains edges go." type="string"/>
+    <param name="args.dita2graph.mcp" desc="Whether to also write mcp/mcp-server.toml, a config dita2graph-mcp --config can read to locate this bundle (§5.4)." type="enum">
       <val>true</val>
       <val default="true">false</val>
     </param>

@@ -9,11 +9,13 @@
 //! written today and is enough for the `query` CLI subcommand.
 
 pub mod diagnostics;
+pub mod mcp_config;
 pub mod model;
 pub mod okf;
 pub mod rag;
 pub mod secrets;
 
+pub use mcp_config::write_mcp_config;
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
 pub use okf::{BundleSummary, write_bundle};
 pub use rag::{RagSummary, write_rag_index};

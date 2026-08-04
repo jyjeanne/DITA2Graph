@@ -13,18 +13,17 @@
 mod bundle;
 mod tools;
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 fn main() -> Result<()> {
-    let bundle_root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let bundle_root = resolve_bundle_root(&args)?;
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -54,6 +53,60 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct McpServerConfig {
+    graph: GraphConfig,
+}
+
+#[derive(Deserialize)]
+struct GraphConfig {
+    okf: String,
+}
+
+/// The bundle root to serve, from either a bare positional path (the
+/// existing invocation) or `--config <path>` pointing at an
+/// `mcp-server.toml` `dita2graph-core build --mcp true` wrote (§2.3,
+/// §5.4) -- reads its `graph.okf` value, resolves it relative to the
+/// config file's own directory, and takes *that* path's parent to get
+/// the bundle root `BundleReader` expects (`okf/` and `mcp/` are
+/// siblings under the bundle root, §2.4). Falls back to `.` when
+/// nothing is given, same as before `--config` existed.
+fn resolve_bundle_root(args: &[String]) -> Result<PathBuf> {
+    if args.first().map(String::as_str) == Some("--config") {
+        let config_path = args
+            .get(1)
+            .ok_or_else(|| anyhow!("--config requires a path argument"))?;
+        return bundle_root_from_config(Path::new(config_path));
+    }
+    Ok(args
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".")))
+}
+
+fn bundle_root_from_config(config_path: &Path) -> Result<PathBuf> {
+    let raw = fs_read_to_string(config_path)?;
+    let config: McpServerConfig =
+        toml::from_str(&raw).with_context(|| format!("parsing {}", config_path.display()))?;
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let okf_path = config_dir.join(&config.graph.okf);
+    let okf_path = okf_path.canonicalize().with_context(|| {
+        format!(
+            "resolving graph.okf ({}) from {}",
+            config.graph.okf,
+            config_path.display()
+        )
+    })?;
+    okf_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("{} has no parent directory", okf_path.display()))
+}
+
+fn fs_read_to_string(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
 /// Dispatches one JSON-RPC message, returning the response to write (or
@@ -112,8 +165,42 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
-        write_rag_index,
+        write_mcp_config, write_rag_index,
     };
+
+    #[test]
+    fn resolve_bundle_root_uses_a_real_config_file() {
+        let dir = sample_bundle_root();
+        write_mcp_config(dir.path()).unwrap();
+        let config_path = dir
+            .path()
+            .join("mcp/mcp-server.toml")
+            .to_string_lossy()
+            .to_string();
+
+        let resolved = resolve_bundle_root(&["--config".to_string(), config_path]).unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_bundle_root_falls_back_to_a_positional_path() {
+        let resolved = resolve_bundle_root(&["some/bundle/dir".to_string()]).unwrap();
+        assert_eq!(resolved, PathBuf::from("some/bundle/dir"));
+    }
+
+    #[test]
+    fn resolve_bundle_root_defaults_to_dot_with_no_args() {
+        let resolved = resolve_bundle_root(&[]).unwrap();
+        assert_eq!(resolved, PathBuf::from("."));
+    }
+
+    #[test]
+    fn resolve_bundle_root_errors_when_config_flag_has_no_path() {
+        assert!(resolve_bundle_root(&["--config".to_string()]).is_err());
+    }
 
     fn sample_bundle_root() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

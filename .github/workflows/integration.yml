@@ -79,6 +79,33 @@ jobs:
           test ! -f /tmp/args-override-test/graph.json
           test -d /tmp/args-override-test/okf
 
+      - name: Confirm args.dita2graph.mcp writes a config dita2graph-mcp can read (§2.3, §5.4, finding 12)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          # Default (mcp unset) must NOT write mcp/ -- confirms the flag
+          # isn't a silent no-op that always writes.
+          rm -rf /tmp/mcp-default-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/mcp-default-test
+          test ! -d /tmp/mcp-default-test/mcp
+
+          # mcp=true writes a real mcp-server.toml, and dita2graph-mcp
+          # --config against it must resolve the bundle root correctly
+          # and answer a real tools/call, not just parse without error.
+          rm -rf /tmp/mcp-true-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/mcp-true-test --args.dita2graph.mcp=true
+          test -f /tmp/mcp-true-test/mcp/mcp-server.toml
+          grep -q 'okf = "../okf"' /tmp/mcp-true-test/mcp/mcp-server.toml
+
+          RESPONSE=$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \
+            | ./target/release/dita2graph-mcp --config /tmp/mcp-true-test/mcp/mcp-server.toml)
+          echo "$RESPONSE" | grep -q 'Installing Product'
+
       - name: Build the public/internal DITAVAL split (§6.1)
         working-directory: gradle-build
         env:
