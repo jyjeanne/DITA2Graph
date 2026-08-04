@@ -17,7 +17,7 @@
 
 use crate::diagnostics::{self, AMBIGUOUS_RELATION};
 use crate::model::{Link, NormalizedNode, Relation, TopicType};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Adds a `related-to` `Link` to every pair of topics that share at
 /// least one `product` value and aren't already connected by some other
@@ -31,9 +31,21 @@ use std::collections::BTreeSet;
 /// and are never involved. Returns the number of edges added (both
 /// directions counted, so one related pair yields 2).
 ///
-/// O(n²) in topic count -- fine for the corpus sizes this scaffold
-/// targets; revisit with a `product -> topic ids` index if that stops
-/// being true.
+/// Bounded by output size (edges actually found), not topic count
+/// squared: a `product -> topic indices` bucket index (built once, O(n)
+/// total across all topics' product lists) means a topic is only ever
+/// compared against other topics that share at least one product value
+/// with it, not against every other topic in the corpus regardless of
+/// overlap. On a real dataset where `product` acts like a bounded-size
+/// categorical tag (most topics carry a handful of values, no single
+/// value spans the whole corpus), that's the difference between a few
+/// thousand comparisons and tens of millions on a several-thousand-topic
+/// corpus -- this was flagged here as the thing to revisit once real
+/// corpus sizes made the old always-quadratic sweep matter, and this is
+/// that revisit. Degenerate worst case (every topic shares one product
+/// value with every other) is still quadratic, because the *output* --
+/// the edge set itself -- genuinely is that large; no comparison
+/// strategy can do better than the size of what it has to produce.
 pub fn infer_related_to(nodes: &mut [NormalizedNode]) -> usize {
     let topics: Vec<(String, Vec<String>)> = nodes
         .iter()
@@ -50,24 +62,58 @@ pub fn infer_related_to(nodes: &mut [NormalizedNode]) -> usize {
         }
     }
 
+    // `BTreeMap`/`BTreeSet` throughout this function, not `HashMap`, so
+    // iteration order stays fully deterministic (matching the plain
+    // ascending-index nested loop this replaces) without an extra
+    // explicit sort pass.
+    let mut by_product: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, (_, products)) in topics.iter().enumerate() {
+        for p in products {
+            by_product.entry(p.as_str()).or_default().push(i);
+        }
+    }
+
     let mut new_edges: Vec<(String, String)> = Vec::new();
-    for i in 0..topics.len() {
-        for j in (i + 1)..topics.len() {
-            let (id_a, products_a) = &topics[i];
-            let (id_b, products_b) = &topics[j];
+    for (i, (id_a, products_a)) in topics.iter().enumerate() {
+        // Every other topic index sharing at least one product value
+        // with `i`, `j > i` only (each unordered pair considered once,
+        // same as the old loop's `(i + 1)..topics.len()`) and
+        // deduplicated (a `BTreeSet`, so two topics sharing *several*
+        // product values still only produce one candidate, not one per
+        // shared value) -- in ascending order, matching the old loop's
+        // pair-visit order exactly.
+        let mut candidates: BTreeSet<usize> = BTreeSet::new();
+        for p in products_a {
+            if let Some(indices) = by_product.get(p.as_str()) {
+                candidates.extend(indices.iter().copied().filter(|&j| j > i));
+            }
+        }
+        for j in candidates {
+            let id_b = &topics[j].0;
             if connected.contains(&ordered_pair(id_a, id_b)) {
                 continue;
             }
-            if products_a.iter().any(|p| products_b.contains(p)) {
-                new_edges.push((id_a.clone(), id_b.clone()));
-                new_edges.push((id_b.clone(), id_a.clone()));
-            }
+            new_edges.push((id_a.clone(), id_b.clone()));
+            new_edges.push((id_b.clone(), id_a.clone()));
         }
     }
 
     let count = new_edges.len();
+    // id -> position, built once, so applying `new_edges` is O(edges)
+    // rather than an O(edges * n) linear `find()` per edge on top of the
+    // comparison-phase fix above. Owned `String` keys, not `&str`
+    // borrowed from `nodes` -- the loop below needs to mutate `nodes`
+    // while this map is still alive, which an active borrow into
+    // `nodes` itself would rule out.
+    let index_by_id: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(idx, n)| (n.id().to_string(), idx))
+        .collect();
     for (from, to) in new_edges {
-        if let Some(NormalizedNode::Topic(t)) = nodes.iter_mut().find(|n| n.id() == from) {
+        if let Some(&idx) = index_by_id.get(from.as_str())
+            && let NormalizedNode::Topic(t) = &mut nodes[idx]
+        {
             t.links.push(Link {
                 relation: Relation::RelatedTo,
                 target: to,
@@ -330,6 +376,44 @@ mod tests {
         assert_eq!(infer_related_to(&mut nodes), 6);
         for node in &nodes {
             assert_eq!(node.links().len(), 2);
+        }
+    }
+
+    /// Exercises the product-bucketed rewrite specifically (not just the
+    /// small 2-3-topic cases above): two separate product groups plus an
+    /// unrelated topic, at a size where the old always-quadratic sweep
+    /// and the bucketed one would visibly disagree if the bucketing were
+    /// wrong -- must find every same-bucket pair (bucketing must never
+    /// *miss* one) and zero cross-bucket edges (must never invent one).
+    #[test]
+    fn bucketing_finds_every_within_group_pair_and_no_cross_group_edges() {
+        let mut nodes: Vec<NormalizedNode> = Vec::new();
+        for i in 0..5 {
+            nodes.push(topic(&format!("ent-{i}"), &["enterprise"]));
+        }
+        for i in 0..5 {
+            nodes.push(topic(&format!("com-{i}"), &["community"]));
+        }
+        nodes.push(topic("lonely", &["cloud"]));
+
+        // C(5,2) = 10 pairs per group, 2 groups, both directions counted.
+        assert_eq!(infer_related_to(&mut nodes), 40);
+        for node in &nodes[0..5] {
+            assert_eq!(node.links().len(), 4, "each enterprise topic: {node:?}");
+        }
+        for node in &nodes[5..10] {
+            assert_eq!(node.links().len(), 4, "each community topic: {node:?}");
+        }
+        assert!(
+            nodes[10].links().is_empty(),
+            "lonely topic shares no product with anyone"
+        );
+        if let NormalizedNode::Topic(t) = &nodes[0] {
+            assert!(
+                t.links.iter().all(|l| l.target.starts_with("ent-")),
+                "an enterprise topic must never link to a community one: {:?}",
+                t.links
+            );
         }
     }
 

@@ -335,6 +335,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH040W` | Warning | Topic has no resolvable `type` mapping (unknown/custom topic type) — emitted as a generic OKF concept per the spec's graceful-degradation rule (§4.1), but flagged so authors can review it. |
   | `DITA2GRAPH050E` | Error | A generated OKF concept matches a high-confidence secret pattern (AWS access key, PEM private key, GitHub/Slack token) — build fails, not a warning (§6.4). |
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
+  | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);
@@ -496,14 +497,19 @@ versioned on its own.
   this doesn't false-positive on ordinary keyref use). `DitaModelExtractor`
   detects any descendant element whose `xtrf` differs from its own
   topic's source file and adds one `generated-from` edge per distinct
-  source, deterministically, not as an inference. **Not yet
-  implemented**: the engine does *not* yet collapse reused content into
-  a single canonical node — the reusing topic still gets its own full
-  concept document with the pulled-in text rendered inline, same as
-  DITA-OT's own resolved output; `generated-from` records *where it came
-  from*, it doesn't deduplicate storage. True canonical-node
-  deduplication remains future work, alongside incremental rebuild
-  below.
+  source, deterministically, not as an inference. **Canonical-node
+  deduplication is implemented at topic-level granularity**
+  (`docs/dev/canonical-node-dedup-spec.md`, verified against a live
+  DITA-OT 4.4 run): a reusing topic's OKF body and RAG chunk text
+  exclude any subtree whose `xtrf` points elsewhere — that text lives
+  exactly once, in its source topic's own body, reachable via the
+  `generated-from` edge instead of duplicated inline. **Not yet
+  implemented**: sub-topic/element-level canonical nodes (a standalone
+  node per reused fragment, independent of its containing topic) —
+  `xtrf` only resolves to a source *file*, not a specific element
+  within it, so getting finer than topic-level granularity needs a
+  separate extraction path and its own spec, not a natural extension
+  of this one. Incremental rebuild remains future work too, below.
 - **Incremental updates**: on re-run, diff against the existing
   `graph.db` and only recompute changed subgraphs (keyed by source file
   hash), so large doc sets don't require a full rebuild on every publish.
@@ -793,7 +799,7 @@ find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
 analyze_impact(topicId, depth?)
-generate_summary(id)
+generate_summary(topicId)
 validate_bundle()
 ```
 
@@ -830,7 +836,17 @@ node-level-embeddings direction is explicitly *not* a committed design
 yet, while this is a self-contained improvement over the plain
 substring check it replaces, verified against a live bundle with a
 two-term query where the correct higher-scoring concept ranks first
-even though it would sort second alphabetically.
+even though it would sort second alphabetically. Each hit also carries
+a 200-character text excerpt of the matched chunk (newlines flattened)
+— found missing live: a real Claude Code session got titles/scores back
+with no way to see *what actually matched* short of a second round
+trip, and no other tool filled that gap either. Capped at the top 15
+matches by score, with a truncation note (`"showing top N of M
+matches..."`) when there are more — also found live: adding excerpts to
+every hit meant an unscoped or broad query on a real, sizeable bundle
+could return 50+ KB of output, well past what a real MCP client renders
+inline. Narrowing with `topicId` is the way to see more of a specific
+area rather than raising the cap.
 
 `analyze_impact(topicId, depth?)` is a reverse graph traversal — every
 edge that points *at* `topicId`, followed transitively up to `depth`
@@ -845,6 +861,15 @@ server-generated summary (this tool doesn't call an LLM); the agent's
 own read of the excerpts is the actual summarization. Of §13.1's four
 pieces, only node-level embeddings remain design only — query routing,
 its ranking, and impact analysis (both halves) are all implemented.
+
+`explain_task(topicId)` also carries a 300-character excerpt of the
+topic's own body text (from `rag/chunks.jsonl`, the same clean-prose
+source `search_content`/`analyze_impact` excerpt from — not the
+concept file's *rendered* markdown, which has its own `# Summary`/
+`# Content` headings mixed in) alongside its title, description, and
+`requires`/`contains`/`applies-to` relations. Same live-session finding
+as above: title and a one-sentence `shortdesc` were the closest
+anything got to "what does this topic actually say" before this.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -1805,11 +1830,12 @@ including a test that builds a bundle and round-trips it through
 needs no Rust-side inference at all — `DitaModelExtractor` derives it
 deterministically from DITA-OT's own `xtrf` source-trace attributes
 (finding 15), so all four relations beyond `contains` are now covered.
-**Not done:** true canonical-node deduplication for reused content (a
-`generated-from` edge records provenance, but the reusing topic still
-gets its own full concept document with the pulled-in text rendered
-inline — see §3.3's "Deduplication & reuse tracking"), incremental
-rebuild, and SQLite/RocksDB storage (`query` currently reads
+**Not done:** sub-topic/element-level canonical-node deduplication —
+topic-level dedup for `conref`/`conkeyref`-reused content is done (see
+§3.3's "Deduplication & reuse tracking" and
+`docs/dev/canonical-node-dedup-spec.md`), but a standalone node per
+reused fragment, independent of its containing topic, is not; nor are
+incremental rebuild or SQLite/RocksDB storage (`query` currently reads
 `graph.json` directly, not a database). No golden-fixture byte-for-byte
 test yet either. This phase got ahead of Phase 1 because it could be
 developed and tested against a hand-authored fixture without needing a
@@ -1830,20 +1856,37 @@ sample bundle's server, correctly answers the §5.3 example interaction
 end to end (`search_topics` → related tasks), with tool calls visibly
 returning small, typed results rather than raw file contents.
 
-**Status:** mostly done. `mcp/dita2graph-mcp` implements the pattern from
-§5.5 with `search_topics`/`find_related_topics`/`explain_task`/
-`trace_dependencies`/`generate_summary`/`validate_bundle`; protocol and
-tool tests pass (`cargo test -p dita2graph-mcp`), and it was exercised
-manually end-to-end over real stdin/stdout JSON-RPC against the
-`sample-docs/` bundle, correctly answering a `search_topics`/
-`explain_task` sequence. `mcp-server.toml` emission (§5.4) is now wired
-up too: `dita2graph-core build --mcp true` writes it, and
-`dita2graph-mcp --config <path>` reads it back to resolve the bundle
-root — the server still also accepts the bundle root as a plain CLI
-argument directly, unchanged. **Not done:** the exit criterion
-specifically asks for a live Claude Code session registered against it,
-which hasn't been done in this session; and `resources/*` (§5.1) isn't
-implemented at all, only `tools/list`/`tools/call` (§5.2).
+**Status:** done, including the exit criterion. `mcp/dita2graph-mcp`
+implements the pattern from §5.5 with `search_topics`/
+`find_related_topics`/`explain_task`/`trace_dependencies`/
+`search_content`/`analyze_impact`/`generate_summary`/`validate_bundle`;
+protocol and tool tests pass (`cargo test -p dita2graph-mcp`).
+`mcp-server.toml` emission (§5.4) is wired up: `dita2graph-core build
+--mcp true` writes it, and `dita2graph-mcp --config <path>` reads it
+back to resolve the bundle root — the server still also accepts the
+bundle root as a plain CLI argument directly.
+
+**The exit criterion itself** was closed with a real headless Claude
+Code session (`claude -p --mcp-config ...`), registered against a
+bundle built from `dita-ot/docs` (the real third-party corpus §1's
+"found and fixed" notes above cover) — not a scripted stdio replay.
+Asked "How do I install a DITA-OT plugin?" with no other guidance, the
+session independently called `search_topics("plugin")`,
+`search_content` (refining its query across a couple of calls),
+`explain_task` on `plugins-installing`, `generate_summary`, and
+`find_related_topics`, then produced a correct answer (`dita install
+<plugin>`, the plugin registry at dita-ot.org/plugins, the
+`plugin.xml` descriptor, `dita uninstall`) grounded entirely in typed
+tool results, never raw file contents. That live run also caught a
+real bug no scripted test had: `generate_summary`'s schema took `id`
+while every other tool in the set takes `topicId` — the session called
+it with `topicId` first (the reasonable inference from the rest of the
+tool set) and got `missing required argument \`id\`` twice before
+trying `id`. Fixed (renamed to `topicId`, both the schema and the
+handler) and reverified with a second live session, which called it
+correctly on the first try. `resources/*` (§5.1) remains genuinely not
+implemented — see the Deferred note above — but nothing it would add
+has blocked this exit criterion or any real use so far.
 
 ### Phase 4 — Gradle integration + CI hardening (2 weeks)
 

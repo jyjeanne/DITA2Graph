@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -198,6 +199,156 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void externalTopicrefIsSilentlyExcludedFromContainmentNotWarnedAbout(@TempDir Path tempDir) throws Exception {
+        // A keyref-resolved <keydef href="https://..." scope="external">
+        // -- DITA-OT resolves the keyref onto the topicref itself during
+        // preprocessing, so by the time this class sees it, it's a
+        // topicref with a real https:// href and scope="external", no
+        // different from an authored one. Common real-world pattern
+        // (confirmed against dita-ot/docs' own conference-talk maps: a
+        // "related talk" pointing at an external video page) that
+        // previously produced a DITA2GRAPH010W "unresolved topicref
+        // target" per external link -- there was never a local topic for
+        // it to be, so that was noise, not a real gap.
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/configuration.dita\" uri=\"topics/configuration.dita\" "
+                + "path=\"topics/configuration.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/configuration.dita\"/>"
+                + "<topicref href=\"https://example.com/talk.html\" scope=\"external\" format=\"html\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals(2, nodes.size(), "map + 1 real topic -- the external topicref creates no phantom node");
+        assertTrue(warnings.isEmpty(), "external topicref should be silently excluded, not warned about: " + warnings);
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(1, map.links.size(), "only the real topicref should produce a contains edge");
+        assertEquals("configuration", map.links.get(0).target);
+    }
+
+    @Test
+    void repeatedCrossReferencesToTheSameTargetProduceOneEdgeNotOnePerMention(@TempDir Path tempDir)
+            throws Exception {
+        // Confirmed against a real, large third-party corpus
+        // (dita-ot/docs): prose that mentions the same keyref-based
+        // cross-reference several times in one topic (a glossary-style
+        // term referenced from multiple sentences) produced one edge per
+        // mention, so the same target ended up listed under one topic's
+        // "# Requires"/"# References" heading up to four times over --
+        // real, visible bundle noise (`okf_validator`'s "redundant link"
+        // warning) a small hand-built fixture with one mention per
+        // target never surfaces. Two keyref'd mentions of "configuration"
+        // plus two bare mentions of "installing-product-prereqs" here,
+        // matching that real shape.
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/configuration.dita\" uri=\"topics/configuration.dita\" "
+                + "path=\"topics/configuration.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/prereqs.dita\" uri=\"topics/prereqs.dita\" "
+                + "path=\"topics/prereqs.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/reuser.dita\" uri=\"topics/reuser.dita\" "
+                + "path=\"topics/reuser.dita\" format=\"dita\" has-keyref=\"true\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/configuration.dita\"/>"
+                + "<topicref href=\"topics/prereqs.dita\"/>"
+                + "<topicref href=\"topics/reuser.dita\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+        write(tempDir, "topics/prereqs.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"installing-product-prereqs\"><title>Prereqs</title>"
+                + "<body><p>Prereqs.</p></body></topic>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title><conbody>"
+                + "<p>See <xref href=\"configuration.dita\" keyref=\"config\">Configuration</xref> for setup, "
+                + "and again see <xref href=\"configuration.dita\" keyref=\"config\">Configuration</xref> "
+                + "for details.</p>"
+                + "<p>Also see <xref href=\"prereqs.dita\">Prereqs</xref> and "
+                + "<xref href=\"prereqs.dita\">Prereqs</xref> once more.</p>"
+                + "</conbody></concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        long requiresToConfig = reuser.links.stream()
+                .filter(l -> l.relation.equals("requires") && l.target.equals("configuration"))
+                .count();
+        long referencesToPrereqs = reuser.links.stream()
+                .filter(l -> l.relation.equals("references") && l.target.equals("installing-product-prereqs"))
+                .count();
+        assertEquals(1, requiresToConfig,
+                "two keyref'd mentions of the same target should collapse to one requires edge: " + reuser.links);
+        assertEquals(1, referencesToPrereqs,
+                "two bare mentions of the same target should collapse to one references edge: " + reuser.links);
+    }
+
+    @Test
+    void duplicateTopicIdIsDisambiguatedInsteadOfSilentlyOverwritingTheEarlierTopic(@TempDir Path tempDir)
+            throws Exception {
+        // Confirmed against a real, large third-party corpus
+        // (dita-ot/docs): 33 separate topics all sharing the literal
+        // root id "ID" -- an unfilled authoring-template placeholder.
+        // Without disambiguation, both would map to the same OKF
+        // concept file path (okf/topics/ID.md) and the second one
+        // written would silently overwrite the first's content --
+        // confirmed directly by running the un-fixed extractor against
+        // that corpus (33 nodes named "ID" in graph.json, but only one
+        // topic's actual content survived in the bundle). Two different
+        // source files sharing id="ID" here, matching that real shape
+        // exactly (not a synthetic simplification of it).
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/first.dita\" uri=\"topics/first.dita\" "
+                + "path=\"topics/first.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/second.dita\" uri=\"topics/second.dita\" "
+                + "path=\"topics/second.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/first.dita\"/>"
+                + "<topicref href=\"topics/second.dita\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/first.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>First Topic</title>"
+                + "<conbody><p>First topic's own content.</p></conbody></concept>");
+        write(tempDir, "topics/second.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>Second Topic</title>"
+                + "<conbody><p>Second topic's own content.</p></conbody></concept>");
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals(3, nodes.size(), "map + both topics -- neither one should be silently dropped");
+        TopicNode first = findTopic(nodes, "ID");
+        assertEquals("First Topic", first.title, "the earlier file keeps the plain, un-disambiguated id");
+        TopicNode second = findTopic(nodes, "ID--topics-second.dita");
+        assertEquals("Second Topic", second.title);
+        assertNotEquals(first.id, second.id, "both topics must end up with distinct graph node ids");
+
+        assertTrue(
+                warnings.stream().anyMatch(m -> m.contains("DITA2GRAPH070W") && m.contains("topics/second.dita")
+                        && m.contains("topics/first.dita")),
+                "expected a DITA2GRAPH070W warning naming both files sharing the id: " + warnings);
+    }
+
+    @Test
     void generatedFromIsExtractedFromXtrfMismatches(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
         write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
@@ -208,6 +359,9 @@ class DitaModelExtractorTest {
 
         TopicNode source = findTopic(nodes, "source");
         assertTrue(source.links.isEmpty(), "source's own content should have no generated-from edges: " + source.links);
+        // The source topic keeps its own text in full -- it's the
+        // canonical location this content lives, not a reuser of it.
+        assertEquals("Reusable content.", source.body);
 
         TopicNode reuser = findTopic(nodes, "reuser");
         // Exactly one generated-from edge to "source" -- not two, even
@@ -216,6 +370,105 @@ class DitaModelExtractorTest {
         assertEquals(1, reuser.links.size(), "reuser: " + reuser.links);
         assertTrue(reuser.links.stream()
                 .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")));
+        // Canonical-node deduplication (docs/dev/canonical-node-dedup-spec.md):
+        // reuser's own body text keeps its unreused paragraph but excludes
+        // both conref/conkeyref-pulled ones -- that text already lives in
+        // source's own body above, reachable via the generated-from edge
+        // just asserted, so duplicating it here too would inflate both the
+        // OKF bundle and RAG chunk text with copies of identical content.
+        assertEquals("Own content not reused.", reuser.body,
+                "reuser's body should exclude both conref/conkeyref-pulled paragraphs: " + reuser.body);
+    }
+
+    @Test
+    void bodyTextExcludesOnlyTheReusedSubtreeNotSiblingOwnContent(@TempDir Path tempDir) throws Exception {
+        // A single element (<step>) with one authored child (<cmd>) and
+        // one conref'd child (<info>) -- proves exclusion happens per
+        // reused subtree, not per whole topic: the authored sibling
+        // survives even though it's nested alongside reused content, not
+        // a top-level sibling of it (docs/dev/canonical-node-dedup-spec.md's
+        // "reused element nested inside the reusing topic's own structure"
+        // edge case).
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/source.dita\">Reusable content.</p></conbody>"
+                + "</concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<task id=\"reuser\"><title>Reuser Topic</title>"
+                + "<taskbody><steps><step xtrf=\"file:/src/topics/reuser.dita\">"
+                + "<cmd xtrf=\"file:/src/topics/reuser.dita\">Click Save.</cmd>"
+                + "<info xtrf=\"file:/src/topics/source.dita\">Reusable content.</info>"
+                + "</step></steps></taskbody></task>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertEquals("Click Save.", reuser.body,
+                "authored <cmd> text should survive; conref'd <info> text should not: " + reuser.body);
+    }
+
+    @Test
+    void inlineReuseMidSentenceIsPreservedNotExcluded(@TempDir Path tempDir) throws Exception {
+        // A conref'd <ph> in the middle of an authored sentence -- unlike
+        // a whole reused <p>/<step>, excluding this would leave a
+        // grammatically mangled sentence behind, not cleanly drop a
+        // self-contained chunk of content
+        // (docs/dev/canonical-node-dedup-spec.md's stated v1 policy:
+        // "leave it in rather than mangle prose"). Still recorded as
+        // generated-from (it's still genuinely reused content), just not
+        // excluded from body text the way a block-level reuse is.
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/source.dita\">Save</p></conbody>"
+                + "</concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/reuser.dita\">Click the "
+                + "<ph xtrf=\"file:/src/topics/source.dita\">Save</ph> button.</p></conbody>"
+                + "</concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertEquals("Click the Save button.", reuser.body,
+                "inline conref'd <ph> text should survive intact, not be dropped mid-sentence: " + reuser.body);
+        // Still genuinely reused content -- generated-from must still
+        // fire even though the text itself wasn't excluded.
+        assertTrue(reuser.links.stream()
+                .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")));
+    }
+
+    @Test
+    void generatedFromIsDetectedOutsideTheBodyToo(@TempDir Path tempDir) throws Exception {
+        // The combined body-text/generated-from walk starts at the topic
+        // root, not the body element -- a conref'd <shortdesc> (outside
+        // the body entirely) must still produce a generated-from edge,
+        // proving the merge didn't narrow generated-from's scope down to
+        // the body subtree the way body-text extraction is deliberately
+        // scoped.
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<shortdesc xtrf=\"file:/src/topics/source.dita\">Shared summary.</shortdesc>"
+                + "<conbody/></concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title>"
+                + "<shortdesc xtrf=\"file:/src/topics/source.dita\">Shared summary.</shortdesc>"
+                + "<conbody><p xtrf=\"file:/src/topics/reuser.dita\">Own content.</p></conbody>"
+                + "</concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertTrue(reuser.links.stream()
+                        .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")),
+                "reused <shortdesc>, outside the body, should still produce a generated-from edge: " + reuser.links);
+        assertEquals("Own content.", reuser.body);
     }
 
     @Test

@@ -24,6 +24,10 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let bundle_root = resolve_bundle_root(&args)?;
+    // One cache for the whole process lifetime, not reopened per
+    // request (bundle::BundleCache's own docs) -- a real agent session
+    // against a real, sizeable bundle issues many tool calls, not one.
+    let mut cache = bundle::BundleCache::new(bundle_root);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
                 continue;
             }
         };
-        if let Some(response) = handle_message(&request, &bundle_root) {
+        if let Some(response) = handle_message(&request, &mut cache) {
             writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
             stdout.flush()?;
         }
@@ -111,7 +115,7 @@ fn fs_read_to_string(path: &Path) -> Result<String> {
 
 /// Dispatches one JSON-RPC message, returning the response to write (or
 /// `None` for notifications, which never get one).
-fn handle_message(request: &Value, bundle_root: &std::path::Path) -> Option<Value> {
+fn handle_message(request: &Value, cache: &mut bundle::BundleCache) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
 
@@ -130,7 +134,7 @@ fn handle_message(request: &Value, bundle_root: &std::path::Path) -> Option<Valu
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match tools::call(name, &arguments, bundle_root) {
+            match tools::call(name, &arguments, cache) {
                 Ok(text) => Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "isError": false,
@@ -328,7 +332,7 @@ mod tests {
     fn initialize_reports_capabilities() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         )
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
@@ -338,7 +342,7 @@ mod tests {
     fn notification_gets_no_response() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         );
         assert!(response.is_none());
     }
@@ -347,7 +351,7 @@ mod tests {
     fn tools_list_includes_the_dita_specific_tools() {
         let response = handle_message(
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-            std::path::Path::new("."),
+            &mut bundle::BundleCache::new(PathBuf::from(".")),
         )
         .unwrap();
         let names: Vec<&str> = response["result"]["tools"]
@@ -371,7 +375,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_topics", "arguments": { "query": "installing" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -387,7 +391,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "find_related_topics", "arguments": { "topicId": "installing-product", "relation": "requires" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -402,7 +406,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -413,6 +417,57 @@ mod tests {
         assert_eq!(response["result"]["isError"], false);
     }
 
+    /// Found live: a real Claude Code session asking a content question
+    /// got titles/scores back from search_content but no way to see
+    /// *what actually matched* without a second round trip -- and no
+    /// other tool filled that gap either. Each hit should carry a short
+    /// excerpt of the matched text now, not just its title/id/score.
+    #[test]
+    fn search_content_includes_a_text_excerpt_for_each_match() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "encryption" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("Set the encryption key before starting."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Encryption keys must be rotated regularly."),
+            "{text}"
+        );
+    }
+
+    /// Same gap, found in the same live session: explain_task fetched a
+    /// topic's body via read_concept and threw it away (`let
+    /// (frontmatter, _body) = ...`), leaving no tool at all that could
+    /// answer "what does this topic actually say" -- title and a
+    /// one-sentence shortdesc (often absent) was the closest anything
+    /// got.
+    #[test]
+    fn explain_task_includes_a_body_excerpt() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "explain_task", "arguments": { "topicId": "configuration" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("Set the encryption key before starting."),
+            "{text}"
+        );
+    }
+
     #[test]
     fn search_content_ranks_by_multi_term_frequency_not_alphabetically() {
         let dir = content_search_bundle_root();
@@ -421,7 +476,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption keys" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -447,7 +502,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "encryption", "topicId": "installing-product" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -455,6 +510,54 @@ mod tests {
         // unrelated-topic is not, even though it also matches "encryption".
         assert!(text.contains("Configuration Overview"), "{text}");
         assert!(!text.contains("Unrelated Topic"), "{text}");
+    }
+
+    /// Found live: on a real, sizeable corpus, an unscoped or broad
+    /// query matching dozens of topics -- each now carrying its own
+    /// excerpt -- produced 50+ KB of output, past what a real MCP
+    /// client renders inline. 20 matching topics here, well past the
+    /// 15-result cap, proves both halves: only the top 15 (by score)
+    /// come back, and the response says so rather than silently
+    /// dropping the rest.
+    #[test]
+    fn search_content_caps_results_and_notes_the_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = (0..20)
+            .map(|i| {
+                NormalizedNode::Topic(NormalizedTopic {
+                    id: format!("topic-{i}"),
+                    topic_type: TopicType::Concept,
+                    title: format!("Topic {i}"),
+                    shortdesc: None,
+                    body: Some("Mentions widgets in its body.".into()),
+                    audience: vec![],
+                    product: vec![],
+                    keys: vec![],
+                    uicontrols: vec![],
+                    cmd_uicontrols: vec![],
+                    source_file: format!("topics/topic-{i}.dita"),
+                    links: vec![],
+                })
+            })
+            .collect();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "widgets" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let result_count = text.matches("Mentions widgets in its body.").count();
+        assert_eq!(result_count, 15, "{text}");
+        assert!(
+            text.contains("showing top 15 of 20 matches"),
+            "expected a truncation note: {text}"
+        );
     }
 
     #[test]
@@ -465,7 +568,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_content", "arguments": { "query": "anything" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -481,7 +584,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -501,7 +604,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -524,11 +627,51 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "analyze_impact", "arguments": { "topicId": "user-guide" } }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("nothing depends on"), "{text}");
+    }
+
+    #[test]
+    fn generate_summary_returns_title_and_description_for_a_topic_id() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "generate_summary", "arguments": { "topicId": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "Installing Product: Steps to install the product.");
+        assert_eq!(response["result"]["isError"], false);
+    }
+
+    /// `topicId`, matching every other tool in the set -- not `id`
+    /// (found live: a real Claude Code session calling this tool with
+    /// `topicId` first, the same way any agent would reasonably infer
+    /// this tool's shape from the rest of the set, hit exactly this
+    /// error twice before it happened to try `id`). The error message
+    /// itself needs to name the parameter this tool actually expects,
+    /// or a caller that DOES get this wrong has no way to self-correct
+    /// from the error alone.
+    #[test]
+    fn generate_summary_reports_a_tool_level_error_naming_the_correct_parameter() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "generate_summary", "arguments": { "id": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("topicId"), "{text}");
+        assert_eq!(response["result"]["isError"], true);
     }
 
     #[test]
@@ -539,7 +682,7 @@ mod tests {
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "does_not_exist", "arguments": {} }
             }),
-            dir.path(),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
         .unwrap();
         assert_eq!(response["result"]["isError"], true);

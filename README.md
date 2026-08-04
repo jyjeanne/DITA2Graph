@@ -152,12 +152,12 @@ Once registered, an agent can call:
 | Tool | What it does |
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
-| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
+| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic |
-| `explain_task(topicId)` | Title, description, and key relations for a topic |
+| `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
 | `analyze_impact(topicId, depth?)` | Reverse, transitive traversal — everything that would be affected by changing this topic, with content excerpts (§13.1) |
-| `generate_summary(id)` | Title + description for a topic or map |
+| `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.
