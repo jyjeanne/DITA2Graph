@@ -317,6 +317,32 @@ mod tests {
     }
 
     #[test]
+    fn search_content_ranks_by_multi_term_frequency_not_alphabetically() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "search_content", "arguments": { "query": "encryption keys" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // "Encryption keys must be rotated regularly." (unrelated-topic)
+        // matches both terms; "Set the encryption key before starting."
+        // (configuration) only matches "encryption" ("key" != "keys").
+        // Alphabetically "Configuration Overview" would sort first --
+        // ranked by score, "Unrelated Topic" (the better match) must
+        // come first instead.
+        let unrelated_pos = text.find("Unrelated Topic").expect(text);
+        let configuration_pos = text.find("Configuration Overview").expect(text);
+        assert!(
+            unrelated_pos < configuration_pos,
+            "expected the higher-scoring match first:\n{text}"
+        );
+    }
+
+    #[test]
     fn search_content_scoped_to_a_topic_id_narrows_via_the_graph_first() {
         let dir = content_search_bundle_root();
         let response = handle_message(

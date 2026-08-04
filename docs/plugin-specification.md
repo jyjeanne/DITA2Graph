@@ -742,6 +742,20 @@ expensive content match, not a fuzzy search over the whole bundle.
 Degrades to a plain "no rag/chunks.jsonl found" message, not an error,
 against a bundle built before `rag/` existed.
 
+Results are ranked, not returned in file/alphabetical order: `query` is
+split on whitespace into terms, and each matching concept gets a
+keyword-frequency score — a term appearing in the title counts more
+than the same term appearing in the body (a title match is a stronger
+relevance signal than an incidental mention), and every body occurrence
+adds to the score, so a concept mentioning a term five times outranks
+one mentioning it once. This is word-overlap/term-frequency ranking,
+not embedding-based semantic similarity — deliberately: §13.1's
+node-level-embeddings direction is explicitly *not* a committed design
+yet, while this is a self-contained improvement over the plain
+substring check it replaces, verified against a live bundle with a
+two-term query where the correct higher-scoring concept ranks first
+even though it would sort second alphabetically.
+
 `analyze_impact(topicId, depth?)` is a reverse graph traversal — every
 edge that points *at* `topicId`, followed transitively up to `depth`
 (default 5) — answering "if I change this topic, what breaks?" (§13.1):
@@ -753,8 +767,8 @@ gets a short text excerpt under it (truncated to 140 characters,
 newlines flattened) — a raw excerpt handed to the calling agent, not a
 server-generated summary (this tool doesn't call an LLM); the agent's
 own read of the excerpts is the actual summarization. Of §13.1's four
-pieces, only node-level embeddings and ranked/semantic matching within
-`search_content`'s narrowed scope remain design only.
+pieces, only node-level embeddings remain design only — query routing,
+its ranking, and impact analysis (both halves) are all implemented.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -1725,12 +1739,13 @@ answering queries in Claude Code, hitting no undocumented step.
 
 Not a single phase but a backlog, picked up item-by-item based on
 adopter feedback after v0.1.0 — see §13 for the current list: a unified
-graph + RAG architecture (§13.1, the largest single item, and mostly
-underway — `rag/chunks.jsonl` extraction, `search_content`'s
-graph-narrowed query routing, and `analyze_impact` are done;
-node-level embeddings and ranked/semantic content matching are not),
-plus multi-map federation, graph diffing, HTTP transport + auth, and a
-rendered-output annotation variant (§13.2). Each item gets its own
+graph + RAG architecture (§13.1, the largest single item, and nearly
+done — `rag/chunks.jsonl` extraction, `search_content`'s graph-narrowed
+and keyword-ranked query routing, and `analyze_impact` (with content
+excerpts) are all done; only node-level embeddings, the heavier,
+not-yet-committed direction, remain), plus multi-map federation, graph
+diffing, HTTP transport + auth, and a rendered-output annotation
+variant (§13.2). Each item gets its own
 scoped follow-up
 spec/issue and its own exit criterion before work starts, rather than
 being bundled into one open-ended phase.
@@ -1825,15 +1840,24 @@ to the first:
   though the same query unscoped finds it elsewhere in the bundle —
   the narrowing is real, not a no-op filter.
 
-What's *not* implemented is the "fuzzy relevance ranking" half of the
-original design text below — `search_content`'s within-scope match is
-still plain substring matching (§5.2), the same limitation
-`search_topics` has, not an embedding-based ranking step. The graph
-narrowing is real; the content layer it hands off to is still simple.
-This is still the mechanism behind §9.2's token-reduction argument at
-scale (illustratively: ten thousand topics narrowed to a few dozen by
-the graph before any content search runs) — narrowing doesn't require
-ranking to already be sophisticated to pay off.
+The "relevance ranking" half of the original design text below is now
+implemented too, in a keyword-frequency form rather than the
+embedding-based version that text originally implied: `search_content`
+scores each matching concept by how many query terms it contains and
+how often (title matches weighted higher than body mentions), and
+returns results ordered by that score. Verified against a live bundle
+with a two-term query, on a pair of concepts where the correct
+higher-scoring one would sort *second* alphabetically — it ranks
+first, proving the ordering comes from the score, not an accidental
+side effect of iteration order. What remains genuinely unimplemented is
+semantic/embedding-based ranking specifically — word overlap can't
+match a query and a concept that describe the same thing in different
+words, which only an embedding model can. That gap is real, but it's a
+different (and larger) gap than "results are unranked," which is now
+closed. This is still the mechanism behind §9.2's token-reduction
+argument at scale (illustratively: ten thousand topics narrowed to a
+few dozen by the graph before any content search runs) — narrowing
+doesn't require ranking to already be embedding-based to pay off.
 
 **Impact analysis — implemented, both halves.** "If I change
 `engine.dita`, what breaks?" is a graph query — dependents, containing
@@ -1876,19 +1900,22 @@ scoped as a phase.
 **Status:** three of this section's four pieces are implemented and
 verified — `rag/`'s extraction and output side
 (`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`),
-query routing (`search_content` in `mcp/dita2graph-mcp/src/tools.rs`),
-and impact analysis including its content excerpts (`analyze_impact`,
-same file). All three are covered by unit tests and a live DITA-OT 4.4
-run including the DITAVAL split; `search_content`'s graph-narrowing is
-specifically verified to *narrow* (a scoped query with no matches in
-scope returns zero results even though the same query unscoped finds
-a match elsewhere), and `analyze_impact`'s excerpts are verified to
-contain the real topic text, not placeholder output. Only node-level
-embeddings remain fully design-only, plus one smaller gap inside an
-implemented piece: `search_content`'s within-scope match is still
-plain substring matching, not ranked or semantic. Each remaining piece
-is tracked as its own Phase 6+ backlog item (§12), to get its own
-scoped follow-up spec and exit criterion before work starts.
+query routing with keyword-frequency ranking (`search_content` in
+`mcp/dita2graph-mcp/src/tools.rs`), and impact analysis including its
+content excerpts (`analyze_impact`, same file). All three are covered
+by unit tests and a live DITA-OT 4.4 run including the DITAVAL split;
+`search_content`'s graph-narrowing is specifically verified to *narrow*
+(a scoped query with no matches in scope returns zero results even
+though the same query unscoped finds a match elsewhere), its ranking is
+verified to actually reorder results by score rather than alphabetically,
+and `analyze_impact`'s excerpts are verified to contain the real topic
+text, not placeholder output. Only node-level embeddings remain design
+only — the one honest gap left in `search_content` is that its
+keyword-frequency ranking can't match a query and a concept that
+describe the same thing in different words, which needs semantic
+similarity, not more keyword logic. Each remaining piece is tracked as
+its own Phase 6+ backlog item (§12), to get its own scoped follow-up
+spec and exit criterion before work starts.
 
 ### 13.2 Other extended capabilities
 

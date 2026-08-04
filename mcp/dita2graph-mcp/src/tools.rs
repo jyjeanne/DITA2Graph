@@ -138,9 +138,17 @@ fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
 /// the "graph narrows first, content search runs only on what's left"
 /// pattern that section describes, made concrete: `search_topics` above
 /// only ever matches titles/ids against `okf/`, never a topic's actual
-/// prose.
+/// prose. Results are ranked by keyword-frequency score (see
+/// `relevance_score`), not returned in an arbitrary/alphabetical order
+/// the way `search_topics` still is.
 fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let query = arg_str(arguments, "query")?.to_lowercase();
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    if terms.is_empty() {
+        return Err(anyhow!(
+            "`query` must contain at least one non-whitespace term"
+        ));
+    }
     let scope_topic = arguments.get("topicId").and_then(|v| v.as_str());
     let relation = arguments.get("relation").and_then(|v| v.as_str());
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
@@ -156,30 +164,67 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
 
     let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
 
-    let mut hits: Vec<String> = Vec::new();
+    let mut scored: Vec<(i64, &str, &str, &str)> = Vec::new();
     for chunk in &chunks {
         if let Some(allowed) = &allowed
             && !allowed.contains(&chunk.id)
         {
             continue;
         }
-        let text = chunk.text.as_deref().unwrap_or_default().to_lowercase();
-        if chunk.title.to_lowercase().contains(&query) || text.contains(&query) {
-            hits.push(format!(
-                "{} ({}) [{}]",
-                chunk.title, chunk.topic_type, chunk.id
+        let title_lower = chunk.title.to_lowercase();
+        let text_lower = chunk.text.as_deref().unwrap_or_default().to_lowercase();
+        let score = relevance_score(&terms, &title_lower, &text_lower);
+        if score > 0 {
+            scored.push((
+                score,
+                chunk.id.as_str(),
+                chunk.title.as_str(),
+                chunk.topic_type.as_str(),
             ));
         }
     }
-    hits.sort();
+    // Highest score first; tie-break by id so the ordering is
+    // deterministic rather than dependent on chunks.jsonl's file order.
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
 
-    if hits.is_empty() {
+    if scored.is_empty() {
+        let query = terms.join(" ");
         return Ok(match scope_topic {
             Some(id) => format!("no content matched `{query}` within topics reachable from `{id}`"),
             None => format!("no content matched `{query}`"),
         });
     }
-    Ok(hits.join("\n"))
+    Ok(scored
+        .into_iter()
+        .map(|(score, id, title, topic_type)| {
+            format!("{title} ({topic_type}) [{id}] (score: {score})")
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Keyword-frequency relevance score across `terms` (already
+/// lowercased, whitespace-split): a term appearing in the title counts
+/// more than one appearing in the body (title relevance is a stronger
+/// signal than an incidental mention), and every occurrence in the body
+/// adds to the score, so a term mentioned five times outranks one
+/// mentioned once. This is word-overlap/term-frequency ranking, not
+/// embedding-based semantic similarity -- §13.1 is explicit that the
+/// latter is a separate, heavier, not-yet-committed step, and this
+/// stays a keyword-matching improvement on top of the plain substring
+/// check it replaces, not a step toward it.
+fn relevance_score(terms: &[&str], title_lower: &str, text_lower: &str) -> i64 {
+    let mut score = 0i64;
+    for term in terms {
+        if term.is_empty() {
+            continue;
+        }
+        if title_lower.contains(term) {
+            score += 5;
+        }
+        score += text_lower.matches(term).count() as i64;
+    }
+    score
 }
 
 /// Every id reachable from `start` by following outgoing edges
@@ -402,6 +447,38 @@ fn validate_bundle(bundle_root: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relevance_score_weighs_a_title_match_more_than_a_body_mention() {
+        let title_hit = relevance_score(&["install"], "installing product", "");
+        let body_hit = relevance_score(&["install"], "configuration overview", "install install");
+        assert!(
+            title_hit > body_hit,
+            "a single title match ({title_hit}) should outweigh two body mentions ({body_hit})"
+        );
+    }
+
+    #[test]
+    fn relevance_score_sums_across_multiple_terms() {
+        let both_terms = relevance_score(&["encryption", "keys"], "", "encryption keys");
+        let one_term = relevance_score(&["encryption", "keys"], "", "encryption key");
+        assert!(
+            both_terms > one_term,
+            "matching both query terms ({both_terms}) should outscore matching only one ({one_term})"
+        );
+    }
+
+    #[test]
+    fn relevance_score_counts_repeated_body_occurrences() {
+        let twice = relevance_score(&["install"], "", "install install");
+        let once = relevance_score(&["install"], "", "install");
+        assert_eq!(twice, once * 2);
+    }
+
+    #[test]
+    fn relevance_score_is_zero_for_no_match() {
+        assert_eq!(relevance_score(&["nowhere"], "some title", "some text"), 0);
+    }
 
     #[test]
     fn excerpt_passes_short_text_through_unchanged() {

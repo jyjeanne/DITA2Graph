@@ -114,6 +114,25 @@ jobs:
           echo "$response" | grep -q '"isError":false'
           echo "$response" | grep -q 'installing-product'
 
+      - name: Confirm search_content ranks multi-term matches by relevance (§13.1)
+        run: |
+          set -euo pipefail
+          echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"install product"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph \
+            | tee /tmp/search-content-response.json
+          # "Installing Product" matches both terms in its own title;
+          # "Installing Product: Prerequisites" matches them too but
+          # scores lower -- it must rank second, proving results are
+          # ordered by score, not the alphabetical/file order
+          # search_content used before ranking.
+          python3 -c "
+          import json
+          with open('/tmp/search-content-response.json') as f:
+              text = json.load(f)['result']['content'][0]['text']
+          print(text)
+          assert text.index('installing-product]') < text.index('installing-product-prereqs]'), 'expected installing-product ranked first'
+          "
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |
