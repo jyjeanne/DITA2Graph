@@ -143,6 +143,8 @@ state, most-complete first:
    content — `generated-from` already records *where* reused content
    came from; collapsing it into a single stored node instead of
    rendering it inline in every reusing topic is the remaining piece.
+   Scoped (topic-level granularity, not implemented yet):
+   [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md).
 3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
    storage** for the query index.
 4. **Full `<navref>` map composition** — would need this plugin to
