@@ -68,7 +68,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "analyze_impact",
-            "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers), not just its direct links (§13.1).",
+            "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers), not just its direct links, with a text excerpt from rag/chunks.jsonl under each affected concept when one exists (§13.1).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -297,11 +297,23 @@ fn trace_dependencies(bundle: &BundleReader, arguments: &Value) -> Result<String
 /// Reverse BFS over *every* relation, not just `requires` like
 /// [`trace_dependencies`] -- "if I change this topic, what breaks?"
 /// needs `contains` (which maps/topics include it) and `references` too,
-/// not only declared prerequisites (§13.1, the first implemented tool
-/// from that section's design direction).
+/// not only declared prerequisites (§13.1). Each affected concept gets a
+/// text excerpt from `rag/chunks.jsonl` under it when one exists -- the
+/// "content layer summarizes the impact" half of §13.1's design text,
+/// implemented as a raw excerpt handed to the calling agent rather than
+/// a server-generated summary (this tool doesn't call an LLM); the
+/// agent's own read of the excerpts is the summary.
 fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let topic_id = arg_str(arguments, "topicId")?.to_string();
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+    // Best-effort enrichment: a missing or malformed rag/ shouldn't break
+    // the graph traversal, which is this tool's primary job.
+    let chunks = bundle.rag_chunks().unwrap_or_default();
+    let excerpt_by_id: std::collections::HashMap<&str, String> = chunks
+        .iter()
+        .filter_map(|c| c.text.as_deref().map(|t| (c.id.as_str(), excerpt(t, 140))))
+        .collect();
 
     let mut visited = std::collections::HashSet::new();
     let mut frontier = vec![topic_id.clone()];
@@ -316,14 +328,15 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                     let title = bundle
                         .title(&edge.from)
                         .unwrap_or_else(|_| edge.from.clone());
-                    lines.push(format!(
-                        "{}{} ({}) --{}--> {}",
-                        "  ".repeat(level - 1),
-                        title,
-                        edge.from,
-                        edge.relation,
-                        id
-                    ));
+                    let indent = "  ".repeat(level - 1);
+                    let mut line = format!(
+                        "{indent}{title} ({}) --{}--> {id}",
+                        edge.from, edge.relation
+                    );
+                    if let Some(excerpt) = excerpt_by_id.get(edge.from.as_str()) {
+                        line.push_str(&format!("\n{indent}  {excerpt}"));
+                    }
+                    lines.push(line);
                     next.push(edge.from.clone());
                 }
             }
@@ -344,6 +357,19 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         lines.len(),
         lines.join("\n")
     ))
+}
+
+/// The first `max_chars` characters of `text` (newlines flattened to
+/// spaces, since a report line should stay one line), with a trailing
+/// `…` when truncated. Char-counted, not byte-counted, so it never
+/// panics on a multi-byte UTF-8 boundary.
+fn excerpt(text: &str, max_chars: usize) -> String {
+    let flattened = text.replace('\n', " ");
+    let mut result: String = flattened.chars().take(max_chars).collect();
+    if flattened.chars().count() > max_chars {
+        result.push('…');
+    }
+    result
 }
 
 fn generate_summary(bundle: &BundleReader, arguments: &Value) -> Result<String> {
@@ -371,4 +397,37 @@ fn validate_bundle(bundle_root: &Path) -> Result<String> {
         .map(|i| format!("{:?} {}: {}", i.severity, i.file, i.message))
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excerpt_passes_short_text_through_unchanged() {
+        assert_eq!(excerpt("short text", 140), "short text");
+    }
+
+    #[test]
+    fn excerpt_truncates_long_text_with_an_ellipsis() {
+        let long = "a".repeat(200);
+        let result = excerpt(&long, 140);
+        assert_eq!(result.chars().count(), 141); // 140 chars + the ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn excerpt_flattens_newlines_to_spaces() {
+        assert_eq!(excerpt("line one\nline two", 140), "line one line two");
+    }
+
+    #[test]
+    fn excerpt_is_safe_on_multi_byte_utf8_near_the_truncation_boundary() {
+        // Each "é" is 2 bytes in UTF-8; a byte-counted truncation at an
+        // odd offset would panic or produce invalid UTF-8. Char-counted
+        // truncation must not.
+        let text = "é".repeat(150);
+        let result = excerpt(&text, 140);
+        assert_eq!(result.chars().count(), 141);
+    }
 }

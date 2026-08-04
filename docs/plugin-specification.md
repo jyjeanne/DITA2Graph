@@ -748,9 +748,13 @@ edge that points *at* `topicId`, followed transitively up to `depth`
 dependents via `requires`, containing maps via `contains`, and any
 other relation a topic participates in, not just declared
 prerequisites the way `trace_dependencies` (forward, `requires`-only)
-does. Query routing and this tool are §13.1's second and first
-implemented pieces; only node-level embeddings and summarizing
-`analyze_impact`'s output through the content layer remain design only.
+does. Each affected concept that has a `rag/chunks.jsonl` entry also
+gets a short text excerpt under it (truncated to 140 characters,
+newlines flattened) — a raw excerpt handed to the calling agent, not a
+server-generated summary (this tool doesn't call an LLM); the agent's
+own read of the excerpts is the actual summarization. Of §13.1's four
+pieces, only node-level embeddings and ranked/semantic matching within
+`search_content`'s narrowed scope remain design only.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -1831,7 +1835,7 @@ scale (illustratively: ten thousand topics narrowed to a few dozen by
 the graph before any content search runs) — narrowing doesn't require
 ranking to already be sophisticated to pay off.
 
-**Impact analysis — implemented, graph-only half.** "If I change
+**Impact analysis — implemented, both halves.** "If I change
 `engine.dita`, what breaks?" is a graph query — dependents, containing
 maps, `requires`/keyref referrers (§4.3) — and `analyze_impact(topicId,
 depth?)` (§5.2) answers exactly that: a reverse traversal over every
@@ -1839,13 +1843,21 @@ incoming edge, transitively, up to `depth` hops (default 5), returning
 every concept that (directly or indirectly) depends on the one that
 changed. Verified against a live bundle: changing a topic three other
 concepts depend on at different hop distances reports all three, not
-just the direct dependent. What's still missing is the *content* half
-— summarizing each affected topic into a readable report, rather than
-the current output (a flat list of "concept — relation — target"
-lines). `search_content` (above) could in principle be called per
-affected id to fetch each one's text, but nothing wires that
-combination together into one tool call yet; that composition is
-future work, not a currently exposed capability.
+just the direct dependent.
+
+The content half is implemented too, in a specific and honestly-scoped
+form: each affected concept with a `rag/chunks.jsonl` entry gets a
+140-character text excerpt under its line, rather than the tool
+returning a bare "concept — relation — target" list. This is *not* an
+LLM-generated summary — `analyze_impact` doesn't call a model — it's
+the raw source excerpt handed to whichever agent called the tool, on
+the premise that hop-by-hop context plus a snippet of each affected
+topic's actual text is enough for the calling agent to write its own
+summary without a second round-trip. Verified against a live bundle
+that the excerpt text matches the real topic content, is absent for a
+map (maps aren't chunked into `rag/`, §13.1 above) without breaking
+the rest of the report, and degrades to no excerpts at all — not an
+error — against a bundle with no `rag/` output.
 
 **Longer-term direction: converge the two artifacts.** The natural end
 state folds `rag/chunks.jsonl` into the OKF nodes themselves instead of
@@ -1864,20 +1876,19 @@ scoped as a phase.
 **Status:** three of this section's four pieces are implemented and
 verified — `rag/`'s extraction and output side
 (`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`),
-basic query routing (`search_content` in
-`mcp/dita2graph-mcp/src/tools.rs`), and the graph-only half of impact
-analysis (`analyze_impact`, same file). All three are covered by unit
-tests and a live DITA-OT 4.4 run including the DITAVAL split, and
-`search_content`'s graph-narrowing is specifically verified to
-*narrow* (a scoped query with no matches in scope returns zero
-results even though the same query unscoped finds a match elsewhere).
-Node-level embeddings remain design only, and two smaller gaps remain
-inside the implemented pieces: `search_content`'s within-scope match
-is plain substring matching, not ranked/semantic, and
-`analyze_impact`'s output isn't summarized by the content layer. Each
-remaining piece is tracked as its own Phase 6+ backlog item (§12), to
-get its own scoped follow-up spec and exit criterion before work
-starts.
+query routing (`search_content` in `mcp/dita2graph-mcp/src/tools.rs`),
+and impact analysis including its content excerpts (`analyze_impact`,
+same file). All three are covered by unit tests and a live DITA-OT 4.4
+run including the DITAVAL split; `search_content`'s graph-narrowing is
+specifically verified to *narrow* (a scoped query with no matches in
+scope returns zero results even though the same query unscoped finds
+a match elsewhere), and `analyze_impact`'s excerpts are verified to
+contain the real topic text, not placeholder output. Only node-level
+embeddings remain fully design-only, plus one smaller gap inside an
+implemented piece: `search_content`'s within-scope match is still
+plain substring matching, not ranked or semantic. Each remaining piece
+is tracked as its own Phase 6+ backlog item (§12), to get its own
+scoped follow-up spec and exit criterion before work starts.
 
 ### 13.2 Other extended capabilities
 

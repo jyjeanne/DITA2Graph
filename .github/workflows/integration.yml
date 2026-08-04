@@ -82,7 +82,7 @@ jobs:
           fi
           grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-internal/rag/chunks.jsonl
 
-      - name: Confirm analyze_impact finds transitive dependents (§13.1)
+      - name: Confirm analyze_impact finds transitive dependents and content excerpts (§13.1)
         run: |
           set -euo pipefail
           response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze_impact","arguments":{"topicId":"configuration"}}}' \
@@ -90,6 +90,10 @@ jobs:
           echo "$response"
           echo "$response" | grep -q '"isError":false'
           echo "$response" | grep -q 'installing-product'
+          # installing-product's shortdesc text should appear as an
+          # excerpt under its line -- the "content layer summarizes the
+          # impact" half of §13.1, not just the flat edge list.
+          echo "$response" | grep -q 'Steps to install the product'
 
       - name: Confirm search_content narrows via the graph first (§13.1)
         run: |

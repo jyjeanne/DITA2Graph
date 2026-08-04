@@ -371,6 +371,29 @@ mod tests {
     }
 
     #[test]
+    fn analyze_impact_includes_a_content_excerpt_when_rag_has_one() {
+        let dir = content_search_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // installing-product requires configuration, and has rag/ text
+        // (its shortdesc) -- the excerpt should appear right under it.
+        assert!(text.contains("installing-product"), "{text}");
+        assert!(text.contains("Steps to install the product."), "{text}");
+        // user-guide (a map) is also an affected concept (2 hops, via
+        // "contains installing-product") but maps aren't chunked into
+        // rag/ (§13.1), so it gets no excerpt line -- just confirm the
+        // overall report still lists it without crashing on the lookup.
+        assert!(text.contains("user-guide"), "{text}");
+    }
+
+    #[test]
     fn analyze_impact_reports_nothing_for_a_leaf_with_no_dependents() {
         let dir = sample_bundle_root();
         let response = handle_message(
