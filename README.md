@@ -4,9 +4,11 @@ A DITA-OT plugin that converts DITA content into a semantic knowledge
 graph (using [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 v0.2 as the representation) and exposes it to AI agents over MCP.
 
-Full design, rationale, and roadmap: **[`docs/plugin-specification.md`](docs/plugin-specification.md)**.
-Implementation status against that roadmap's Phase 0–2: **[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**
-and the per-phase "Status" notes in the spec's §12.
+Full design and rationale: **[`docs/plugin-specification.md`](docs/plugin-specification.md)**.
+Phase-by-phase status and what's next: **[`Roadmap.md`](Roadmap.md)**.
+The evidence behind that status — what was actually tested against a
+live DITA-OT 4.4, what broke, and how it was fixed:
+**[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**.
 
 ## Status
 
@@ -42,9 +44,12 @@ Resources — `dita://topics` etc. — which `dita2graph-mcp` doesn't
 implement at all, only the §5.2 tools — real gaps, documented rather
 than hidden. Every relation in §4.3's taxonomy (`contains`/`requires`/
 `references`/`applies-to`/`related-to`/`generated-from`) is now real
-(findings 13,
-15), and all five `args.dita2graph.*` parameters, including `mcp`, are
-functionally wired end to end (finding 12).
+(findings 13, 15), and all five `args.dita2graph.*` parameters,
+including `mcp`, are functionally wired end to end (finding 12).
+
+**Release status:** the MVP scope (§11) is functionally complete and
+`v0.1.0`-ready — see **[`Roadmap.md`](Roadmap.md)** for the phase-by-phase
+breakdown and what's left for Phase 6+.
 
 ## Toolchain requirements
 
@@ -130,6 +135,7 @@ DITA-OT and invoke it directly — see `docs/plugin-specification.md` §15
 ## Repository layout
 
 ```
+Roadmap.md                      # phase-by-phase status and what's next
 docs/plugin-specification.md    # design spec, source of truth
 docs/dev/phase-0-findings.md    # spike results and decisions made from them
 core/dita2graph-core/           # Rust: normalized model, OKF writer, CLI (§3)
@@ -138,4 +144,7 @@ plugin/org.dita.dita2graph/     # DITA-OT plugin: plugin.xml/build.xml/cfg (§2)
 plugin/org.dita.dita2graph/java # Java: ExtractTask, builds lib/dita2graph-core.jar
 gradle-build/                   # Live Gradle/Kotlin DSL integration harness (§8)
 sample-docs/                    # fixture DITA project used by tests/demos
+sample-docs-nested/             # fixture: nested topicref/topichead/topicgroup (finding 11)
+sample-docs-mapref/             # fixture: mapref/anchorref/navref map composition (findings 14, 16)
+sample-docs-relations/          # fixture: applies-to/generated-from relation inference (finding 15)
 ```

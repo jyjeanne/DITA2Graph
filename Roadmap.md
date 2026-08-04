@@ -1,0 +1,151 @@
+# Roadmap
+
+Phase-by-phase status for DITA2Graph, condensed from
+[`docs/plugin-specification.md`](docs/plugin-specification.md) §11
+(MVP scope) and §12 (development phases) — that document is the
+source of truth with full detail on deliverables and exit criteria per
+phase; this page is the scannable summary plus what's actually left.
+The evidence behind every "done" claim below — what was verified
+against a live DITA-OT 4.4, not just written down — lives in
+[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md), numbered
+findings 1–16.
+
+## Phase overview
+
+| Phase | Focus | Status |
+|---|---|---|
+| 0 | Spike & feasibility | ✅ Done |
+| 1 | Plugin skeleton + normalized model | ✅ Done |
+| 2 | Core engine: OKF bundle generation | ✅ Done (dedup/incremental rebuild deferred to Phase 6+) |
+| 3 | MCP server | ✅ Done (Resources deferred, see below) |
+| 4 | Gradle integration + CI hardening | ✅ Done |
+| 5 | Security, docs, public `v0.1.0` release | ✅ Done |
+| 6+ | Extended capabilities (post-MVP) | 🔄 Ongoing, picked up item by item |
+
+The MVP scope (§11) — plugin, relation extraction, a conformant `okf/`
+bundle, an MCP server, a Gradle CI harness, and the public/internal
+DITAVAL split — is functionally complete and verified end to end
+against a live DITA-OT 4.4 install, not just designed. `v0.1.0` is
+tagged from this state.
+
+## Phase detail
+
+### Phase 0 — Spike & feasibility
+
+Confirmed both blocking unknowns before committing to the architecture:
+`okf-core`/`okf-validator` are usable as library dependencies (not just
+CLI tools), and DITA-OT's own preprocessing resolves `keyref`/`conref`/
+DITAVAL filtering before this plugin ever needs to. `okf-dita`/
+`okf-generator` turned out *not* reusable for the bundle-write path —
+`dita2graph-core` writes its own OKF bundle instead (a documented
+fallback decision, not a silent deviation).
+
+### Phase 1 — DITA-OT plugin skeleton + normalized model
+
+`org.dita.dita2graph` installs via `dita --install`, dispatches, and
+produces the normalized DITA model end to end against a live DITA-OT
+4.4 (findings 5–7 caught and fixed seven real integration bugs along
+the way — illegal `--` in XML comments, nonexistent extension points,
+Ant target-naming conventions, missing CLI `<param>` declarations, and
+more).
+
+Map extraction walks `topicref`/`topichead`/`topicgroup` nesting at any
+depth (finding 11), excludes DITA-OT's auto-generated `related-links`
+navigation from cross-reference extraction, and supports `mapref`/
+`anchorref` submap composition with zero extra code — DITA-OT's own
+preprocessing already flattens it into the same map tree (finding 14).
+`<navref>` is genuinely unsupported (would mean this plugin
+independently parsing/merging navigation maps outside DITA-OT's own
+pipeline) but is now *detected* and logged (`DITA2GRAPH060W`) instead
+of silently dropped (finding 16). All five `args.dita2graph.*` CLI
+parameters (`depth`, `mcp`, `emit-graph-json`, `store`,
+`include-drafts`) are functionally wired, not just accepted and logged
+(findings 10, 12).
+
+### Phase 2 — Core engine: OKF bundle generation
+
+`dita2graph-core` normalizes the model, writes a conformant `okf/`
+bundle plus derived `graph.json`, and infers every relation in the
+taxonomy. `contains`/`requires`/`references` come straight from
+authored markup; `generated-from` is derived deterministically from
+DITA-OT's own `xtrf` source-trace attributes, no inference needed
+(finding 15); `related-to` (shared `product` values, finding 13) and
+`applies-to` (matching `<uicontrol>` text between a task and a
+reference topic, with an ambiguous match dropped and logged rather than
+guessed, finding 15) are both inferred, downstream, in Rust.
+
+**Deferred to Phase 6+:** true canonical-node deduplication for
+`conref`/`conkeyref`-reused content (`generated-from` records
+provenance today, but doesn't yet collapse storage), incremental
+rebuild (source-hash keyed), and SQLite/RocksDB-backed storage (`query`
+currently reads `graph.json` directly).
+
+### Phase 3 — MCP server
+
+`dita2graph-mcp` implements the JSON-RPC-over-stdio pattern with the
+full tool set — `search_topics`, `search_content`, `find_related_topics`,
+`explain_task`, `trace_dependencies`, `analyze_impact`,
+`generate_summary`, `validate_bundle` — verified end to end over real
+stdin/stdout against a live-built bundle. Takes a bundle root directly
+or via `--config <mcp-server.toml>` (written by `dita2graph-core build
+--mcp true`).
+
+**Deferred:** §5.1's Resources (`resources/list`/`resources/read`,
+`dita://topics` etc.) are not implemented at all — every capability
+they'd expose is already reachable through the tool set above, so this
+hasn't blocked real use, but the gap is real and documented, not
+assumed away.
+
+### Phase 4 — Gradle integration + CI hardening
+
+`gradle-build/`'s Kotlin DSL harness runs the entire pipeline for real:
+`buildKnowledgeGraph`, the public/internal DITAVAL split, and dedicated
+fixture tasks for nested maps, map composition, and relation inference.
+CI (`.github/workflows/`) runs the Rust and Java unit-test suites plus
+a full live-DITA-OT integration run on every push, including a
+deliberately-broken fixture that proves the validation gate actually
+fails the build before extraction runs, not just in theory.
+
+### Phase 5 — Security, docs, and public `v0.1.0` release
+
+Licensing decided and shipped (dual MIT OR Apache-2.0, uniform across
+Rust/Java/Gradle). Secret-leakage detection is build-breaking, not a
+warning, and covers both `okf/` and `rag/`. The public/internal DITAVAL
+split is a demonstrated pattern with a real fixture topic, not a no-op.
+README and this roadmap document the actual, current state.
+
+### Phase 6+ — Extended capabilities (post-MVP, ongoing)
+
+Not a single phase but a backlog, picked up item by item. Current
+state, most-complete first:
+
+1. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
+   extraction (same single pass as `okf/`), `search_content`'s
+   graph-narrowed and keyword-frequency-ranked query routing, and
+   `analyze_impact`'s reverse traversal with text excerpts are all
+   implemented and verified. Only node-level embeddings (semantic
+   similarity ranking, as opposed to keyword overlap) remain — a
+   heavier change to the OKF bundle format itself, listed as a
+   direction under consideration, not a committed design.
+2. **Canonical-node deduplication** for `conref`/`conkeyref`-reused
+   content — `generated-from` already records *where* reused content
+   came from; collapsing it into a single stored node instead of
+   rendering it inline in every reusing topic is the remaining piece.
+3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
+   storage** for the query index.
+4. **Full `<navref>` map composition** — would need this plugin to
+   independently parse and merge referenced navigation maps outside
+   DITA-OT's own pipeline, losing keyref/conref resolution and DITAVAL
+   filtering for that content specifically. A materially larger,
+   riskier undertaking than the `mapref`/`anchorref` support already
+   shipped; the gap is at least visible now (`DITA2GRAPH060W`), not
+   silent.
+5. **MCP Resources** (§5.1) and **HTTP transport** (§6.3) for the MCP
+   server — stdio + tools cover real use today; these are additive.
+6. **Other extended capabilities** (§13.2, least scoped): multi-map/
+   multi-product graph federation, graph versioning/diffing across doc
+   releases, and a rendered-output (PDF/HTML5) variant that annotates
+   pages with links back into the graph.
+
+Each item gets its own scoped follow-up spec and exit criterion before
+work starts, the same discipline that shaped everything above it.
