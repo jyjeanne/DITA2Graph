@@ -335,6 +335,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH040W` | Warning | Topic has no resolvable `type` mapping (unknown/custom topic type) — emitted as a generic OKF concept per the spec's graceful-degradation rule (§4.1), but flagged so authors can review it. |
   | `DITA2GRAPH050E` | Error | A generated OKF concept matches a high-confidence secret pattern (AWS access key, PEM private key, GitHub/Slack token) — build fails, not a warning (§6.4). |
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
+  | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);

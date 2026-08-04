@@ -62,6 +62,49 @@ parameters (`depth`, `mcp`, `emit-graph-json`, `store`,
 `include-drafts`) are functionally wired, not just accepted and logged
 (findings 10, 12).
 
+**Found and fixed against a real third-party corpus** (`dita-ot/docs`,
+the DITA-OT project's own documentation — 267 `.dita` files, deeply
+nested `mapref` composition, real `keyref`/`conref` reuse; a scale and
+messiness no hand-built fixture reaches):
+
+- **Duplicate topic ids silently destroyed content.** 33 separate
+  topics in that corpus share the literal `id="ID"` (an unfilled
+  authoring-template placeholder), plus several genuine `id` reuses
+  across near-duplicate topics (e.g. `dita_ot_day_videos_intro` reused
+  across multiple years' intro topics). Every topic's graph node id
+  came straight from its own `id` attribute with no uniqueness check,
+  so colliding ids collapsed onto the same OKF concept file path
+  (`okf/topics/{id}.md`) — the second topic written silently
+  overwrote the first's content, no error, no warning. Confirmed
+  directly: running the un-fixed extractor against `dita-ot/docs`
+  produced 33 nodes all named `"ID"` in `graph.json`, but only *one*
+  topic's actual text survived in the bundle. Now detected and
+  disambiguated (`DITA2GRAPH070W`, naming both colliding files) —
+  every topic keeps its own distinct node, none dropped. Re-running
+  against the same corpus: 226 nodes, 226 distinct ids, zero
+  collisions remaining.
+- **A keyref-resolved external topicref produced false-positive
+  "unresolved" warnings.** `dita-ot/docs`'s conference-talk maps use
+  `<keydef href="https://..." scope="external">` entries (e.g. "watch
+  this talk") referenced via `<topicref keyref="...">` — DITA-OT
+  resolves the keyref onto the topicref during preprocessing, same as
+  any other keyref, so by the time this plugin sees it it's an
+  ordinary external `<topicref>`. `<xref>`/`<link>` handling already
+  skipped `scope="external"`/`http(s)://` targets; the map-topicref
+  `contains`-edge walk had no equivalent check, so every external
+  topicref produced a `DITA2GRAPH010W` "unresolved topicref target" —
+  there was never a local topic for it to be, so this was noise, not a
+  real gap. Fixed with a shared `isExternal` check used by both code
+  paths — dozens of false-positive warnings gone, zero change to real
+  unresolved-reference detection.
+
+Both are exactly the kind of gap only real content surfaces — neither
+pattern (a template's unfilled placeholder id reused across dozens of
+copy-pasted topics; an external-link keydef) exists in this project's
+own hand-built fixtures, and both are common enough in real,
+multi-contributor DITA corpora that a tool claiming real-dataset
+readiness needs to handle them without losing data or crying wolf.
+
 ### Phase 2 — Core engine: OKF bundle generation
 
 `dita2graph-core` normalizes the model, writes a conformant `okf/`

@@ -110,6 +110,18 @@ import java.util.function.Consumer;
  * remove a self-contained chunk of it the way a whole excluded {@code
  * <p>}/{@code <step>} does.
  *
+ * <p>A topic's graph node id normally comes straight from its own {@code
+ * id} attribute -- but two different topics sharing the same {@code id}
+ * (confirmed against a real, large third-party corpus: 33 separate
+ * topics all carrying the literal, unfilled authoring-template
+ * placeholder {@code id="ID"}, plus several genuine {@code id} reuses
+ * across near-duplicate topics) would otherwise collapse onto the same
+ * OKF concept file path, the second one written silently overwriting
+ * the first -- real data loss a small hand-built fixture would never
+ * surface. Detected and disambiguated (the later topic's own id plus a
+ * source-path-derived suffix), logged as {@code DITA2GRAPH070W} naming
+ * both files, never silently dropped.
+ *
  * <p>{@code maxDepth} (§2.3's {@code args.dita2graph.depth}) limits how
  * many levels of *real* map containment the {@code contains} edges
  * captured in the graph go -- level 1 is a top-level {@code topicref},
@@ -248,6 +260,18 @@ final class DitaModelExtractor {
         Map<String, TopicNode> topicsByPath = new LinkedHashMap<>();
         List<RawLink> rawLinks = new ArrayList<>();
         List<RawGeneratedFrom> rawGeneratedFrom = new ArrayList<>();
+        // Duplicate-topic-id guard (confirmed against a real, large
+        // third-party corpus, dita-ot/docs: 33 separate topics sharing
+        // the literal id "ID" -- an unfilled authoring-template
+        // placeholder, common enough in real DITA content that a small
+        // hand-built fixture would never surface it). Without this, two
+        // topics sharing an id collapse into one OKF concept file path
+        // (id.okf_type()'s bundle_dir + "/" + id + ".md") and the second
+        // one written silently overwrites the first -- real data loss,
+        // no error, no warning. `Map<id, path of the topic that
+        // currently owns it>` so a collision's warning can name both
+        // files, not just announce that *a* collision happened.
+        Map<String, String> topicIdOwners = new HashMap<>();
         for (JobFile file : files) {
             if (!"dita".equals(file.format)) {
                 continue;
@@ -257,6 +281,21 @@ final class DitaModelExtractor {
 
             TopicNode topic = new TopicNode();
             topic.id = attr(root, "id", stem(file.path));
+            String existingOwner = topicIdOwners.putIfAbsent(topic.id, file.path);
+            if (existingOwner != null) {
+                String original = topic.id;
+                String disambiguated = original + "--" + file.path.replace('/', '-');
+                int suffix = 2;
+                while (topicIdOwners.putIfAbsent(disambiguated, file.path) != null) {
+                    disambiguated = original + "--" + file.path.replace('/', '-') + "-" + suffix;
+                    suffix++;
+                }
+                topic.id = disambiguated;
+                warn.accept("DITA2GRAPH070W: " + file.path + " has the same id (\"" + original
+                        + "\") as " + existingOwner + " -- using \"" + disambiguated
+                        + "\" for this topic's graph node instead of silently overwriting "
+                        + existingOwner + "'s OKF concept file");
+            }
             topic.topicType = mapTopicType(root.getTagName());
             if ("topic".equals(topic.topicType) && !root.getTagName().equals("topic")) {
                 // Plain ASCII: Ant's console logging mangles "§" into "?"
@@ -320,9 +359,7 @@ final class DitaModelExtractor {
                     continue;
                 }
                 String href = xref.getAttribute("href");
-                String scope = xref.getAttribute("scope");
-                if (href.isEmpty() || href.startsWith("http://") || href.startsWith("https://")
-                        || "external".equals(scope) || "peer".equals(scope)) {
+                if (href.isEmpty() || isExternal(href, xref.getAttribute("scope"))) {
                     continue;
                 }
                 String fragmentless = href.contains("#") ? href.substring(0, href.indexOf('#')) : href;
@@ -476,6 +513,32 @@ final class DitaModelExtractor {
                         walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                         break;
                     }
+                    if (isExternal(href, child.getAttribute("scope"))) {
+                        // A topicref pointing outside the corpus entirely
+                        // -- most commonly a keyref-resolved <keydef
+                        // href="https://..." scope="external"> (a
+                        // "related talk"/"further reading" entry, DITA-OT
+                        // resolves the keyref onto the topicref itself
+                        // during preprocessing before this class ever
+                        // sees it), confirmed directly against a real,
+                        // large third-party corpus (dita-ot/docs'
+                        // conference-talk maps) where this pattern is
+                        // common and previously produced one
+                        // DITA2GRAPH010W "unresolved topicref target" per
+                        // external link -- real noise, not a real gap:
+                        // there was never a local topic for it to be. No
+                        // contains edge, no warning, same treatment
+                        // <xref>/<link> already give an external target
+                        // below. Still walked (not skipped) for any
+                        // nested *local* topicrefs, same as
+                        // topichead/topicgroup -- an external topicref
+                        // isn't a real container any more than they are,
+                        // so descendants keep the same containerPath/
+                        // level rather than treating this href as a new
+                        // container level.
+                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        break;
+                    }
                     if (level > maxDepth) {
                         // Beyond args.dita2graph.depth (§2.3): the topic
                         // itself is still extracted as a node (Pass 2
@@ -528,6 +591,29 @@ final class DitaModelExtractor {
                     break;
             }
         }
+    }
+
+    /**
+     * Whether {@code href}/{@code scope} point outside this corpus
+     * entirely -- a bare {@code http://}/{@code https://} URL, or an
+     * explicit {@code scope="external"}/{@code scope="peer"} (the DITA
+     * way of saying "don't resolve this within the current map/topic
+     * set" even for an otherwise plausible-looking relative {@code
+     * href}). Shared between {@code <xref>}/{@code <link>} handling and
+     * {@code <topicref>} containment: both need the same "is this
+     * pointing at real content in this corpus, or somewhere else
+     * entirely" check, and a {@code <topicref>} carrying it is just as
+     * common as an {@code <xref>} carrying it -- most often a {@code
+     * keyref}-resolved {@code <keydef href="https://..."
+     * scope="external">} (a "related talk"/"further reading" entry),
+     * which DITA-OT resolves onto the {@code topicref} itself during
+     * preprocessing before this class ever sees it (confirmed directly
+     * against a real, large third-party corpus where this pattern is
+     * common).
+     */
+    private static boolean isExternal(String href, String scope) {
+        return href.startsWith("http://") || href.startsWith("https://")
+                || "external".equals(scope) || "peer".equals(scope);
     }
 
     /** Whether {@code el} has a {@code <related-links>} ancestor (see the caller). */

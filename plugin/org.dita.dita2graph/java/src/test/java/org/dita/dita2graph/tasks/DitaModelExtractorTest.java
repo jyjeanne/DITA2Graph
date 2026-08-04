@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -195,6 +196,96 @@ class DitaModelExtractorTest {
         assertTrue(
                 warnings.stream().anyMatch(m -> m.contains("DITA2GRAPH060W") && m.contains("nav.ditamap")),
                 "expected a DITA2GRAPH060W warning naming the unresolved navref target: " + warnings);
+    }
+
+    @Test
+    void externalTopicrefIsSilentlyExcludedFromContainmentNotWarnedAbout(@TempDir Path tempDir) throws Exception {
+        // A keyref-resolved <keydef href="https://..." scope="external">
+        // -- DITA-OT resolves the keyref onto the topicref itself during
+        // preprocessing, so by the time this class sees it, it's a
+        // topicref with a real https:// href and scope="external", no
+        // different from an authored one. Common real-world pattern
+        // (confirmed against dita-ot/docs' own conference-talk maps: a
+        // "related talk" pointing at an external video page) that
+        // previously produced a DITA2GRAPH010W "unresolved topicref
+        // target" per external link -- there was never a local topic for
+        // it to be, so that was noise, not a real gap.
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/configuration.dita\" uri=\"topics/configuration.dita\" "
+                + "path=\"topics/configuration.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/configuration.dita\"/>"
+                + "<topicref href=\"https://example.com/talk.html\" scope=\"external\" format=\"html\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals(2, nodes.size(), "map + 1 real topic -- the external topicref creates no phantom node");
+        assertTrue(warnings.isEmpty(), "external topicref should be silently excluded, not warned about: " + warnings);
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(1, map.links.size(), "only the real topicref should produce a contains edge");
+        assertEquals("configuration", map.links.get(0).target);
+    }
+
+    @Test
+    void duplicateTopicIdIsDisambiguatedInsteadOfSilentlyOverwritingTheEarlierTopic(@TempDir Path tempDir)
+            throws Exception {
+        // Confirmed against a real, large third-party corpus
+        // (dita-ot/docs): 33 separate topics all sharing the literal
+        // root id "ID" -- an unfilled authoring-template placeholder.
+        // Without disambiguation, both would map to the same OKF
+        // concept file path (okf/topics/ID.md) and the second one
+        // written would silently overwrite the first's content --
+        // confirmed directly by running the un-fixed extractor against
+        // that corpus (33 nodes named "ID" in graph.json, but only one
+        // topic's actual content survived in the bundle). Two different
+        // source files sharing id="ID" here, matching that real shape
+        // exactly (not a synthetic simplification of it).
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/first.dita\" uri=\"topics/first.dita\" "
+                + "path=\"topics/first.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/second.dita\" uri=\"topics/second.dita\" "
+                + "path=\"topics/second.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/first.dita\"/>"
+                + "<topicref href=\"topics/second.dita\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/first.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>First Topic</title>"
+                + "<conbody><p>First topic's own content.</p></conbody></concept>");
+        write(tempDir, "topics/second.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>Second Topic</title>"
+                + "<conbody><p>Second topic's own content.</p></conbody></concept>");
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals(3, nodes.size(), "map + both topics -- neither one should be silently dropped");
+        TopicNode first = findTopic(nodes, "ID");
+        assertEquals("First Topic", first.title, "the earlier file keeps the plain, un-disambiguated id");
+        TopicNode second = findTopic(nodes, "ID--topics-second.dita");
+        assertEquals("Second Topic", second.title);
+        assertNotEquals(first.id, second.id, "both topics must end up with distinct graph node ids");
+
+        assertTrue(
+                warnings.stream().anyMatch(m -> m.contains("DITA2GRAPH070W") && m.contains("topics/second.dita")
+                        && m.contains("topics/first.dita")),
+                "expected a DITA2GRAPH070W warning naming both files sharing the id: " + warnings);
     }
 
     @Test
