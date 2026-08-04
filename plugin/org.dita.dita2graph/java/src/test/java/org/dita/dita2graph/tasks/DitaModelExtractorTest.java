@@ -181,6 +181,23 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void navrefIsDetectedAndWarnedAboutRatherThanSilentlyIgnored(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", JOB_XML);
+        write(tempDir, "user-guide.ditamap", MAP_XML_WITH_NAVREF);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+        write(tempDir, "topics/installing-product-prereqs.dita", PREREQS_XML);
+        write(tempDir, "topics/installing-product.dita", INSTALLING_PRODUCT_XML);
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals(4, nodes.size(), "map + 3 topics -- navref contributes nothing, but doesn't break the rest");
+        assertTrue(
+                warnings.stream().anyMatch(m -> m.contains("DITA2GRAPH060W") && m.contains("nav.ditamap")),
+                "expected a DITA2GRAPH060W warning naming the unresolved navref target: " + warnings);
+    }
+
+    @Test
     void generatedFromIsExtractedFromXtrfMismatches(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
         write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
@@ -249,6 +266,18 @@ class DitaModelExtractorTest {
             + "<title>User Guide</title>"
             + "<topicref href=\"topics/configuration.dita\" keys=\"config-concept\" type=\"concept\"/>"
             + "<topicref href=\"topics/installing-product.dita\" keys=\"install-task\" type=\"task\"/>"
+            + "</map>";
+
+    // Shaped after a live DITA-OT 4.4 run's actual resolved output for a
+    // <navref> (confirmed directly, docs/dev/phase-0-findings.md finding
+    // 16): it survives completely unresolved, verbatim, since DITA-OT
+    // never processes it for this transtype.
+    private static final String MAP_XML_WITH_NAVREF = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            + "<map id=\"user-guide\">"
+            + "<title>User Guide</title>"
+            + "<topicref href=\"topics/configuration.dita\" keys=\"config-concept\" type=\"concept\"/>"
+            + "<topicref href=\"topics/installing-product.dita\" keys=\"install-task\" type=\"task\"/>"
+            + "<navref mapref=\"nav.ditamap\"/>"
             + "</map>";
 
     private static final String CONFIGURATION_XML = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"

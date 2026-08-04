@@ -7,4 +7,5 @@
   </topicref>
   <topicref href="topics/after.dita" keys="after-concept"/>
   <mapref href="submap.ditamap"/>
+  <navref mapref="nav.ditamap"/>
 </map>

@@ -777,3 +777,65 @@ What's left for a complete MVP (§11), now that extraction itself works:
     `requires`, `references`, `applies-to`, `related-to`, and
     `generated-from`. Canonical-node deduplication for reused content
     and incremental rebuild remain open (§3.3, §12 Phase 2 status).
+
+16. **Of the two map-composition mechanisms finding 14 confirmed work
+    (`mapref`, `anchorref`) and the one it confirmed doesn't
+    (`<navref>`), is "doesn't work" actually the end of the story, or is
+    there a well-scoped improvement short of the "materially larger,
+    riskier undertaking" full support would be?** Real support for
+    `<navref>` would mean this plugin independently parsing and merging
+    referenced navigation maps itself, entirely outside DITA-OT's own
+    preprocessing pipeline — losing keyref/conref resolution and
+    DITAVAL filtering for that content specifically, since none of
+    DITA-OT's own machinery would ever touch it. That's still not
+    attempted. But finding 14 left `<navref>` failing *silently* — a map
+    author relying on it gets a graph with the referenced content simply
+    missing, no different from never having written the `<navref>` at
+    all. That gap between "unsupported" and "silently unsupported" was
+    itself closeable, cheaply, and worth closing on its own.
+
+    `DitaModelExtractor.walkMapChildren`'s existing `switch` on child
+    element names (`topicref`/`topichead`/`topicgroup`, finding 11)
+    gained a `"navref"` case: since `<navref>` survives completely
+    unresolved and verbatim in the resolved map (confirmed in finding
+    14), it's trivially detectable during the same recursive walk that
+    already visits every map child. The new case doesn't try to resolve
+    or descend into it — it can't, the referenced content was never
+    processed by DITA-OT and isn't reachable from this extractor's
+    input at all — it logs a new catalog entry, `DITA2GRAPH060W`, naming
+    the unresolved `mapref`/`href` target, added to `cfg/messages.xml`
+    and the spec's §2.5 table alongside the other five.
+
+    Writing the warning message surfaced a second, small, real bug:
+    an early draft cited "§3.3" directly in the logged string, and a
+    live DITA-OT 4.4 run showed it rendered as "?3.3" in the actual
+    build log -- Ant's console logging doesn't handle that character
+    reliably. Checked whether any *other* message in the same class had
+    the same latent bug rather than assuming this was an isolated case:
+    `DITA2GRAPH040W`'s "unrecognized topic type" message also cited
+    "§4.1" directly and would have suffered identically the first time
+    it fired in practice, even though nothing had exercised that path
+    yet. Fixed both to plain ASCII, matching every other message in the
+    class (none of which cited a spec section at all).
+
+    **Result:** extended `sample-docs-mapref/` (rather than a new
+    directory -- `<navref>` is conceptually the same "map composition"
+    story as `mapref`/`anchorref`, and the fixture already existed) with
+    a `<navref mapref="nav.ditamap"/>` pointing at a real, if
+    intentionally unreachable, `nav.ditamap`/`topics/nav-topic.dita`.
+    Verified live against a real DITA-OT 4.4 run: the warning appears in
+    the actual build log with the fixed, unmangled text, and
+    `nav-topic` never appears in `graph.json`, `okf/`, or `rag/`, the
+    same as before this change -- only the *visibility* of the gap
+    changed, not the extraction result itself. One new Java unit test
+    (`DitaModelExtractorTest.navrefIsDetectedAndWarnedAboutRatherThanSilentlyIgnored`).
+    Also discovered and worked around a Gradle-tooling limitation while
+    wiring the CI check: `dita-ot-gradle`'s `DitaOtTask` shells out to
+    DITA-OT's own script and relays only a curated progress display, not
+    individual Ant warning lines, even at `--info` -- confirmed directly
+    by grepping a real `--info` build log and finding no trace of the
+    warning at all. The CI check invokes the raw `dita` CLI directly
+    instead (same pattern the `args.dita2graph.*` CLI-override checks
+    already use), not the Gradle-wrapped task, specifically because this
+    assertion needs to see an actual log line, not just a build
+    artifact. Gated in CI (`.github/workflows/integration.yml`).

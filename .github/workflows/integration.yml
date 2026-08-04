@@ -237,7 +237,7 @@ jobs:
           print('nested map structure OK:', edges)
           "
 
-      - name: Build the mapref/anchorref map composition fixture (§3.3)
+      - name: Build the mapref/anchorref/navref map composition fixture (§3.3)
         working-directory: gradle-build
         env:
           DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
@@ -266,6 +266,39 @@ jobs:
           print('mapref/anchorref composition OK:', edges)
           "
           ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-mapref/okf
+
+      - name: Confirm navref is detected and warned about, not silently dropped (§3.3, finding 16)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          # dita-ot-gradle's DitaOtTask wrapper shells out to DITA-OT's
+          # own script and only relays a curated progress display, not
+          # individual Ant warning lines (confirmed directly -- the
+          # Gradle-driven buildKnowledgeGraphMapref build log above never
+          # shows this warning even at --info) -- invoke the raw CLI
+          # directly, same as the args.dita2graph.* CLI-override checks
+          # elsewhere in this file, to actually see it.
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          rm -rf /tmp/navref-cli-test
+          "$DITA_BIN" --input=sample-docs-mapref/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/navref-cli-test -v > /tmp/navref-cli.log 2>&1
+          # DITA2GRAPH060W must show up in the real build log, plain
+          # ASCII only -- an earlier draft's "§3.3" citation mangled into
+          # "?3.3" through Ant's console logging (sample-docs-mapref/README.md).
+          grep -q 'DITA2GRAPH060W: <navref mapref="nav.ditamap">' /tmp/navref-cli.log
+          if grep -q 'DITA2GRAPH060W:.*[?]3[.]3' /tmp/navref-cli.log; then
+            echo "::error::DITA2GRAPH060W message contains a mangled section citation"
+            exit 1
+          fi
+          # nav-topic (reachable only via navref) must never leak into
+          # any output.
+          test ! -f /tmp/navref-cli-test/okf/topics/nav-topic.md
+          if grep -q '"id":"nav-topic"' /tmp/navref-cli-test/rag/chunks.jsonl; then
+            echo "::error::nav-topic leaked into rag/chunks.jsonl despite being unreachable via navref"
+            exit 1
+          fi
+          rm -rf /tmp/navref-cli-test
 
       - name: Build the applies-to/generated-from relation-inference fixture (§3.3)
         working-directory: gradle-build

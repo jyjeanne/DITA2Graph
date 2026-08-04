@@ -334,6 +334,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH030E` | Error | Generated OKF concept failed `okf-validator` conformance — build fails before the bundle is considered complete (§6.4, §10). |
   | `DITA2GRAPH040W` | Warning | Topic has no resolvable `type` mapping (unknown/custom topic type) — emitted as a generic OKF concept per the spec's graceful-degradation rule (§4.1), but flagged so authors can review it. |
   | `DITA2GRAPH050E` | Error | A generated OKF concept matches a high-confidence secret pattern (AWS access key, PEM private key, GitHub/Slack token) — build fails, not a warning (§6.4). |
+  | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);
@@ -1732,9 +1733,22 @@ documented DITA semantics, stated plainly rather than assumed correct.
 this transtype (the referenced map/topics never even enter `job.xml`),
 since DITA-OT only resolves it inside output-specific transforms
 (webhelp/eclipsehelp TOC generation), not generically during
-preprocessing — supporting it would mean this plugin parsing and
-merging navigation maps itself, a materially larger undertaking than
-`mapref`/`anchorref`, and remains out of scope.
+preprocessing. Real support would mean this plugin independently
+parsing and merging referenced navigation maps itself, entirely outside
+DITA-OT's own preprocessing pipeline — losing keyref/conref resolution
+and DITAVAL filtering for that content specifically, since none of
+DITA-OT's own machinery would ever touch it; a materially larger and
+architecturally riskier undertaking than `mapref`/`anchorref`
+(`docs/dev/phase-0-findings.md` finding 16), and still not attempted.
+**What changed (finding 16):** `<navref>` no longer fails silently.
+`DitaModelExtractor.walkMapChildren` detects the element directly (it
+survives verbatim in the resolved map, exactly as confirmed above) and
+logs `DITA2GRAPH060W` naming the unresolved `mapref`/`href` target,
+instead of walking past it wordlessly the way an unrecognized element
+otherwise would — a map author relying on `<navref>` composition gets a
+visible warning that the referenced content is missing from the graph,
+not silence. Verified against a live DITA-OT 4.4 run and a checked-in
+unit test (`DitaModelExtractorTest.navrefIsDetectedAndWarnedAboutRatherThanSilentlyIgnored`).
 
 With real nesting in place, `args.dita2graph.depth` (§2.3) stopped
 being an open question and became a direct follow-up: `ExtractTask`

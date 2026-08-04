@@ -60,7 +60,15 @@ import java.util.function.Consumer;
  * phase-0-findings.md} finding 14). {@code <navref>} is genuinely
  * unsupported -- DITA-OT never resolves it for this transtype at all,
  * so the referenced map/topics never reach this extractor's input in
- * the first place.
+ * the first place, and this class doesn't independently parse/merge
+ * navigation maps either (that would mean bypassing DITA-OT's own
+ * keyref/conref resolution and DITAVAL filtering for that content
+ * alone). Unlike a plain gap, though, this one is surfaced: {@link
+ * #walkMapChildren} detects a {@code <navref>} element directly (it
+ * survives verbatim in the resolved map) and logs {@code
+ * DITA2GRAPH060W} instead of silently walking past it, so a map author
+ * relying on {@code <navref>} composition gets a visible warning that
+ * that content is missing from the graph, not silence (finding 16).
  * {@code generated-from} *is* extracted here too (finding 15), just not
  * from markup directly: every resolved element carries an {@code xtrf}
  * attribute tracing its true source file, and DITA-OT replaces a
@@ -236,8 +244,12 @@ final class DitaModelExtractor {
             topic.id = attr(root, "id", stem(file.path));
             topic.topicType = mapTopicType(root.getTagName());
             if ("topic".equals(topic.topicType) && !root.getTagName().equals("topic")) {
+                // Plain ASCII: Ant's console logging mangles "§" into "?"
+                // (confirmed against a live DITA-OT 4.4 run for the
+                // DITA2GRAPH060W message below; the same encoding path
+                // applies here too).
                 warn.accept("DITA2GRAPH040W: " + file.path + " has unrecognized topic type <"
-                        + root.getTagName() + ">; emitting as generic Topic (§4.1)");
+                        + root.getTagName() + ">; emitting as generic Topic");
             }
             topic.title = childText(root, "title", topic.id);
             String shortdesc = directChildText(root, "shortdesc");
@@ -487,6 +499,34 @@ final class DitaModelExtractor {
                 case "topicgroup":
                     walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                     break;
+                case "navref": {
+                    // Unlike <mapref>/anchorref (finding 14), DITA-OT
+                    // never resolves <navref> for this transtype at all
+                    // -- confirmed directly: the referenced map/topics
+                    // never enter job.xml, so it survives verbatim here.
+                    // This plugin doesn't independently parse/merge
+                    // navigation maps either (that would mean bypassing
+                    // DITA-OT's own preprocessing -- keyref/conref
+                    // resolution, DITAVAL filtering -- for that content
+                    // alone, a materially different and riskier
+                    // undertaking than mapref support). Surfacing this
+                    // as a warning, not silently dropping it, is the
+                    // actual scope closed here (finding 16).
+                    String mapref = child.getAttribute("mapref");
+                    String href = child.getAttribute("href");
+                    String target = !mapref.isEmpty() ? mapref : href;
+                    // Plain ASCII only: Ant's console logging mangled a
+                    // "§3.3" citation tried here into "?3.3" (confirmed
+                    // against a live DITA-OT 4.4 run), and none of this
+                    // class's other warn/info messages cite spec
+                    // sections either -- kept consistent.
+                    warn.accept("DITA2GRAPH060W: <navref"
+                            + (target.isEmpty() ? "" : " mapref=\"" + target + "\"")
+                            + "> in " + mapPath + " is not resolved by DITA-OT for this transtype "
+                            + "and is not independently parsed by this plugin; its content is "
+                            + "excluded from the graph");
+                    break;
+                }
                 default:
                     break;
             }

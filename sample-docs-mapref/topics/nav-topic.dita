@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="nav-topic">
+  <title>Nav Topic</title>
+  <conbody>
+    <p>Reachable only via navref, which this plugin doesn't resolve (finding 16) -- never extracted.</p>
+  </conbody>
+</concept>

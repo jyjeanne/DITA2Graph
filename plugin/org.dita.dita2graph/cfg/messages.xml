@@ -25,4 +25,8 @@
     <reason>Topic has no resolvable type mapping (unknown/custom topic type).</reason>
     <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (§4.1).</response>
   </message>
+  <message id="DITA2GRAPH060W" type="warn">
+    <reason>A &lt;navref&gt; map-composition element was found but is not resolved by DITA-OT for this transtype and is not independently parsed by this plugin.</reason>
+    <response>The referenced navigation map's content is excluded from the graph. Restructure the source to use topicref/mapref instead if that content should appear.</response>
+  </message>
 </messages>
