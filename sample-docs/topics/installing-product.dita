@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE task PUBLIC "-//OASIS//DTD DITA Task//EN" "task.dtd">
+<task id="installing-product" audience="admin" product="enterprise">
+  <title>Installing Product</title>
+  <shortdesc>Steps to install the product in a production environment.</shortdesc>
+  <prolog>
+    <metadata>
+      <keywords>
+        <keyword>install</keyword>
+      </keywords>
+    </metadata>
+  </prolog>
+  <taskbody>
+    <prereq>
+      <xref href="installing-product-prereqs.dita" type="topic"/>
+    </prereq>
+    <context>
+      <p>This task requires <xref href="configuration.dita" keyref="config-concept"
+        >Configuration Overview</xref> to be completed first.</p>
+    </context>
+    <steps>
+      <step>
+        <cmd>Download the installer package for your platform.</cmd>
+      </step>
+      <step>
+        <cmd>Run the installer and follow the on-screen prompts.</cmd>
+      </step>
+      <step>
+        <cmd>Verify the installation by checking the product version.</cmd>
+      </step>
+    </steps>
+  </taskbody>
+</task>

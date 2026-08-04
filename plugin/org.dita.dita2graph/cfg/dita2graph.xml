@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Default configuration for the dita2graph transtype
+  (docs/plugin-specification.md §2.1, §2.3). Values here are the
+  documented defaults; override any of them per-build with an
+  args.dita2graph.NAME=VALUE argument (§2.3) or the equivalent Gradle
+  properties block (§8.2).
+-->
+<dita2graph-config>
+  <param name="depth" default="unlimited"/>
+  <param name="mcp" default="false"/>
+  <param name="emit-graph-json" default="true"/>
+  <param name="store" default="sqlite"/>
+  <param name="include-drafts" default="false"/>
+</dita2graph-config>

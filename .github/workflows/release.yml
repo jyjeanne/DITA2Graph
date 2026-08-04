@@ -1,0 +1,96 @@
+name: Release
+
+# Builds and publishes a GitHub Release whenever a vX.Y.Z tag lands --
+# pushed either by tag.yml's workflow_dispatch, or directly by a
+# maintainer with local tag-push access. Re-runs the same checks
+# rust.yml/java.yml already gate every push with, as a release-blocking
+# safety net, before building or publishing anything.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: gradlew test
+        working-directory: plugin/org.dita.dita2graph/java
+        run: ./gradlew test --no-daemon
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Build release binaries
+        run: cargo build --release --workspace --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build the DITA-OT plugin jar
+        working-directory: plugin/org.dita.dita2graph/java
+        run: ./gradlew jar --no-daemon
+
+      # Reuses gradle-build/'s own zipDita2GraphPlugin + installDita2Graph
+      # tasks -- the same packaging/install path docs/dev/phase-0-findings.md
+      # finding 7 already confirmed works against a live DITA-OT 4.4 --
+      # rather than hand-rolling a second zip step here that could drift
+      # from what CI actually verifies. This proves the exact zip being
+      # released installs cleanly, not just that `zip` produced a file.
+      - name: Package and verify the plugin zip installs into a live DITA-OT 4.4
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew zipDita2GraphPlugin installDita2Graph --no-daemon
+
+      - name: Package release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -czf "dist/dita2graph-core-${{ github.ref_name }}-linux-x86_64.tar.gz" \
+            -C target/release dita2graph-core
+          tar -czf "dist/dita2graph-mcp-${{ github.ref_name }}-linux-x86_64.tar.gz" \
+            -C target/release dita2graph-mcp
+          cp gradle-build/build/plugin-zip/org.dita.dita2graph.zip \
+            "dist/org.dita.dita2graph-${{ github.ref_name }}.zip"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A version with a "-" suffix (e.g. v0.2.0-beta.1) publishes as
+          # a prerelease; a plain vX.Y.Z does not.
+          PRERELEASE_FLAG=()
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+          gh release create "${{ github.ref_name }}" \
+            dist/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --verify-tag \
+            "${PRERELEASE_FLAG[@]}"

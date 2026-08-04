@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE map PUBLIC "-//OASIS//DTD DITA Map//EN" "map.dtd">
+<map id="user-guide">
+  <title>User Guide</title>
+  <topicref href="topics/intro.dita" keys="intro-concept">
+    <anchor id="insert-point"/>
+  </topicref>
+  <topicref href="topics/after.dita" keys="after-concept"/>
+  <mapref href="submap.ditamap"/>
+  <navref mapref="nav.ditamap"/>
+</map>

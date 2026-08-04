@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Message catalog for org.dita.dita2graph, registered via plugin.xml's
+  `dita.xsl.messages` feature so these show up in a normal `dita` build
+  log alongside DITA-OT's own messages (docs/plugin-specification.md §2.5).
+-->
+<messages>
+  <message id="DITA2GRAPH001E" type="error">
+    <reason>Unresolved keyref/conkeyref encountered during extraction.</reason>
+    <response>Fix the unresolved key reference in the source DITA content; a graph built on an unresolved reference would be silently wrong.</response>
+  </message>
+  <message id="DITA2GRAPH010W" type="warn">
+    <reason>Ambiguous relation inference (multiple candidate targets).</reason>
+    <response>The lower-confidence edge was dropped rather than guessed. Review the source content if a specific relationship was expected.</response>
+  </message>
+  <message id="DITA2GRAPH020I" type="info">
+    <reason>Topic skipped because status="draft" and include-drafts is false.</reason>
+    <response>Set --args.dita2graph.include-drafts=true to include draft topics in the graph.</response>
+  </message>
+  <message id="DITA2GRAPH030E" type="error">
+    <reason>Generated OKF concept failed okf-validator conformance.</reason>
+    <response>See the validation report for the specific issue; the build fails before the bundle is considered complete.</response>
+  </message>
+  <message id="DITA2GRAPH040W" type="warn">
+    <reason>Topic has no resolvable type mapping (unknown/custom topic type).</reason>
+    <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (§4.1).</response>
+  </message>
+  <message id="DITA2GRAPH060W" type="warn">
+    <reason>A &lt;navref&gt; map-composition element was found but is not resolved by DITA-OT for this transtype and is not independently parsed by this plugin.</reason>
+    <response>The referenced navigation map's content is excluded from the graph. Restructure the source to use topicref/mapref instead if that content should appear.</response>
+  </message>
+</messages>

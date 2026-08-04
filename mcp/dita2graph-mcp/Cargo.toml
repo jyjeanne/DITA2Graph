@@ -1,0 +1,25 @@
+[package]
+name = "dita2graph-mcp"
+description = "JSON-RPC-over-stdio MCP server exposing a DITA2Graph OKF bundle to AI agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dita2graph-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+okf-validator.workspace = true
+dita2graph-core = { path = "../../core/dita2graph-core" }
+
+[dev-dependencies]
+tempfile = "3"
+chrono.workspace = true

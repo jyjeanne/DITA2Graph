@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE map PUBLIC "-//OASIS//DTD DITA Map//EN" "map.dtd">
+<map id="user-guide">
+  <title>User Guide</title>
+  <topicref href="topics/configuration.dita" keys="config-concept"/>
+  <topicref href="topics/installing-product.dita" keys="install-task"/>
+  <topicref href="topics/internal-notes.dita" keys="internal-notes-concept" audience="internal"/>
+</map>

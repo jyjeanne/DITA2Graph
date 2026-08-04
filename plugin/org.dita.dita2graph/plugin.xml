@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  org.dita.dita2graph: DITA-OT plugin layer (docs/plugin-specification.md §2).
+
+  Verified end-to-end against a live DITA-OT 4.4 (gradle-build/,
+  docs/dev/phase-0-findings.md): install, dispatch, extraction, and a
+  real okf_validator-passing bundle all work.
+-->
+<plugin id="org.dita.dita2graph">
+  <!-- The standard preprocessing pipeline (key-space resolution,
+       conref/conkeyref resolution, DITAVAL filtering) this transtype
+       hooks into after (§2.2). -->
+  <require plugin="org.dita.base"/>
+
+  <!-- Registers the dita2graph transtype (§2.3): a top-level transtype
+       element, not a feature extension named dita.transtype, since that
+       extension point does not exist, confirmed against org.dita.base's
+       own plugin.xml, which declares no such point. See
+       docs/dev/phase-0-findings.md finding 5.
+
+       The <param> children below register the args.dita2graph.* family
+       (§2.3) with DITA-OT's own CLI parser; without them, a real
+       DITA-OT 4.4 run rejects a CLI-supplied args.dita2graph.* value
+       outright with "Unsupported option", confirmed directly (not
+       assumed) by comparing against org.dita.html5/plugin.xml's own
+       <param> declarations for its args.* family: DITA-OT validates
+       CLI args against each transtype's own declared param list, and
+       an undeclared arg never reaches Ant's <property> defaults in
+       build.xml at all; those only cover what happens once a value
+       *is* accepted. This was a real, previously-unverified gap: every
+       args.dita2graph.* default in build.xml worked, but no CLI
+       override of any of them ever did. -->
+  <transtype name="dita2graph" desc="DITA2Graph knowledge graph extraction (OKF v0.2 + MCP)">
+    <param name="args.dita2graph.depth" desc="Max relationship traversal depth captured in the graph: &#34;unlimited&#34; (default) or a positive integer, limiting how many levels of map containment the contains edges go." type="string"/>
+    <param name="args.dita2graph.mcp" desc="Whether to also write mcp/mcp-server.toml, a config dita2graph-mcp --config can read to locate this bundle (§5.4)." type="enum">
+      <val>true</val>
+      <val default="true">false</val>
+    </param>
+    <param name="args.dita2graph.emit-graph-json" desc="Whether to also emit the derived graph.json flattened view alongside the OKF bundle." type="enum">
+      <val default="true">true</val>
+      <val>false</val>
+    </param>
+    <param name="args.dita2graph.store" desc="Backing store for the generated query index. sqlite/rocksdb are planned (§7) and not yet implemented; none is the only value that does anything today." type="enum">
+      <val default="true">sqlite</val>
+      <val>rocksdb</val>
+      <val>none</val>
+    </param>
+    <param name="args.dita2graph.include-drafts" desc="Include topics flagged status=&#34;draft&#34;." type="enum">
+      <val>true</val>
+      <val default="true">false</val>
+    </param>
+  </transtype>
+
+  <!-- Imports build.xml's dita2graph target into the Ant build, the same
+       mechanism org.dita.init itself uses for its own build files:
+       ant.import, confirmed real; dita.conductor.transtype.check is not
+       a real extension point either. -->
+  <feature extension="ant.import" file="build.xml"/>
+
+  <!-- Puts dita2graph-core.jar (the Java bridge to the Rust core engine,
+       §2.1/§3.1; currently a placeholder, see lib/README.md) on the Ant
+       classpath for build.xml's extraction task. -->
+  <feature extension="dita.conductor.lib.import" file="lib/dita2graph-core.jar"/>
+
+  <!-- Registers this plugin's message catalog (§2.5) alongside DITA-OT's own. -->
+  <feature extension="dita.xsl.messages" file="cfg/messages.xml"/>
+</plugin>

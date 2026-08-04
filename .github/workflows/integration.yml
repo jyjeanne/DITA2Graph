@@ -1,0 +1,373 @@
+name: Integration
+
+# Runs the full, real pipeline end to end: Rust core engine, Java
+# extraction plugin, then a live DITA-OT 4.4 via gradle-build/. Separate
+# from rust.yml/java.yml (which only build+unit-test each side in
+# isolation) since this downloads a real ~80MB DITA-OT release and takes
+# noticeably longer -- docs/plugin-specification.md §12 Phase 4's exit
+# criterion made durable, not just a one-off manual verification
+# (docs/dev/phase-0-findings.md findings 4-7).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # matches plugin/org.dita.dita2graph/java/build.gradle.kts's --release 21
+
+      - name: Build dita2graph-core and dita2graph-mcp (release)
+        run: cargo build --release -p dita2graph-core -p dita2graph-mcp --locked
+
+      - name: Build lib/dita2graph-core.jar
+        working-directory: plugin/org.dita.dita2graph/java
+        run: ./gradlew jar --no-daemon
+
+      - name: Run the full pipeline against sample-docs/
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraph --no-daemon
+
+      - name: Validate the generated bundle
+        run: ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph/okf
+
+      - name: Confirm the generated bundle looks right
+        run: |
+          set -euo pipefail
+          test -f gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+
+      - name: Confirm the RAG index looks right (§13.1)
+        run: |
+          set -euo pipefail
+          test -f gradle-build/build/dita2graph/rag/chunks.jsonl
+          test -f gradle-build/build/dita2graph/rag/metadata.json
+          # one chunk line per topic in sample-docs/ (installing-product,
+          # configuration, installing-product-prereqs, internal-notes)
+          test "$(wc -l < gradle-build/build/dita2graph/rag/chunks.jsonl)" -eq 4
+          grep -q '"id":"installing-product"' gradle-build/build/dita2graph/rag/chunks.jsonl
+          grep -q '"okfNode":"topics/installing-product.md"' gradle-build/build/dita2graph/rag/chunks.jsonl
+
+      - name: Confirm args.dita2graph.* CLI overrides are accepted (§2.3)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          # Without plugin.xml's <param> declarations for the
+          # args.dita2graph.* family, DITA-OT 4.4's CLI parser rejects
+          # any of these outright with "Unsupported option" -- a real
+          # bug found and fixed in this repo's history
+          # (docs/dev/phase-0-findings.md finding 10), not a
+          # hypothetical one. Confirm directly, not just via the
+          # Gradle-driven Ant property defaults every other step here
+          # exercises.
+          rm -rf /tmp/args-override-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/args-override-test \
+            --args.dita2graph.emit-graph-json=false
+          test ! -f /tmp/args-override-test/graph.json
+          test -d /tmp/args-override-test/okf
+
+      - name: Confirm args.dita2graph.mcp writes a config dita2graph-mcp can read (§2.3, §5.4, finding 12)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          # Default (mcp unset) must NOT write mcp/ -- confirms the flag
+          # isn't a silent no-op that always writes.
+          rm -rf /tmp/mcp-default-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/mcp-default-test
+          test ! -d /tmp/mcp-default-test/mcp
+
+          # mcp=true writes a real mcp-server.toml, and dita2graph-mcp
+          # --config against it must resolve the bundle root correctly
+          # and answer a real tools/call, not just parse without error.
+          rm -rf /tmp/mcp-true-test
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/mcp-true-test --args.dita2graph.mcp=true
+          test -f /tmp/mcp-true-test/mcp/mcp-server.toml
+          grep -q 'okf = "../okf"' /tmp/mcp-true-test/mcp/mcp-server.toml
+
+          RESPONSE=$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \
+            | ./target/release/dita2graph-mcp --config /tmp/mcp-true-test/mcp/mcp-server.toml)
+          echo "$RESPONSE" | grep -q 'Installing Product'
+
+      - name: Build the public/internal DITAVAL split (§6.1)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphPublic buildKnowledgeGraphInternal --no-daemon
+
+      - name: Confirm internal-only content is excluded from the public bundle only
+        run: |
+          set -euo pipefail
+          if [ -f gradle-build/build/dita2graph-public/okf/topics/internal-notes.md ]; then
+            echo "::error::internal-notes.md leaked into the public DITAVAL bundle"
+            exit 1
+          fi
+          test -f gradle-build/build/dita2graph-internal/okf/topics/internal-notes.md
+          # The DITAVAL split (§6.1) applies before dita2graph:extract ever
+          # runs on the excluded topic, so it's equally absent from the
+          # RAG index, not just the OKF graph (§13.1's "single pass, two
+          # correlated outputs" -- one filtered input, both outputs agree).
+          if grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-public/rag/chunks.jsonl; then
+            echo "::error::internal-notes leaked into the public DITAVAL rag/chunks.jsonl"
+            exit 1
+          fi
+          grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-internal/rag/chunks.jsonl
+
+      - name: Confirm related-to relation inference from shared product values (§3.3, §4.3)
+        run: |
+          set -euo pipefail
+          # sample-docs/topics/internal-notes.dita and installing-product.dita
+          # both carry product="enterprise" and have no other author-declared
+          # relation between them, so the internal build (the only one with
+          # both topics present) must infer a related-to edge both ways.
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph-internal/graph.json') as f:
+              edges = json.load(f)['edges']
+          pairs = {(e['from'], e['to']) for e in edges if e['relation'] == 'related-to'}
+          expected = {('internal-notes', 'installing-product'), ('installing-product', 'internal-notes')}
+          assert pairs == expected, f'expected {expected}, got {pairs}'
+          PYEOF
+          grep -q 'installing-product.md' gradle-build/build/dita2graph-internal/okf/topics/internal-notes.md
+
+          # The public build never sees internal-notes at all (DITAVAL-excluded
+          # above), so it must infer zero related-to edges, not just omit that
+          # one topic's own edges.
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph-public/graph.json') as f:
+              edges = json.load(f)['edges']
+          assert not [e for e in edges if e['relation'] == 'related-to'], edges
+          PYEOF
+
+      - name: Confirm analyze_impact finds transitive dependents and content excerpts (§13.1)
+        run: |
+          set -euo pipefail
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze_impact","arguments":{"topicId":"configuration"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'installing-product'
+          # installing-product's shortdesc text should appear as an
+          # excerpt under its line -- the "content layer summarizes the
+          # impact" half of §13.1, not just the flat edge list.
+          echo "$response" | grep -q 'Steps to install the product'
+
+      - name: Confirm search_content narrows via the graph first (§13.1)
+        run: |
+          set -euo pipefail
+          # "download" only appears in installing-product's body text
+          # (rag/chunks.jsonl); scoping the search to configuration (which
+          # requires nothing forward) must find zero matches, proving the
+          # graph-narrowing step actually restricts the candidate set
+          # rather than search_content silently searching everything.
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"download","topicId":"configuration"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q 'no content matched'
+
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"download","topicId":"installing-product"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'installing-product'
+
+      - name: Confirm search_content ranks multi-term matches by relevance (§13.1)
+        run: |
+          set -euo pipefail
+          echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_content","arguments":{"query":"install product"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph \
+            | tee /tmp/search-content-response.json
+          # "Installing Product" matches both terms in its own title;
+          # "Installing Product: Prerequisites" matches them too but
+          # scores lower -- it must rank second, proving results are
+          # ordered by score, not the alphabetical/file order
+          # search_content used before ranking.
+          python3 -c "
+          import json
+          with open('/tmp/search-content-response.json') as f:
+              text = json.load(f)['result']['content'][0]['text']
+          print(text)
+          assert text.index('installing-product]') < text.index('installing-product-prereqs]'), 'expected installing-product ranked first'
+          "
+
+      - name: Build the nested map structure fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphNested --no-daemon
+
+      - name: Confirm nested topicref/topichead/topicgroup produce the real hierarchy (§3.3)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-nested/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          expected = {
+              ('user-guide', 'chapter', 'contains'),
+              ('user-guide', 'grouped', 'contains'),   # skips through <topichead>
+              ('user-guide', 'another', 'contains'),   # skips through <topicgroup>
+              ('chapter', 'section', 'contains'),      # nested topicref -> chapter, not the map
+          }
+          assert edges == expected, f'edges did not match: {edges}'
+          # DITA-OT auto-generates <related-links> parent/child navigation
+          # for this genuinely nested map (confirmed directly,
+          # sample-docs-nested/README.md); it must never show up as a
+          # references/requires edge duplicating the containment above.
+          assert not any(r in ('references', 'requires') for _, _, r in edges), f'spurious edge: {edges}'
+          print('nested map structure OK:', edges)
+          "
+
+      - name: Build the mapref/anchorref/navref map composition fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphMapref --no-daemon
+
+      - name: Confirm mapref/anchorref submap content merges into the base map (§3.3, finding 14)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-mapref/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          expected = {
+              ('user-guide', 'intro', 'contains'),
+              ('user-guide', 'after', 'contains'),
+              # 'spliced' comes from submap.ditamap, pulled in via
+              # <mapref>, whose root <map anchorref=\"insert-point\">
+              # targets the <anchor> nested inside intro's topicref --
+              # DITA-OT merges it in at the mapref's own location (a
+              # direct child of user-guide), not spliced under intro at
+              # the anchor's actual position (sample-docs-mapref/README.md).
+              ('user-guide', 'spliced', 'contains'),
+          }
+          assert edges == expected, f'edges did not match: {edges}'
+          print('mapref/anchorref composition OK:', edges)
+          "
+          ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-mapref/okf
+
+      - name: Confirm navref is detected and warned about, not silently dropped (§3.3, finding 16)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          # dita-ot-gradle's DitaOtTask wrapper shells out to DITA-OT's
+          # own script and only relays a curated progress display, not
+          # individual Ant warning lines (confirmed directly -- the
+          # Gradle-driven buildKnowledgeGraphMapref build log above never
+          # shows this warning even at --info) -- invoke the raw CLI
+          # directly, same as the args.dita2graph.* CLI-override checks
+          # elsewhere in this file, to actually see it.
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          rm -rf /tmp/navref-cli-test
+          "$DITA_BIN" --input=sample-docs-mapref/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/navref-cli-test -v > /tmp/navref-cli.log 2>&1
+          # DITA2GRAPH060W must show up in the real build log, plain
+          # ASCII only -- an earlier draft's "§3.3" citation mangled into
+          # "?3.3" through Ant's console logging (sample-docs-mapref/README.md).
+          grep -q 'DITA2GRAPH060W: <navref mapref="nav.ditamap">' /tmp/navref-cli.log
+          if grep -q 'DITA2GRAPH060W:.*[?]3[.]3' /tmp/navref-cli.log; then
+            echo "::error::DITA2GRAPH060W message contains a mangled section citation"
+            exit 1
+          fi
+          # nav-topic (reachable only via navref) must never leak into
+          # any output.
+          test ! -f /tmp/navref-cli-test/okf/topics/nav-topic.md
+          if grep -q '"id":"nav-topic"' /tmp/navref-cli-test/rag/chunks.jsonl; then
+            echo "::error::nav-topic leaked into rag/chunks.jsonl despite being unreachable via navref"
+            exit 1
+          fi
+          rm -rf /tmp/navref-cli-test
+
+      - name: Build the applies-to/generated-from relation-inference fixture (§3.3)
+        working-directory: gradle-build
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: ./gradlew buildKnowledgeGraphRelations --no-daemon
+
+      - name: Confirm applies-to matches unambiguously and drops ambiguous candidates (§3.3, finding 15)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-relations/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          # 'Save' (in save-task's <cmd>) matches only ui-reference's body
+          # -> a real applies-to edge. 'Cancel' matches BOTH ui-reference
+          # and other-ui-reference -> ambiguous, dropped per DITA2GRAPH010W,
+          # so neither gets an edge from that term (sample-docs-relations/README.md).
+          assert ('save-task', 'ui-reference', 'applies-to') in edges, edges
+          assert ('save-task', 'other-ui-reference', 'applies-to') not in edges, edges
+          applies_to_edges = [e for e in edges if e[2] == 'applies-to']
+          assert len(applies_to_edges) == 1, f'expected exactly one applies-to edge: {applies_to_edges}'
+          print('applies-to OK:', applies_to_edges)
+          "
+
+      - name: Confirm generated-from is detected from conref xtrf provenance (§3.3, finding 15)
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json
+          with open('gradle-build/build/dita2graph-relations/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          assert ('reuser', 'shared-content', 'generated-from') in edges, edges
+          print('generated-from OK')
+          "
+          grep -q 'Shared Content' gradle-build/build/dita2graph-relations/okf/topics/reuser.md
+          ./target/release/dita2graph-core validate --bundle gradle-build/build/dita2graph-relations/okf
+
+      - name: Confirm args.dita2graph.depth limits map containment (§2.3)
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          rm -rf /tmp/depth-test
+          "$DITA_BIN" --input=sample-docs-nested/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/depth-test --args.dita2graph.depth=1
+          python3 -c "
+          import json
+          with open('/tmp/depth-test/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
+          # depth=1: top-level topicrefs still contained (topichead/
+          # topicgroup don't consume a level), but section (nested one
+          # level inside chapter) is not -- it's still a node, just with
+          # no incoming contains edge.
+          assert ('user-guide', 'chapter', 'contains') in edges, edges
+          assert ('chapter', 'section', 'contains') not in edges, edges
+          assert any(n['id'] == 'section' for n in graph['nodes']), 'section should still be extracted as a node'
+          print('depth=1 correctly omitted the nested edge:', edges)
+          "
+
+      - name: Confirm DITA-OT's validation gate rejects broken content
+        working-directory: gradle-build
+        run: |
+          if ./gradlew validateBrokenDoc --no-daemon; then
+            echo "::error::validateBrokenDoc was expected to fail (sample-docs-invalid/ has an unresolvable href) but succeeded"
+            exit 1
+          fi
+          echo "validateBrokenDoc failed as expected -- the validation gate works"

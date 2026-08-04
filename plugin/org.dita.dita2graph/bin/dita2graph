@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Standalone CLI entry point (docs/plugin-specification.md §2.1): runs
+# extraction outside a full DITA-OT publish, e.g. in CI or for
+# incremental graph updates. Delegates to the `dita2graph-core` Rust
+# binary (§3.4, core/dita2graph-core) -- build it first with:
+#   cargo build --release -p dita2graph-core
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+CORE_BIN="${DITA2GRAPH_CORE_BIN:-${REPO_ROOT}/target/release/dita2graph-core}"
+if [ ! -x "${CORE_BIN}" ]; then
+  CORE_BIN="${REPO_ROOT}/target/debug/dita2graph-core"
+fi
+
+if [ ! -x "${CORE_BIN}" ]; then
+  echo "dita2graph: dita2graph-core binary not found (looked at ${CORE_BIN})." >&2
+  echo "Build it first: cargo build --release -p dita2graph-core" >&2
+  exit 2
+fi
+
+exec "${CORE_BIN}" "$@"

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Implements the dita2graph transtype (docs/plugin-specification.md §2).
+  Verified end-to-end against a live DITA-OT 4.4 preprocessing run
+  (gradle-build/, docs/dev/phase-0-findings.md finding 5): the target
+  name, dependency chain, and transtype registration below are the real,
+  confirmed-working shape, not a guess. dita2graph:extract itself is not
+  implemented yet (lib/dita2graph-core.jar is a placeholder, see
+  lib/README.md), so a build still fails there until that Java class
+  exists; see plugin.xml's header note.
+-->
+<project name="dita2graph" xmlns:dita2graph="antlib:org.dita.dita2graph" default="dita2dita2graph" basedir=".">
+
+  <!-- DITA-OT dispatches transtype "dita2graph" to an Ant target named
+       "dita2" + the transtype value, i.e. dita2dita2graph, not just
+       dita2graph, confirmed against org.dita.html5's transtype="html5"
+       -> target "dita2html5". depends="build-init,preprocess2" (not
+       just "preprocess") is likewise required: build-init's
+       init-properties target is what actually defines dita.temp.dir and
+       the Store/XML-utils Ant references DITA-OT 4.4's map-first
+       pipeline needs; skipping it fails with a NullPointerException
+       deep in build_preprocess2.xml before this target ever runs. -->
+  <target name="dita2dita2graph" depends="build-init,preprocess2">
+    <!-- Defaults for the args.dita2graph.* CLI arguments (§2.3,
+         cfg/dita2graph.xml): plain Ant <property>, which never overrides
+         an already-set value, so a CLI-supplied override still wins.
+         Needed because a bare ${args.dita2graph.store} reference with
+         nothing upstream ever setting it resolves to the literal,
+         unresolved string "${args.dita2graph.store}", not an empty or
+         sensible value; confirmed the hard way, see
+         docs/dev/phase-0-findings.md finding 6. -->
+    <property name="args.dita2graph.depth" value="unlimited"/>
+    <property name="args.dita2graph.mcp" value="false"/>
+    <property name="args.dita2graph.emit-graph-json" value="true"/>
+    <property name="args.dita2graph.store" value="sqlite"/>
+    <property name="args.dita2graph.include-drafts" value="false"/>
+
+    <!-- Custom Ant task, defined by lib/dita2graph-core.jar:
+           1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
+           2. builds the normalized DITA model (§3.2)
+           3. shells out to the `dita2graph-core` Rust binary (§3.4),
+              already implemented and tested under core/dita2graph-core,
+              to write the OKF bundle + graph.json (§2.4)
+         depth/mcp/emit-graph-json are read and logged but not yet
+         functionally wired to the Rust core's CLI, which only accepts
+         the input/output/store arguments today (§12 Phase 1 status;
+         finding 6); include-drafts is fully implemented (topic
+         filtering happens in Java, before the Rust core ever sees the
+         normalized model). outputDir uses dita.output.dir, not
+         output.dir: the latter is only build-init's own fallback
+         default (dita.dir/out), not the property actually populated
+         from the CLI's output argument (finding 6). -->
+    <dita2graph:extract
+        tempDir="${dita.temp.dir}"
+        outputDir="${dita.output.dir}"
+        depth="${args.dita2graph.depth}"
+        emitGraphJson="${args.dita2graph.emit-graph-json}"
+        mcp="${args.dita2graph.mcp}"
+        store="${args.dita2graph.store}"
+        includeDrafts="${args.dita2graph.include-drafts}"/>
+  </target>
+
+</project>

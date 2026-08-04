@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE val PUBLIC "-//OASIS//DTD DITA DITAVAL//EN" "ditaval.dtd">
+<val>
+  <!-- Public build: excludes internal-only content (§6.1). The
+       topics/internal-notes.dita topicref carries audience="internal"
+       in user-guide.ditamap, so DITA-OT drops that whole branch during
+       preprocessing; it never reaches dita2graph's extraction step,
+       so no okf/topics/internal-notes.md is written for this profile. -->
+  <prop att="audience" val="internal" action="exclude"/>
+</val>

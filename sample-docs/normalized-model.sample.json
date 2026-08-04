@@ -1,0 +1,56 @@
+[
+  {
+    "type": "map",
+    "id": "user-guide",
+    "title": "User Guide",
+    "sourceFile": "user-guide.ditamap",
+    "links": [
+      { "relation": "contains", "target": "configuration" },
+      { "relation": "contains", "target": "installing-product" }
+    ]
+  },
+  {
+    "type": "topic",
+    "id": "configuration",
+    "topicType": "concept",
+    "title": "Configuration Overview",
+    "shortdesc": null,
+    "body": "Configuration overview content goes here.",
+    "audience": [],
+    "product": [],
+    "keys": ["config-concept"],
+    "sourceFile": "topics/configuration.dita",
+    "links": []
+  },
+  {
+    "type": "topic",
+    "id": "installing-product-prereqs",
+    "topicType": "topic",
+    "title": "Installing Product: Prerequisites",
+    "shortdesc": null,
+    "body": "Before installing, confirm the target host meets the supported platform requirements and that a configuration profile has been prepared. See Configuration Overview.",
+    "audience": [],
+    "product": [],
+    "keys": [],
+    "sourceFile": "topics/installing-product-prereqs.dita",
+    "links": [
+      { "relation": "requires", "target": "configuration" }
+    ]
+  },
+  {
+    "type": "topic",
+    "id": "installing-product",
+    "topicType": "task",
+    "title": "Installing Product",
+    "shortdesc": "Steps to install the product in a production environment.",
+    "body": "Installing Product: Prerequisites This task requires Configuration Overview to be completed first. Download the installer package for your platform. Run the installer and follow the on-screen prompts. Verify the installation by checking the product version.",
+    "audience": ["admin"],
+    "product": ["enterprise"],
+    "keys": ["install-task"],
+    "sourceFile": "topics/installing-product.dita",
+    "links": [
+      { "relation": "requires", "target": "configuration" },
+      { "relation": "references", "target": "installing-product-prereqs" }
+    ]
+  }
+]
