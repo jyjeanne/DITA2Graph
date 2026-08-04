@@ -20,6 +20,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::SystemTime;
 
 #[derive(Deserialize)]
@@ -74,12 +75,16 @@ pub struct BundleReader {
     /// that never affects observable results, only how many times the
     /// filesystem gets touched to produce them.
     concept_cache: RefCell<HashMap<String, (serde_yaml::Value, String)>>,
-    /// `rag/chunks.jsonl` (§13.1), parsed once and cloned on repeat
+    /// `rag/chunks.jsonl` (§13.1), parsed once and `Rc`-shared on repeat
     /// calls rather than re-read from disk -- it holds full body text
     /// for every chunked topic, so it's typically the single largest
     /// file a real bundle has, and `search_content`/`analyze_impact`
-    /// both call `rag_chunks()` on every invocation.
-    rag_chunks_cache: RefCell<Option<Vec<RagChunk>>>,
+    /// both call `rag_chunks()` on every invocation. `Rc`, not a plain
+    /// `Vec` clone on every call: a real corpus's worth of chunk text is
+    /// exactly the data this cache exists to stop re-copying, so a cache
+    /// hit needs to be a cheap refcount bump, not a fresh deep clone of
+    /// every chunk's owned strings each time.
+    rag_chunks_cache: RefCell<Option<Rc<Vec<RagChunk>>>>,
 }
 
 impl BundleReader {
@@ -163,24 +168,26 @@ impl BundleReader {
         Ok(result)
     }
 
-    /// Loads `rag/chunks.jsonl` (§13.1), parsed once and cloned on every
-    /// call after that (see `rag_chunks_cache` above). Returns an empty
-    /// `Vec`, not an error, when the file is missing -- a bundle built
-    /// before `rag/` existed, or built by a `dita2graph-core` that
-    /// predates it, should degrade content search to "no results"
-    /// rather than fail every tool call that touches it; that empty
-    /// result is cached too, so a bundle without `rag/` doesn't retry
-    /// the failed read on every call either.
-    pub fn rag_chunks(&self) -> Result<Vec<RagChunk>> {
+    /// Loads `rag/chunks.jsonl` (§13.1), parsed once and `Rc`-shared on
+    /// every call after that (see `rag_chunks_cache` above) -- a cache
+    /// hit is a refcount bump, not a deep clone of every chunk's owned
+    /// strings. Returns an empty `Vec`, not an error, when the file is
+    /// missing -- a bundle built before `rag/` existed, or built by a
+    /// `dita2graph-core` that predates it, should degrade content search
+    /// to "no results" rather than fail every tool call that touches it;
+    /// that empty result is cached too, so a bundle without `rag/`
+    /// doesn't retry the failed read on every call either.
+    pub fn rag_chunks(&self) -> Result<Rc<Vec<RagChunk>>> {
         if let Some(cached) = self.rag_chunks_cache.borrow().as_ref() {
-            return Ok(cached.clone());
+            return Ok(Rc::clone(cached));
         }
         let path = self.root.join("rag").join("chunks.jsonl");
         let raw = match fs::read_to_string(&path) {
             Ok(raw) => raw,
             Err(_) => {
-                *self.rag_chunks_cache.borrow_mut() = Some(Vec::new());
-                return Ok(Vec::new());
+                let empty = Rc::new(Vec::new());
+                *self.rag_chunks_cache.borrow_mut() = Some(Rc::clone(&empty));
+                return Ok(empty);
             }
         };
         let chunks: Vec<RagChunk> = raw
@@ -190,6 +197,7 @@ impl BundleReader {
                 serde_json::from_str(line).with_context(|| format!("parsing {}", path.display()))
             })
             .collect::<Result<_>>()?;
+        let chunks = Rc::new(chunks);
         *self.rag_chunks_cache.borrow_mut() = Some(chunks.clone());
         Ok(chunks)
     }
@@ -204,6 +212,21 @@ impl BundleReader {
     }
 }
 
+/// The mtimes `BundleCache` fingerprints a bundle by. Both files, not
+/// just `graph.json` -- `dita2graph-core build` (`main.rs::run_build`)
+/// writes them in two separate steps, `write_bundle` (which writes
+/// `graph.json` last, after every concept file) finishing before
+/// `write_rag_index` even starts. Fingerprinting `graph.json` alone
+/// would mean a `get()` landing in that window reopens the reader (safe
+/// for concept files -- they're all written *before* `graph.json` -- but
+/// unsafe for `rag/chunks.jsonl`, which hasn't been rewritten yet at
+/// that point) and permanently caches the stale-or-missing rag index
+/// into `rag_chunks_cache` until graph.json's mtime changes *again* at
+/// the *next* rebuild -- meanwhile `search_content`/`analyze_impact`
+/// silently serve outdated excerpts against an otherwise fully
+/// up-to-date bundle for the entire rest of the session.
+type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>);
+
 /// The process-lifetime handle `main.rs` holds across every JSON-RPC
 /// request, instead of calling `BundleReader::open` fresh per
 /// `tools/call` the way this server originally did. On a real, sizeable
@@ -214,21 +237,34 @@ impl BundleReader {
 /// re-reading and re-parsing `graph.json` (plus, per the caches above,
 /// every concept file and `rag/chunks.jsonl` too) from scratch.
 ///
-/// Reopens the underlying `BundleReader` when `graph.json`'s mtime has
-/// changed since the last open (or on first use) -- one cheap `stat()`
-/// per call in the common case (many tool calls, unchanged bundle),
-/// full reparse only when the bundle was actually rebuilt mid-session.
-/// If that reopen attempt itself fails and a previous `BundleReader` is
-/// already cached, the stale one keeps serving rather than the call
-/// failing outright -- a `dita2graph-core build` in progress can leave
-/// `graph.json` transiently missing or mid-write, and one MCP tool call
-/// landing in that window shouldn't break an otherwise-working session;
-/// the next call (or the one after) retries once the rebuild settles.
-/// A *first* open failing (no cached reader to fall back to) still
-/// propagates, same as `BundleReader::open` always has.
+/// Reopens the underlying `BundleReader` when its [`BundleFingerprint`]
+/// has changed since the last open (or on first use) -- two cheap
+/// `stat()`s per call in the common case (many tool calls, unchanged
+/// bundle), full reparse only when the bundle was actually rebuilt
+/// mid-session. If that reopen attempt itself fails and a previous
+/// `BundleReader` is already cached, the stale one keeps serving rather
+/// than the call failing outright -- a `dita2graph-core build` in
+/// progress can leave `graph.json` transiently missing or mid-write, and
+/// one MCP tool call landing in that window shouldn't break an
+/// otherwise-working session; the next call (or the one after) retries
+/// once the rebuild settles. A *first* open failing (no cached reader to
+/// fall back to) still propagates, same as `BundleReader::open` always
+/// has.
+///
+/// Known, accepted limitation: this fingerprints the two top-level files
+/// every tool call already touches, not every individual `okf/*.md`
+/// concept file (an O(1) check regardless of corpus size, preserving the
+/// whole point of caching on a large bundle -- an O(topics) directory
+/// walk on every call would give most of that back). Concept files are
+/// generated output, always rewritten as part of the same `write_bundle`
+/// call that rewrites `graph.json` (and always *before* it, so a fresh
+/// `graph.json` mtime guarantees fresh concept files too) -- hand-editing
+/// one directly, outside a real `dita2graph-core build` run, is already
+/// outside this tool's supported workflow, and won't be picked up until
+/// the fingerprint next changes for an unrelated reason.
 pub struct BundleCache {
     root: PathBuf,
-    loaded: Option<(Option<SystemTime>, BundleReader)>,
+    loaded: Option<(BundleFingerprint, BundleReader)>,
 }
 
 impl BundleCache {
@@ -244,17 +280,37 @@ impl BundleCache {
         &self.root
     }
 
+    fn fingerprint(&self) -> BundleFingerprint {
+        let mtime_of = |relative: &str| {
+            fs::metadata(self.root.join(relative))
+                .and_then(|m| m.modified())
+                .ok()
+        };
+        (mtime_of("graph.json"), mtime_of("rag/chunks.jsonl"))
+    }
+
     pub fn get(&mut self) -> Result<&BundleReader> {
-        let mtime = fs::metadata(self.root.join("graph.json"))
-            .and_then(|m| m.modified())
-            .ok();
+        let fingerprint = self.fingerprint();
+        // Plain inequality, deliberately -- `rag/chunks.jsonl` is
+        // legitimately, permanently absent for plenty of real bundles
+        // (no rag/ built at all, `search_content_reports_no_rag_index_
+        // when_bundle_predates_rag`), so a `None` fingerprint component
+        // must compare equal to a previous `None`, not be forced stale
+        // on every single call -- that would silently defeat caching
+        // entirely for any bundle without a rag index. A component that
+        // goes from `Some` to `None` (the file disappeared) or changes
+        // value is already caught by this same inequality, no special
+        // case needed: `BundleReader::open` re-reads `graph.json` right
+        // below regardless, and fails there if it's genuinely gone,
+        // landing in the fallback-to-cached-reader arm just like any
+        // other reopen failure.
         let stale = match &self.loaded {
-            Some((cached_mtime, _)) => mtime.is_none() || mtime != *cached_mtime,
+            Some((cached_fingerprint, _)) => fingerprint != *cached_fingerprint,
             None => true,
         };
         if stale {
             match BundleReader::open(&self.root) {
-                Ok(reader) => self.loaded = Some((mtime, reader)),
+                Ok(reader) => self.loaded = Some((fingerprint, reader)),
                 Err(e) if self.loaded.is_some() => {
                     eprintln!(
                         "dita2graph-mcp: reload of {} failed, serving previously loaded bundle: {e:#}",
@@ -281,8 +337,8 @@ mod tests {
     };
     use std::{fs, thread, time::Duration};
 
-    fn one_topic_bundle(dir: &Path, topic_id: &str, title: &str) {
-        let nodes = vec![
+    fn one_topic_nodes(topic_id: &str, title: &str) -> Vec<NormalizedNode> {
+        vec![
             NormalizedNode::Map(NormalizedMap {
                 id: "user-guide".into(),
                 title: "User Guide".into(),
@@ -306,7 +362,11 @@ mod tests {
                 source_file: format!("topics/{topic_id}.dita"),
                 links: vec![],
             }),
-        ];
+        ]
+    }
+
+    fn one_topic_bundle(dir: &Path, topic_id: &str, title: &str) {
+        let nodes = one_topic_nodes(topic_id, title);
         write_bundle(&nodes, dir, chrono::Utc::now(), true).unwrap();
         write_rag_index(&nodes, dir, chrono::Utc::now()).unwrap();
     }
@@ -401,5 +461,90 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut cache = BundleCache::new(dir.path().to_path_buf());
         assert!(cache.get().is_err());
+    }
+
+    /// Fingerprinting `graph.json` alone would miss this: `run_build`
+    /// (`core/dita2graph-core/src/main.rs`) writes `graph.json` (via
+    /// `write_bundle`) and rewrites `rag/chunks.jsonl` (via
+    /// `write_rag_index`) as two *separate* steps, the first finishing
+    /// before the second starts. A reader whose lazy `rag_chunks_cache`
+    /// gets populated in that in-between window -- a real possibility on
+    /// a real dataset where an agent session is issuing tool calls while
+    /// a rebuild is in flight -- must not go on serving that snapshot
+    /// forever just because `graph.json` itself doesn't change again
+    /// until the *next* rebuild.
+    #[test]
+    fn bundle_cache_reloads_when_only_rag_chunks_jsonl_changes_after_graph_json_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        let mut cache = BundleCache::new(dir.path().to_path_buf());
+        // Poison this reader's lazy rag_chunks_cache with topic-a's chunk.
+        let chunks = cache.get().unwrap().rag_chunks().unwrap();
+        assert!(chunks.iter().any(|c| c.id == "topic-a"));
+
+        thread::sleep(Duration::from_millis(1100));
+        // Simulate write_bundle's half of a rebuild only -- graph.json
+        // (and every concept file) now names topic-b, but rag/chunks.jsonl
+        // hasn't been touched yet, exactly the window between
+        // write_bundle and write_rag_index in run_build.
+        write_bundle(
+            &one_topic_nodes("topic-b", "Title B"),
+            dir.path(),
+            chrono::Utc::now(),
+            true,
+        )
+        .unwrap();
+
+        thread::sleep(Duration::from_millis(1100));
+        // write_rag_index finally catches up -- graph.json itself is
+        // untouched this time, only rag/chunks.jsonl changes.
+        write_rag_index(
+            &one_topic_nodes("topic-b", "Title B"),
+            dir.path(),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+
+        let chunks = cache.get().unwrap().rag_chunks().unwrap();
+        assert!(
+            chunks.iter().any(|c| c.id == "topic-b"),
+            "cache should reload once rag/chunks.jsonl changes even when graph.json didn't change again: {:?}",
+            chunks.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// A bundle with no `rag/` at all (predates it, or simply never
+    /// built one) must not be treated as permanently stale -- both
+    /// fingerprint components are `None` and stay `None`, which must
+    /// compare equal to itself, not force a reopen on every single call.
+    #[test]
+    fn bundle_cache_still_caches_a_bundle_with_no_rag_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = one_topic_nodes("topic-a", "Title A");
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        // Deliberately no write_rag_index call.
+        let mut cache = BundleCache::new(dir.path().to_path_buf());
+
+        let reader = cache.get().unwrap();
+        assert!(reader.rag_chunks().unwrap().is_empty());
+        // Poison this reader's concept_cache with the original title
+        // *before* editing the file, or there'd be nothing cached yet to
+        // prove staleness against.
+        assert_eq!(reader.title("topic-a").unwrap(), "Title A");
+        let path = reader.concept_path("topic-a").unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        fs::write(&path, content.replace("Title A", "Changed Title")).unwrap();
+
+        // If the fingerprint were wrongly treating a missing rag index as
+        // "always changed", this next get() would reopen a fresh reader
+        // and the edit above would (wrongly, for this specific case)
+        // become visible immediately; the cache should still be serving
+        // the same, already-cached reader here.
+
+        assert_eq!(
+            cache.get().unwrap().title("topic-a").unwrap(),
+            "Title A",
+            "a bundle with no rag/ should still be cached across calls, not reopened every time"
+        );
     }
 }

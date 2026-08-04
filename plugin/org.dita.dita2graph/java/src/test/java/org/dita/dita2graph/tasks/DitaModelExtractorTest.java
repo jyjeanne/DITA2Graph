@@ -259,6 +259,68 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void inlineReuseMidSentenceIsPreservedNotExcluded(@TempDir Path tempDir) throws Exception {
+        // A conref'd <ph> in the middle of an authored sentence -- unlike
+        // a whole reused <p>/<step>, excluding this would leave a
+        // grammatically mangled sentence behind, not cleanly drop a
+        // self-contained chunk of content
+        // (docs/dev/canonical-node-dedup-spec.md's stated v1 policy:
+        // "leave it in rather than mangle prose"). Still recorded as
+        // generated-from (it's still genuinely reused content), just not
+        // excluded from body text the way a block-level reuse is.
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/source.dita\">Save</p></conbody>"
+                + "</concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title>"
+                + "<conbody><p xtrf=\"file:/src/topics/reuser.dita\">Click the "
+                + "<ph xtrf=\"file:/src/topics/source.dita\">Save</ph> button.</p></conbody>"
+                + "</concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertEquals("Click the Save button.", reuser.body,
+                "inline conref'd <ph> text should survive intact, not be dropped mid-sentence: " + reuser.body);
+        // Still genuinely reused content -- generated-from must still
+        // fire even though the text itself wasn't excluded.
+        assertTrue(reuser.links.stream()
+                .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")));
+    }
+
+    @Test
+    void generatedFromIsDetectedOutsideTheBodyToo(@TempDir Path tempDir) throws Exception {
+        // The combined body-text/generated-from walk starts at the topic
+        // root, not the body element -- a conref'd <shortdesc> (outside
+        // the body entirely) must still produce a generated-from edge,
+        // proving the merge didn't narrow generated-from's scope down to
+        // the body subtree the way body-text extraction is deliberately
+        // scoped.
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\"><title>Source Topic</title>"
+                + "<shortdesc xtrf=\"file:/src/topics/source.dita\">Shared summary.</shortdesc>"
+                + "<conbody/></concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title>"
+                + "<shortdesc xtrf=\"file:/src/topics/source.dita\">Shared summary.</shortdesc>"
+                + "<conbody><p xtrf=\"file:/src/topics/reuser.dita\">Own content.</p></conbody>"
+                + "</concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        assertTrue(reuser.links.stream()
+                        .anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("source")),
+                "reused <shortdesc>, outside the body, should still produce a generated-from edge: " + reuser.links);
+        assertEquals("Own content.", reuser.body);
+    }
+
+    @Test
     void uicontrolsAreExtractedFromTheWholeBodyAndCmdUicontrolsOnlyFromCmd(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_UICONTROL);
         write(tempDir, "user-guide.ditamap", MAP_XML_UICONTROL);

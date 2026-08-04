@@ -173,7 +173,7 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
 
     let mut scored: Vec<(i64, &str, &str, &str)> = Vec::new();
-    for chunk in &chunks {
+    for chunk in chunks.iter() {
         if let Some(allowed) = &allowed
             && !allowed.contains(&chunk.id)
         {

@@ -108,11 +108,25 @@ the server's process lifetime, reopening only when `graph.json`'s mtime
 shows the bundle actually changed (a mid-session rebuild), and falling
 back to the last-loaded bundle rather than failing a call outright if
 that reopen catches the rebuild mid-write. `BundleReader` itself caches
-per-id concept reads and the parsed `rag/chunks.jsonl` for its own
-lifetime. Verified with unit tests proving the caches are real (editing
-a file on disk after the first read doesn't change what a second call
-on the same reader returns) and that reload/fallback behavior is
-correct, plus a live multi-call session against a DITA-OT-built bundle.
+per-id concept reads and the parsed `rag/chunks.jsonl` (`Rc`-shared, not
+deep-cloned, on every cache hit) for its own lifetime. Verified with
+unit tests proving the caches are real (editing a file on disk after
+the first read doesn't change what a second call on the same reader
+returns) and that reload/fallback behavior is correct, plus a live
+multi-call session against a DITA-OT-built bundle.
+
+A code review after the fact caught a follow-up gap in the staleness
+check itself, since fixed: `dita2graph-core build` writes `graph.json`
+(via `write_bundle`, last, after every concept file) and rewrites
+`rag/chunks.jsonl` (via `write_rag_index`) as two separate steps, so
+fingerprinting `graph.json`'s mtime alone meant a `get()` landing in
+that window could permanently cache a stale-or-not-yet-rewritten rag
+index until the *next* rebuild changed `graph.json` again.
+`BundleCache` now fingerprints both files' mtimes (still two cheap
+`stat()`s, not a corpus-wide scan) — verified with a regression test
+that reproduces the exact two-step-write race, plus a test proving a
+bundle with no `rag/` at all still caches normally rather than being
+treated as permanently stale.
 
 ### Phase 4 — Gradle integration + CI hardening
 

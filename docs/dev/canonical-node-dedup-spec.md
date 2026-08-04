@@ -122,7 +122,7 @@ frontmatter key.
 |---|---|
 | Topic's entire body is one conref'd block | Resulting `body` is empty — `Option<String>` already models this (`shortdesc`/`body` are both optional today); no crash, no special-case needed. |
 | Reused element nested inside the reusing topic's own non-reused structure (e.g. a `<step>` with a conref'd `<info>` but authored `<cmd>`) | Handled by the top-down walk: the `<info>` subtree is excluded, sibling `<cmd>` text is kept, because exclusion is decided per block element, not per topic. |
-| Inline-level reuse mid-sentence (`<ph conref="...">` inside authored prose) | Best-effort only in v1: if excluding a non-block element would leave a dangling sentence fragment, leave it in rather than mangle prose. Block-level reuse (`<p>`, `<step>`, `<note>`, `<li>`, …) is the dominant real-world pattern (matches `sample-docs-relations`'s own fixture) and the one this spec commits to solving correctly. |
+| Inline-level reuse mid-sentence (`<ph conref="...">` inside authored prose) | Implemented, not just described: a fixed `INLINE_ELEMENTS` allowlist (the common DITA phrase domain — `ph`, `b`/`i`/`u`, `uicontrol`, `codeph`, `xref`, …) is never excluded from body text even when foreign, though it's still recorded for `generated-from` — leaving it in rather than mangling prose, per the v1 policy this row used to just describe. An unrecognized element defaults to block (excludable) behavior, the safer direction. Verified: `DitaModelExtractorTest.inlineReuseMidSentenceIsPreservedNotExcluded`. Block-level reuse (`<p>`, `<step>`, `<note>`, `<li>`, …) is still the dominant real-world pattern (matches `sample-docs-relations`'s own fixture) and the one this spec primarily targets. |
 | The source topic itself | Never affected — its own elements' `xtrf` matches its own file by definition, so nothing is excluded from the topic that *authors* the shared content. |
 | Conref-only library topic never `topicref`'d into any map | Already produces its own `TopicNode` today (`DitaModelExtractor` iterates every `format="dita"` `JobFile` from `job.xml`, not just ones reachable from the map tree) — no change needed for it to exist as the canonical target of the pointer. |
 
@@ -144,11 +144,21 @@ frontmatter key.
    generatedFromIsExtractedFromXtrfMismatches` extended to assert
    `reuser.body` equals exactly `"Own content not reused."`, while
    `source.body` keeps its own `"Reusable content."` unchanged and the
-   existing `generated-from` edge assertion still passes. A second
-   test, `bodyTextExcludesOnlyTheReusedSubtreeNotSiblingOwnContent`,
-   covers the nested-reuse edge case (an authored `<cmd>` sibling to a
-   conref'd `<info>` inside the same `<step>`) — 8/8 tests pass,
-   `./gradlew clean test` under `plugin/org.dita.dita2graph/java/`.
+   existing `generated-from` edge assertion still passes.
+   `bodyTextExcludesOnlyTheReusedSubtreeNotSiblingOwnContent` covers the
+   nested-reuse edge case (an authored `<cmd>` sibling to a conref'd
+   `<info>` inside the same `<step>`). `inlineReuseMidSentenceIsPreserved
+   NotExcluded` covers the inline-reuse row above (a conref'd `<ph>`
+   mid-sentence survives intact, `generated-from` still fires).
+   `generatedFromIsDetectedOutsideTheBodyToo` covers a conref'd
+   `<shortdesc>` (outside the body element entirely) — added once
+   `generated-from` detection and body-text extraction were merged into
+   one combined topic walk (`extractBodyAndGeneratedFrom`/
+   `walkGeneratedFromAndBodyText`, replacing two separate full-topic
+   scans) to make sure the merge didn't narrow generated-from's scope
+   down to the body subtree the way body-text extraction is deliberately
+   scoped — 10/10 tests pass, `./gradlew clean test` under
+   `plugin/org.dita.dita2graph/java/`.
 2. **Fixture, live DITA-OT 4.4**: verified via the existing
    `buildKnowledgeGraphRelations` Gradle task against
    `sample-docs-relations/` — no new fixture directory needed, the
