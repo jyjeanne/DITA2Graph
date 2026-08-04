@@ -1,5 +1,7 @@
 # DITA2Graph
 
+![DITA2Graph overview](docs/images/dita2graph-overview.png)
+
 A DITA-OT plugin that converts DITA content into a semantic knowledge
 graph (using [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 v0.2 as the representation) and exposes it to AI agents over MCP.
@@ -54,6 +56,13 @@ are automated: run the **Tag release** workflow from the Actions tab
 (`workflow_dispatch`, takes a version number) to tag, which triggers
 **Release** to test, build, and publish a GitHub Release with the Rust
 binaries and the DITA-OT plugin zip attached.
+
+## Workflow
+
+From native DITA content to AI-ready knowledge graphs and MCP-powered
+intelligent applications:
+
+![DITA2Graph complete workflow](docs/images/dita2graph-workflow.png)
 
 ## Toolchain requirements
 
