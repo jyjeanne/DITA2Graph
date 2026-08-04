@@ -24,8 +24,8 @@ jobs:
           distribution: temurin
           java-version: "21" # matches plugin/org.dita.dita2graph/java/build.gradle.kts's --release 21
 
-      - name: Build dita2graph-core (release)
-        run: cargo build --release -p dita2graph-core --locked
+      - name: Build dita2graph-core and dita2graph-mcp (release)
+        run: cargo build --release -p dita2graph-core -p dita2graph-mcp --locked
 
       - name: Build lib/dita2graph-core.jar
         working-directory: plugin/org.dita.dita2graph/java
@@ -81,6 +81,15 @@ jobs:
             exit 1
           fi
           grep -q '"id":"internal-notes"' gradle-build/build/dita2graph-internal/rag/chunks.jsonl
+
+      - name: Confirm analyze_impact finds transitive dependents (§13.1)
+        run: |
+          set -euo pipefail
+          response=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze_impact","arguments":{"topicId":"configuration"}}}' \
+            | ./target/release/dita2graph-mcp gradle-build/build/dita2graph)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'installing-product'
 
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build

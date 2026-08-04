@@ -192,6 +192,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"search_topics"));
         assert!(names.contains(&"find_related_topics"));
+        assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
     }
 
@@ -224,6 +225,41 @@ mod tests {
         .unwrap();
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("Configuration Overview"));
+    }
+
+    #[test]
+    fn analyze_impact_finds_transitive_dependents() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        // installing-product requires configuration (1 hop); user-guide
+        // contains installing-product (2 hops) -- both should show up as
+        // affected, not just the direct dependent.
+        assert!(text.contains("installing-product"), "{text}");
+        assert!(text.contains("user-guide"), "{text}");
+        assert_eq!(response["result"]["isError"], false);
+    }
+
+    #[test]
+    fn analyze_impact_reports_nothing_for_a_leaf_with_no_dependents() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "analyze_impact", "arguments": { "topicId": "user-guide" } }
+            }),
+            dir.path(),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("nothing depends on"), "{text}");
     }
 
     #[test]

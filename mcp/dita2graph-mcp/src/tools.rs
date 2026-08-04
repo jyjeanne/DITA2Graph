@@ -53,6 +53,18 @@ pub fn list() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "analyze_impact",
+            "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers), not just its direct links (§13.1).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topicId": { "type": "string" },
+                    "depth": { "type": "integer", "description": "Max traversal depth (default 5)" },
+                },
+                "required": ["topicId"],
+            },
+        }),
+        json!({
             "name": "generate_summary",
             "description": "Title and description for a topic or map id.",
             "inputSchema": {
@@ -76,6 +88,7 @@ pub fn call(name: &str, arguments: &Value, bundle_root: &Path) -> Result<String>
         "find_related_topics" => find_related_topics(&bundle, arguments),
         "explain_task" => explain_task(&bundle, arguments),
         "trace_dependencies" => trace_dependencies(&bundle, arguments),
+        "analyze_impact" => analyze_impact(&bundle, arguments),
         "generate_summary" => generate_summary(&bundle, arguments),
         "validate_bundle" => validate_bundle(bundle_root),
         other => Err(anyhow!("unknown tool: {other}")),
@@ -184,6 +197,58 @@ fn trace_dependencies(bundle: &BundleReader, arguments: &Value) -> Result<String
         return Ok("no `requires` dependencies found".to_string());
     }
     Ok(lines.join("\n"))
+}
+
+/// Reverse BFS over *every* relation, not just `requires` like
+/// [`trace_dependencies`] -- "if I change this topic, what breaks?"
+/// needs `contains` (which maps/topics include it) and `references` too,
+/// not only declared prerequisites (§13.1, the first implemented tool
+/// from that section's design direction).
+fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
+    let topic_id = arg_str(arguments, "topicId")?.to_string();
+    let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+    let mut visited = std::collections::HashSet::new();
+    let mut frontier = vec![topic_id.clone()];
+    let mut lines = Vec::new();
+    visited.insert(topic_id.clone());
+
+    for level in 1..=depth {
+        let mut next = Vec::new();
+        for id in &frontier {
+            for edge in bundle.edges_to(id, None) {
+                if visited.insert(edge.from.clone()) {
+                    let title = bundle
+                        .title(&edge.from)
+                        .unwrap_or_else(|_| edge.from.clone());
+                    lines.push(format!(
+                        "{}{} ({}) --{}--> {}",
+                        "  ".repeat(level - 1),
+                        title,
+                        edge.from,
+                        edge.relation,
+                        id
+                    ));
+                    next.push(edge.from.clone());
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+
+    if lines.is_empty() {
+        return Ok(format!(
+            "nothing depends on `{topic_id}` (no incoming edges found)"
+        ));
+    }
+    Ok(format!(
+        "changing `{topic_id}` would affect {} concept(s):\n{}",
+        lines.len(),
+        lines.join("\n")
+    ))
 }
 
 fn generate_summary(bundle: &BundleReader, arguments: &Value) -> Result<String> {

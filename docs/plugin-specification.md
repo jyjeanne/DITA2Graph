@@ -711,27 +711,37 @@ trusting an answer's completeness (§6.1).
 ### 5.2 Tools
 
 ```
-search_topics(query, topicType?, audience?, product?)
+search_topics(query)
 find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
-generate_summary(topicId | mapId)
-list_key_definitions(scope?)
+analyze_impact(topicId, depth?)
+generate_summary(id)
 validate_bundle()
 ```
+
+This is the current, implemented tool contract — real tool names and
+argument shapes from `mcp/dita2graph-mcp/src/tools.rs`, not an
+aspirational sketch. `search_topics`'s `query` argument does plain text
+matching against titles/ids, not embedding-based semantic search;
+`topicType`/`audience`/`product` filter arguments and a
+`list_key_definitions` tool were part of an earlier draft of this
+contract and were never implemented, so they're not listed here.
+
+`analyze_impact(topicId, depth?)` is a reverse graph traversal — every
+edge that points *at* `topicId`, followed transitively up to `depth`
+(default 5) — answering "if I change this topic, what breaks?" (§13.1):
+dependents via `requires`, containing maps via `contains`, and any
+other relation a topic participates in, not just declared
+prerequisites the way `trace_dependencies` (forward, `requires`-only)
+does. It's the first implemented tool from §13.1's design direction;
+query routing over `rag/` and node-level embeddings remain design only.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
 for an agent (or a human) to confirm a bundle it's about to rely on is
 actually well-formed before trusting its answers, without shelling out
 to the CLI separately.
-
-This is the current, implemented tool contract. `search_topics`'s
-`query` argument today does plain text matching against titles/tags, not
-embedding-based semantic search, and there is no content-summarization
-or impact-analysis tool yet — §13.1 describes a planned `analyze_impact`
-tool and a hybrid graph-then-content query path as a future direction,
-not part of this contract.
 
 ### 5.3 Example interaction
 
@@ -899,9 +909,10 @@ pub fn list() -> Vec<Value> {
             },
         }),
         // dita2graph-mcp would declare search_topics, find_related_topics,
-        // explain_task, trace_dependencies, generate_summary, and
-        // validate_bundle here, in the same shape (§5.2), dispatched to
-        // dita2graph-core instead of okf-rs's generic okf-query layer.
+        // explain_task, trace_dependencies, analyze_impact,
+        // generate_summary, and validate_bundle here, in the same shape
+        // (§5.2), dispatched to dita2graph-core instead of okf-rs's
+        // generic okf-query layer.
     ]
 }
 ```
@@ -1696,10 +1707,11 @@ answering queries in Claude Code, hitting no undocumented step.
 Not a single phase but a backlog, picked up item-by-item based on
 adopter feedback after v0.1.0 — see §13 for the current list: a unified
 graph + RAG architecture (§13.1, the largest single item, and already
-partly underway — `rag/chunks.jsonl` extraction is done, graph-narrowed
-hybrid retrieval and an `analyze_impact` tool are not), plus multi-map
-federation, graph diffing, HTTP transport + auth, and a rendered-output
-annotation variant (§13.2). Each item gets its own scoped follow-up
+partly underway — `rag/chunks.jsonl` extraction and `analyze_impact`
+are done, graph-narrowed hybrid query routing and node-level embeddings
+are not), plus multi-map federation, graph diffing, HTTP transport +
+auth, and a rendered-output annotation variant (§13.2). Each item gets
+its own scoped follow-up
 spec/issue and its own exit criterion before work starts, rather than
 being bundled into one open-ended phase.
 
@@ -1794,12 +1806,20 @@ yet — `search_topics` still only matches against `okf/`'s titles/ids
   scale (illustratively: ten thousand topics narrowed to a few dozen by
   the graph before any content search runs).
 
-**Impact analysis as a first consumer.** "If I change `engine.dita`,
-what breaks?" is a graph query — dependents, containing maps,
-`conref`/`keyref` referrers, affected publications (§4.3) — whose result
-set the content layer then summarizes topic-by-topic into a readable
-report. This is the concrete case for a new `analyze_impact(topicId)`
-tool alongside §5.2's existing set (referenced there).
+**Impact analysis — implemented, graph-only half.** "If I change
+`engine.dita`, what breaks?" is a graph query — dependents, containing
+maps, `requires`/keyref referrers (§4.3) — and `analyze_impact(topicId,
+depth?)` (§5.2) answers exactly that: a reverse traversal over every
+incoming edge, transitively, up to `depth` hops (default 5), returning
+every concept that (directly or indirectly) depends on the one that
+changed. Verified against a live bundle: changing a topic three other
+concepts depend on at different hop distances reports all three, not
+just the direct dependent. What's still missing from the original
+design-direction text above is the *content* half — having the RAG
+layer summarize each affected topic into a readable report, rather
+than the current output (a flat list of "concept — relation — target"
+lines) — which depends on the still-unimplemented query-routing piece
+two paragraphs up.
 
 **Longer-term direction: converge the two artifacts.** The natural end
 state folds `rag/chunks.jsonl` into the OKF nodes themselves instead of
@@ -1815,14 +1835,18 @@ direction under consideration, not a committed design — §10 would need
 its own regression corpus and success criteria for this before it's
 scoped as a phase.
 
-**Status:** `rag/`'s extraction and output side is implemented and
-verified (`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`,
-covered by unit tests and a live DITA-OT 4.4 run including the DITAVAL
-split). Query routing, `analyze_impact`, and node-level embeddings
-remain design only — no MCP tool consumes `rag/` yet, and
-`search_topics` is still plain text matching (§5.2). Each remaining
-piece is tracked as its own Phase 6+ backlog item (§12), to get its own
-scoped follow-up spec and exit criterion before work starts.
+**Status:** two of this section's four pieces are implemented and
+verified — `rag/`'s extraction and output side
+(`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`) and
+the graph-only half of impact analysis (`analyze_impact` in
+`mcp/dita2graph-mcp/src/tools.rs`), both covered by unit tests and a
+live DITA-OT 4.4 run including the DITAVAL split. Query routing over
+`rag/` and node-level embeddings remain design only — no MCP tool
+reads `rag/chunks.jsonl` yet, `search_topics` is still plain text
+matching against `okf/` (§5.2), and `analyze_impact`'s output isn't
+summarized by a content layer. Each remaining piece is tracked as its
+own Phase 6+ backlog item (§12), to get its own scoped follow-up spec
+and exit criterion before work starts.
 
 ### 13.2 Other extended capabilities
 

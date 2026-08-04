@@ -70,6 +70,16 @@ impl BundleReader {
             .collect()
     }
 
+    /// The reverse of [`edges_from`](Self::edges_from): every edge that
+    /// points *at* `id`, i.e. what depends on it -- the basis for impact
+    /// analysis (§13.1).
+    pub fn edges_to(&self, id: &str, relation: Option<&str>) -> Vec<&GraphEdge> {
+        self.edges
+            .iter()
+            .filter(|e| e.to == id && relation.is_none_or(|r| e.relation == r))
+            .collect()
+    }
+
     /// `okf/topics/{id}.md` or `okf/maps/{id}.md`, whichever exists —
     /// `graph.json` alone doesn't record which subdirectory a node lives
     /// in (§2.4), so both are tried.

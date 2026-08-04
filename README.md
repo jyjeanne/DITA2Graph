@@ -25,7 +25,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split and the broken-input negative test) against a live DITA-OT 4.4 |
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
-| Hybrid graph+RAG architecture (§13.1) | In progress: body-text extraction and `rag/chunks.jsonl` + `rag/metadata.json` shipped (same single pass as `okf/`); query routing, `analyze_impact`, and node-level embeddings are still design-only |
+| Hybrid graph+RAG architecture (§13.1) | In progress: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), and the `analyze_impact` MCP tool (reverse, transitive graph traversal) are shipped; query routing over `rag/` and node-level embeddings are still design-only |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions (relation types, nested map structures, `depth`/
