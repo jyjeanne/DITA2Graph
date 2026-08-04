@@ -395,6 +395,20 @@ final class DitaModelExtractor {
             }
             container.links.add(new Link("contains", target.id));
         }
+        // Deduplicated by (source, relation, target) -- confirmed against
+        // a real, large third-party corpus (dita-ot/docs): prose that
+        // mentions the same keyref-based cross-reference several times
+        // (e.g. a glossary-style term referenced from multiple sentences
+        // in one topic) produced one RawLink per mention, so the same
+        // target ended up repeated under one topic's "# Requires"/
+        // "# References" heading up to four times over -- real, visible
+        // noise (`okf_validator`'s own "redundant link" warning fired
+        // ~150 times across that corpus) that a small hand-built fixture
+        // never surfaces, since none of them repeat the same
+        // xref/keyref mention within one topic. One edge per distinct
+        // (source, relation, target), same "one edge per distinct
+        // source" discipline `generated-from` below already follows.
+        Set<String> seenLinks = new HashSet<>();
         for (RawLink raw : rawLinks) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
             TopicNode target = topicsByPath.get(raw.href);
@@ -405,7 +419,11 @@ final class DitaModelExtractor {
             if (source == target) {
                 continue;
             }
-            source.links.add(new Link(raw.hasKeyref ? "requires" : "references", target.id));
+            String relation = raw.hasKeyref ? "requires" : "references";
+            if (!seenLinks.add(raw.sourceTopicPath + ' ' + relation + ' ' + target.id)) {
+                continue;
+            }
+            source.links.add(new Link(relation, target.id));
         }
         for (RawGeneratedFrom raw : rawGeneratedFrom) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);

@@ -105,6 +105,32 @@ own hand-built fixtures, and both are common enough in real,
 multi-contributor DITA corpora that a tool claiming real-dataset
 readiness needs to handle them without losing data or crying wolf.
 
+**A fourth round of live MCP testing** (four more `claude -p` sessions
+against a bundle rebuilt from `dita-ot/docs`, four different questions
+— PDF prerequisites, impact analysis on the logging topic,
+`validate_bundle` on demand, Markdown-support search/summary) reconfirmed
+every fix above holds under varied, undirected real usage: zero
+`topicId`/`id` parameter errors across all four, `validate_bundle`
+correctly reported the bundle as error-free. It also found one more
+real gap: a topic whose prose mentions the same keyref-based
+cross-reference several times (a glossary-style term used in multiple
+sentences) got one `requires`/`references` edge *per mention*, so
+`okf_validator`'s own "redundant link" check fired ~150 times across
+the corpus — one topic's `# Requires` section listed the same target
+four times over. Deduplicated by `(source, relation, target)` in
+`DitaModelExtractor`'s link-resolution pass — same "one edge per
+distinct source" discipline `generated-from` already followed — cutting
+the warning count roughly in half and eliminating every worst-offender
+file. (The remaining ones are a different, benign case: the same target
+reached via *two different relation types* — e.g. both `requires`,
+authored, and `generated-from`, via `conref` — which `okf_validator`
+still flags as "redundant" by raw link text alone; that's real,
+distinct information under different headings, not noise, so it's left
+alone rather than suppressed to satisfy a third-party validator's
+naive same-file link-uniqueness check.) Reverified live: `trace_
+dependencies` on the topic that used to show 13 duplicated entries now
+returns exactly 5, matching the deduplicated bundle file exactly.
+
 ### Phase 2 — Core engine: OKF bundle generation
 
 `dita2graph-core` normalizes the model, writes a conformant `okf/`

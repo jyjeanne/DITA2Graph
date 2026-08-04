@@ -237,6 +237,66 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void repeatedCrossReferencesToTheSameTargetProduceOneEdgeNotOnePerMention(@TempDir Path tempDir)
+            throws Exception {
+        // Confirmed against a real, large third-party corpus
+        // (dita-ot/docs): prose that mentions the same keyref-based
+        // cross-reference several times in one topic (a glossary-style
+        // term referenced from multiple sentences) produced one edge per
+        // mention, so the same target ended up listed under one topic's
+        // "# Requires"/"# References" heading up to four times over --
+        // real, visible bundle noise (`okf_validator`'s "redundant link"
+        // warning) a small hand-built fixture with one mention per
+        // target never surfaces. Two keyref'd mentions of "configuration"
+        // plus two bare mentions of "installing-product-prereqs" here,
+        // matching that real shape.
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/configuration.dita\" uri=\"topics/configuration.dita\" "
+                + "path=\"topics/configuration.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/prereqs.dita\" uri=\"topics/prereqs.dita\" "
+                + "path=\"topics/prereqs.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/reuser.dita\" uri=\"topics/reuser.dita\" "
+                + "path=\"topics/reuser.dita\" format=\"dita\" has-keyref=\"true\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        String mapXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/configuration.dita\"/>"
+                + "<topicref href=\"topics/prereqs.dita\"/>"
+                + "<topicref href=\"topics/reuser.dita\"/>"
+                + "</map>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", mapXml);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+        write(tempDir, "topics/prereqs.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"installing-product-prereqs\"><title>Prereqs</title>"
+                + "<body><p>Prereqs.</p></body></topic>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"reuser\"><title>Reuser Topic</title><conbody>"
+                + "<p>See <xref href=\"configuration.dita\" keyref=\"config\">Configuration</xref> for setup, "
+                + "and again see <xref href=\"configuration.dita\" keyref=\"config\">Configuration</xref> "
+                + "for details.</p>"
+                + "<p>Also see <xref href=\"prereqs.dita\">Prereqs</xref> and "
+                + "<xref href=\"prereqs.dita\">Prereqs</xref> once more.</p>"
+                + "</conbody></concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        long requiresToConfig = reuser.links.stream()
+                .filter(l -> l.relation.equals("requires") && l.target.equals("configuration"))
+                .count();
+        long referencesToPrereqs = reuser.links.stream()
+                .filter(l -> l.relation.equals("references") && l.target.equals("installing-product-prereqs"))
+                .count();
+        assertEquals(1, requiresToConfig,
+                "two keyref'd mentions of the same target should collapse to one requires edge: " + reuser.links);
+        assertEquals(1, referencesToPrereqs,
+                "two bare mentions of the same target should collapse to one references edge: " + reuser.links);
+    }
+
+    @Test
     void duplicateTopicIdIsDisambiguatedInsteadOfSilentlyOverwritingTheEarlierTopic(@TempDir Path tempDir)
             throws Exception {
         // Confirmed against a real, large third-party corpus
