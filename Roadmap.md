@@ -62,6 +62,92 @@ parameters (`depth`, `mcp`, `emit-graph-json`, `store`,
 `include-drafts`) are functionally wired, not just accepted and logged
 (findings 10, 12).
 
+**Found and fixed against a real third-party corpus** (`dita-ot/docs`,
+the DITA-OT project's own documentation — 267 `.dita` files, deeply
+nested `mapref` composition, real `keyref`/`conref` reuse; a scale and
+messiness no hand-built fixture reaches):
+
+- **Duplicate topic ids silently destroyed content.** 33 separate
+  topics in that corpus share the literal `id="ID"` (an unfilled
+  authoring-template placeholder), plus several genuine `id` reuses
+  across near-duplicate topics (e.g. `dita_ot_day_videos_intro` reused
+  across multiple years' intro topics). Every topic's graph node id
+  came straight from its own `id` attribute with no uniqueness check,
+  so colliding ids collapsed onto the same OKF concept file path
+  (`okf/topics/{id}.md`) — the second topic written silently
+  overwrote the first's content, no error, no warning. Confirmed
+  directly: running the un-fixed extractor against `dita-ot/docs`
+  produced 33 nodes all named `"ID"` in `graph.json`, but only *one*
+  topic's actual text survived in the bundle. Now detected and
+  disambiguated (`DITA2GRAPH070W`, naming both colliding files) —
+  every topic keeps its own distinct node, none dropped. Re-running
+  against the same corpus: 226 nodes, 226 distinct ids, zero
+  collisions remaining.
+- **A keyref-resolved external topicref produced false-positive
+  "unresolved" warnings.** `dita-ot/docs`'s conference-talk maps use
+  `<keydef href="https://..." scope="external">` entries (e.g. "watch
+  this talk") referenced via `<topicref keyref="...">` — DITA-OT
+  resolves the keyref onto the topicref during preprocessing, same as
+  any other keyref, so by the time this plugin sees it it's an
+  ordinary external `<topicref>`. `<xref>`/`<link>` handling already
+  skipped `scope="external"`/`http(s)://` targets; the map-topicref
+  `contains`-edge walk had no equivalent check, so every external
+  topicref produced a `DITA2GRAPH010W` "unresolved topicref target" —
+  there was never a local topic for it to be, so this was noise, not a
+  real gap. Fixed with a shared `isExternal` check used by both code
+  paths — dozens of false-positive warnings gone, zero change to real
+  unresolved-reference detection.
+
+Both are exactly the kind of gap only real content surfaces — neither
+pattern (a template's unfilled placeholder id reused across dozens of
+copy-pasted topics; an external-link keydef) exists in this project's
+own hand-built fixtures, and both are common enough in real,
+multi-contributor DITA corpora that a tool claiming real-dataset
+readiness needs to handle them without losing data or crying wolf.
+
+**A fourth round of live MCP testing** (four more `claude -p` sessions
+against a bundle rebuilt from `dita-ot/docs`, four different questions
+— PDF prerequisites, impact analysis on the logging topic,
+`validate_bundle` on demand, Markdown-support search/summary) reconfirmed
+every fix above holds under varied, undirected real usage: zero
+`topicId`/`id` parameter errors across all four, `validate_bundle`
+correctly reported the bundle as error-free. It also found one more
+real gap: a topic whose prose mentions the same keyref-based
+cross-reference several times (a glossary-style term used in multiple
+sentences) got one `requires`/`references` edge *per mention*, so
+`okf_validator`'s own "redundant link" check fired ~150 times across
+the corpus — one topic's `# Requires` section listed the same target
+four times over. Deduplicated by `(source, relation, target)` in
+`DitaModelExtractor`'s link-resolution pass — same "one edge per
+distinct source" discipline `generated-from` already followed — cutting
+the warning count roughly in half and eliminating every worst-offender
+file. (The remaining ones are a different, benign case: the same target
+reached via *two different relation types* — e.g. both `requires`,
+authored, and `generated-from`, via `conref` — which `okf_validator`
+still flags as "redundant" by raw link text alone; that's real,
+distinct information under different headings, not noise, so it's left
+alone rather than suppressed to satisfy a third-party validator's
+naive same-file link-uniqueness check.) Reverified live: `trace_
+dependencies` on the topic that used to show 13 duplicated entries now
+returns exactly 5, matching the deduplicated bundle file exactly.
+
+**A fifth live MCP session, clean.** One more `claude -p` run against a
+freshly rebuilt `dita-ot/docs` bundle, deliberately aimed at the
+heaviest fan-in case in the corpus: "Conref file for tasks" (topic id
+`ID` — the un-disambiguated first occurrence from the duplicate-id fix,
+Task type, the real conref source dozens of other task topics pull
+shared content from). 14 tool calls — `search_topics`,
+`find_related_topics`, `analyze_impact`, `explain_task`,
+`generate_summary`, `search_content`, `trace_dependencies` — zero
+errors, zero parameter mistakes. `analyze_impact` correctly reverse-
+traversed 45 direct edges (44 `generated-from` + 1 `contains`,
+confirmed directly against `graph.json`) out to 91 transitively
+affected concepts, and produced an accurate blast-radius answer. No new
+issues found this round — the fixes from the last several rounds (bare
+`ID` as a topic id, `topicId` naming, `BundleCache` holding correctly
+across a 14-call session, the deduplicated `generated-from`/`requires`
+edges) all held under a deliberately adversarial, high-fan-in query.
+
 ### Phase 2 — Core engine: OKF bundle generation
 
 `dita2graph-core` normalizes the model, writes a conformant `okf/`
@@ -74,11 +160,34 @@ DITA-OT's own `xtrf` source-trace attributes, no inference needed
 reference topic, with an ambiguous match dropped and logged rather than
 guessed, finding 15) are both inferred, downstream, in Rust.
 
-**Deferred to Phase 6+:** true canonical-node deduplication for
-`conref`/`conkeyref`-reused content (`generated-from` records
-provenance today, but doesn't yet collapse storage), incremental
-rebuild (source-hash keyed), and SQLite/RocksDB-backed storage (`query`
-currently reads `graph.json` directly).
+**Deferred to Phase 6+:** incremental rebuild (source-hash keyed) and
+SQLite/RocksDB-backed storage (`query` currently reads `graph.json`
+directly). Canonical-node deduplication for `conref`/`conkeyref`-reused
+content is done, see Phase 6+ below.
+
+**Found and fixed for real-dataset usability (post-`v0.1.0`):**
+`infer_related_to` (`relations.rs`) was an unconditional O(n²) sweep
+over every topic pair, flagged in its own doc comment as "fine for the
+corpus sizes this scaffold targets; revisit... if that stops being
+true" — exactly the kind of thing meant to be revisited once tested
+against real corpus sizes, not before. Rewritten around a `product ->
+topic indices` bucket index (built once, O(n)) so a topic is only ever
+compared against others that actually share a `product` value, not
+every topic in the corpus regardless of overlap; the apply phase also
+moved from an O(edges × n) linear `find()` per edge to an O(edges)
+id-index lookup. Verified empirically, not just reasoned about: a
+synthetic 5,000-topic corpus with a realistic tag-like `product` spread
+(300 distinct values) completes the whole `build` — inference, writing
+5,000 concept files, the RAG index, validation — in ~1.1s; the genuine
+degenerate worst case (all 5,000 topics sharing one `product` value,
+producing 24,995,000 edges — a corpus where `product` carries no
+distinguishing information at all) takes ~2m10s, which is inherent to
+that case's actual output size, not a complexity regression. Verified
+correct with a dedicated bucketing test (two separate product groups
+plus an unrelated topic — every within-group pair found, zero
+cross-group edges) alongside the existing suite, all deterministic
+(`BTreeMap`/`BTreeSet` throughout, matching the old loop's edge order
+exactly).
 
 ### Phase 3 — MCP server
 
@@ -95,6 +204,149 @@ or via `--config <mcp-server.toml>` (written by `dita2graph-core build
 they'd expose is already reachable through the tool set above, so this
 hasn't blocked real use, but the gap is real and documented, not
 assumed away.
+
+**Found and fixed for real-dataset usability (post-`v0.1.0`):** every
+`tools/call` was independently reopening and reparsing `graph.json`,
+plus (per whichever tool) `rag/chunks.jsonl` and each concept file it
+touched, from scratch — harmless against a small fixture, but a real
+agent session against a real, sizeable bundle issues many tool calls
+against the same data, and `search_topics` alone reads every topic's
+concept file on every call just to display titles. `BundleCache`
+(`mcp/dita2graph-mcp/src/bundle.rs`) now holds one `BundleReader` for
+the server's process lifetime, reopening only when `graph.json`'s mtime
+shows the bundle actually changed (a mid-session rebuild), and falling
+back to the last-loaded bundle rather than failing a call outright if
+that reopen catches the rebuild mid-write. `BundleReader` itself caches
+per-id concept reads and the parsed `rag/chunks.jsonl` (`Rc`-shared, not
+deep-cloned, on every cache hit) for its own lifetime. Verified with
+unit tests proving the caches are real (editing a file on disk after
+the first read doesn't change what a second call on the same reader
+returns) and that reload/fallback behavior is correct, plus a live
+multi-call session against a DITA-OT-built bundle.
+
+A code review after the fact caught a follow-up gap in the staleness
+check itself, since fixed: `dita2graph-core build` writes `graph.json`
+(via `write_bundle`, last, after every concept file) and rewrites
+`rag/chunks.jsonl` (via `write_rag_index`) as two separate steps, so
+fingerprinting `graph.json`'s mtime alone meant a `get()` landing in
+that window could permanently cache a stale-or-not-yet-rewritten rag
+index until the *next* rebuild changed `graph.json` again.
+`BundleCache` now fingerprints both files' mtimes (still two cheap
+`stat()`s, not a corpus-wide scan) — verified with a regression test
+that reproduces the exact two-step-write race, plus a test proving a
+bundle with no `rag/` at all still caches normally rather than being
+treated as permanently stale.
+
+**Live Claude Code exit criterion, closed for real.** `docs/plugin-
+specification.md` §12 had flagged this as the one Phase 3 exit
+criterion left unmet: "a live Claude Code session, registered against
+[a] bundle's server, correctly answers ... end to end." Closed with a
+real headless session (`claude -p --mcp-config ...`, a genuinely
+separate Claude Code process, not this one) registered against a
+bundle built from `dita-ot/docs` — asked "How do I install a DITA-OT
+plugin?" with no other guidance, it independently called
+`search_topics`, `search_content`, `explain_task`, `generate_summary`,
+and `find_related_topics`, and produced a correct, tool-grounded answer.
+
+That live run is also what caught the next bug, not a scripted test:
+**`generate_summary`'s parameter was named `id`, the lone holdout —
+every other tool in the set (`find_related_topics`, `explain_task`,
+`trace_dependencies`, `search_content`, `analyze_impact`) takes
+`topicId`.** The live session called it with `topicId` first (the
+reasonable inference from the rest of the tool set) and got `missing
+required argument \`id\`` twice before trying `id` — a real usability
+bug a hand-written test with the "correct" parameter name baked in
+would never have caught. Renamed to `topicId` (schema and handler);
+`generate_summary` also had zero test coverage before this, now has
+two (a correctness case and one asserting the error message names the
+right parameter, so a caller that still gets it wrong can self-correct
+from the error alone). Reverified with a second live session, which
+called it correctly on the first try.
+
+**Reverified again with a third, different live session** (a different
+question — "summarize the troubleshooting topic and what's related to
+it" — no tool named, and a fresh bundle rebuilt from the same corpus)
+specifically to confirm the `topicId` fix holds under different, less
+directed usage. It did: 17 tool calls across a much deeper exploration
+(the agent pulled summaries for every related sub-topic and traversed
+a second hop of relations), zero `id`/`topicId` parameter errors. That
+run surfaced one more real, if smaller, friction point: `search_topics`
+displays a duplicate-disambiguated id (`DITA2GRAPH070W`, Phase 1 above)
+as `[ID--topics-troubleshooting-overview.dita]`, and the agent
+reasonably but wrongly guessed the bare `topics-troubleshooting-
+overview.dita` tail, hitting "no concept file found" before
+self-correcting via `search_content`. Fixed with a `suggest_id` check
+in `BundleReader::read_concept`: when a missing id is exactly the
+undisambiguated tail of exactly one real id, the error now says so
+(`did you mean \`ID--...\`?`) — never fires on an ambiguous match,
+same "don't guess" discipline as `relations.rs`'s `applies-to`
+inference. Reverified with a fourth live session, same question: the
+same wrong first guess now self-corrects in one call instead of two,
+confirmed directly in the transcript.
+
+**No tool exposed a topic's own body text — found asking a content
+question against this project's own `sample-docs/` test fixture, not
+the imported corpus.** A live session asked "what are the install
+steps, and what must be configured first" against the `sample-docs`
+bundle. Every tool it had access to fell short of the actual prose:
+`explain_task` fetched a topic's body via `read_concept` and threw it
+away (`let (frontmatter, _body) = ...`) — title, one-sentence
+`shortdesc`, and relations only; `search_content` returned title/id/
+score for every match but never *what* matched; `generate_summary` was
+title + description only. The only tool that surfaced any body text at
+all was `analyze_impact`'s excerpts — and only for topics *affected by*
+the one asked about, not the topic's own content. The session ended up
+explicitly stating the graph "doesn't expose the individual numbered
+install steps as separate indexed content" — accurate, and a real gap:
+"what does this topic actually say" had no first-class answer anywhere
+in the tool set.
+
+Fixed in two places, both reusing `rag/chunks.jsonl`'s already-cached,
+already-clean chunk text (the same source `analyze_impact` excerpts
+from) rather than re-deriving anything from a concept file's *rendered*
+markdown (which has its own `# Summary`/`# Content` headings mixed in,
+not clean prose worth excerpting directly): `search_content` now
+includes a 200-character excerpt under every hit, and `explain_task`
+now includes a 300-character excerpt of the topic's own body.
+Reverified live, same question, same bundle: `explain_task` on the
+install task now directly returns "Download the installer package...
+Run the installer... Verify the installation..." — the agent answered
+correctly in 6 tool calls (down from a much longer, `analyze_impact`-
+routed workaround the first time) and explicitly noted where its own
+300-character excerpt cut off mid-sentence, rather than fabricating
+past it. Adds coverage for two tools that had none before this
+(`explain_task` had zero tests; `search_content` had none for its
+excerpt content specifically) — 39/39 `dita2graph-mcp` tests pass.
+
+**A final round, and a real regression the last fix introduced.**
+Two more live sessions against the real `dita-ot/docs` bundle asked
+genuine content questions ("what does the documentation say about
+migrating Ant builds", "what does it say about project files"). The
+first attempt used `--allowedTools` listing only the `dita2graph`
+tools, expecting that to sandbox the session to MCP-only — it doesn't;
+`--allowedTools` only auto-approves those tools, it doesn't block
+others, and the session fell back to `Bash`/`Read` against the actual
+DITA-OT source on disk for parts of both answers. Redone properly with
+`--disallowedTools` blocking `Bash`/`Read`/`Glob`/`Grep`/etc. to force
+genuine MCP-only usage, which is what a real hosted MCP client (no
+filesystem access at all) would look like anyway.
+
+That run surfaced a real regression from the excerpt fix directly
+above: an unscoped or broad `search_content` query, now with every hit
+carrying its own excerpt, returned 50+ KB of output on the real corpus
+— past what a real MCP client renders inline, the exact "small, typed
+results, not raw file dumps" failure this tool set exists to avoid.
+Fixed by capping `search_content` to its top 15 matches by score, with
+a note when results were truncated (`"showing top 15 of N matches --
+narrow with topicId..."`) so the cap is visible, not a silent drop.
+Verified directly: the same query that produced 50+ KB before now
+returns 4.4 KB, correctly reporting 183 total matches. Reverified live
+with the same two questions, MCP-only: both produced accurate, fully
+sourced answers — real quotes from the actual documentation content,
+correctly attributed to their topics, with the agent explicitly noting
+where its own excerpt was truncated rather than fabricating past it.
+Adds a dedicated test (20 matching topics, only 15 plus the truncation
+note come back) — 40/40 `dita2graph-mcp` tests pass.
 
 ### Phase 4 — Gradle integration + CI hardening
 
@@ -131,7 +383,16 @@ artifacts attached.
 Not a single phase but a backlog, picked up item by item. Current
 state, most-complete first:
 
-1. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
+1. **Canonical-node deduplication** for `conref`/`conkeyref`-reused
+   content — ✅ done (topic-level granularity), verified against a live
+   DITA-OT 4.4 run. A reusing topic's OKF body and RAG chunk text now
+   exclude spans pulled in via `conref`/`conkeyref` (detected the same
+   way `generated-from` already was, via `xtrf` mismatches); that text
+   continues to live exactly once, in its source topic, with the
+   existing `generated-from` edge as the pointer. See
+   [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)
+   for the design, edge cases, and exit-criteria evidence.
+2. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
    extraction (same single pass as `okf/`), `search_content`'s
    graph-narrowed and keyword-frequency-ranked query routing, and
    `analyze_impact`'s reverse traversal with text excerpts are all
@@ -139,10 +400,6 @@ state, most-complete first:
    similarity ranking, as opposed to keyword overlap) remain — a
    heavier change to the OKF bundle format itself, listed as a
    direction under consideration, not a committed design.
-2. **Canonical-node deduplication** for `conref`/`conkeyref`-reused
-   content — `generated-from` already records *where* reused content
-   came from; collapsing it into a single stored node instead of
-   rendering it inline in every reusing topic is the remaining piece.
 3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
    storage** for the query index.
 4. **Full `<navref>` map composition** — would need this plugin to

@@ -3,7 +3,7 @@
 //! pattern in `docs/plugin-specification.md` §5.5 — swap `okf-query`'s
 //! generic graph/search calls for the DITA-relation-aware ones here.
 
-use crate::bundle::BundleReader;
+use crate::bundle::{BundleCache, BundleReader};
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -33,7 +33,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "explain_task",
-            "description": "Title, description, and requires/contains relations for a topic id.",
+            "description": "Title, description, a body excerpt, and requires/contains/applies-to relations for a topic id.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "topicId": { "type": "string" } },
@@ -54,7 +54,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "search_content",
-            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content. Pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -83,8 +83,8 @@ pub fn list() -> Vec<Value> {
             "description": "Title and description for a topic or map id.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"],
+                "properties": { "topicId": { "type": "string" } },
+                "required": ["topicId"],
             },
         }),
         json!({
@@ -95,17 +95,25 @@ pub fn list() -> Vec<Value> {
     ]
 }
 
-pub fn call(name: &str, arguments: &Value, bundle_root: &Path) -> Result<String> {
-    let bundle = BundleReader::open(bundle_root)?;
+/// Dispatches one `tools/call`. `validate_bundle` is deliberately
+/// special-cased ahead of `cache.get()`: it's meant to check the
+/// bundle's live on-disk state (`§2.5`/`§6.4`/`§10`), not go through the
+/// cached `BundleReader` at all -- and unlike every other tool here, it
+/// doesn't need `graph.json` to exist to do its job, so it shouldn't
+/// fail just because a `dita2graph-core build` hasn't produced one yet.
+pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<String> {
+    if name == "validate_bundle" {
+        return validate_bundle(cache.root());
+    }
+    let bundle = cache.get()?;
     match name {
-        "search_topics" => search_topics(&bundle, arguments),
-        "search_content" => search_content(&bundle, arguments),
-        "find_related_topics" => find_related_topics(&bundle, arguments),
-        "explain_task" => explain_task(&bundle, arguments),
-        "trace_dependencies" => trace_dependencies(&bundle, arguments),
-        "analyze_impact" => analyze_impact(&bundle, arguments),
-        "generate_summary" => generate_summary(&bundle, arguments),
-        "validate_bundle" => validate_bundle(bundle_root),
+        "search_topics" => search_topics(bundle, arguments),
+        "search_content" => search_content(bundle, arguments),
+        "find_related_topics" => find_related_topics(bundle, arguments),
+        "explain_task" => explain_task(bundle, arguments),
+        "trace_dependencies" => trace_dependencies(bundle, arguments),
+        "analyze_impact" => analyze_impact(bundle, arguments),
+        "generate_summary" => generate_summary(bundle, arguments),
         other => Err(anyhow!("unknown tool: {other}")),
     }
 }
@@ -164,8 +172,8 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
 
     let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
 
-    let mut scored: Vec<(i64, &str, &str, &str)> = Vec::new();
-    for chunk in &chunks {
+    let mut scored: Vec<(i64, &str, &str, &str, Option<String>)> = Vec::new();
+    for chunk in chunks.iter() {
         if let Some(allowed) = &allowed
             && !allowed.contains(&chunk.id)
         {
@@ -180,6 +188,16 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                 chunk.id.as_str(),
                 chunk.title.as_str(),
                 chunk.topic_type.as_str(),
+                // Found live: a real Claude Code session searched for
+                // content, got back title/id/score for every hit, and
+                // still had no way to see *what actually matched*
+                // without a second round trip -- and no other tool
+                // fills that gap either (explain_task/generate_summary
+                // only ever surface title + shortdesc, never body).
+                // This is the one place `search_content` can answer
+                // "what does this topic actually say" directly, so it
+                // should.
+                chunk.text.as_deref().map(|t| excerpt(t, 200)),
             ));
         }
     }
@@ -194,13 +212,39 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             None => format!("no content matched `{query}`"),
         });
     }
-    Ok(scored
+
+    // Capped at the top MAX_RESULTS matches -- found live: on a real,
+    // sizeable corpus, an unscoped or broad query matching dozens of
+    // topics, each now carrying its own excerpt (above), produced
+    // 50+ KB of output, well past what a real MCP client would render
+    // inline -- the exact "small, typed results, not raw file dumps"
+    // failure mode this whole tool set exists to avoid. The excerpts
+    // are what make results actually useful (see above), so the fix is
+    // capping result *count*, not dropping the excerpts back out.
+    // Narrowing scope with topicId is the documented way to see more of
+    // a specific area; a truncation note here tells the caller that
+    // option exists rather than silently hiding the rest.
+    const MAX_RESULTS: usize = 15;
+    let total = scored.len();
+    scored.truncate(MAX_RESULTS);
+
+    let mut out = scored
         .into_iter()
-        .map(|(score, id, title, topic_type)| {
-            format!("{title} ({topic_type}) [{id}] (score: {score})")
+        .map(|(score, id, title, topic_type, text_excerpt)| {
+            let mut line = format!("{title} ({topic_type}) [{id}] (score: {score})");
+            if let Some(text_excerpt) = text_excerpt {
+                line.push_str(&format!("\n  {text_excerpt}"));
+            }
+            line
         })
         .collect::<Vec<_>>()
-        .join("\n"))
+        .join("\n");
+    if total > MAX_RESULTS {
+        out.push_str(&format!(
+            "\n\n(showing top {MAX_RESULTS} of {total} matches -- narrow with topicId to see more of a specific area)"
+        ));
+    }
+    Ok(out)
 }
 
 /// Keyword-frequency relevance score across `terms` (already
@@ -288,6 +332,24 @@ fn explain_task(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         .unwrap_or("(no description)");
 
     let mut out = format!("Topic: {title} ({topic_id})\n{description}\n");
+    // Found live: a real Claude Code session asked what a task actually
+    // covers and had no way to see its own body text through this tool
+    // at all -- description above is just the shortdesc (one sentence,
+    // often absent), and `_body` from read_concept is the *rendered*
+    // concept file (its own "# Summary"/"# Content" headings included),
+    // not clean prose worth excerpting directly. `rag/chunks.jsonl`
+    // already holds this topic's clean body text -- the same source
+    // `search_content`/`analyze_impact` excerpt from -- so reuse that
+    // instead of re-deriving anything from the rendered markdown.
+    if let Some(chunk) = bundle
+        .rag_chunks()
+        .unwrap_or_default()
+        .iter()
+        .find(|c| c.id == topic_id)
+        && let Some(text) = chunk.text.as_deref()
+    {
+        out.push_str(&format!("\n{}\n", excerpt(text, 300)));
+    }
     for relation in ["requires", "contains", "applies-to"] {
         let edges = bundle.edges_from(topic_id, Some(relation));
         if !edges.is_empty() {
@@ -417,8 +479,20 @@ fn excerpt(text: &str, max_chars: usize) -> String {
     result
 }
 
+/// `topicId`, not `id` -- every other tool in this set that takes a
+/// concept id (`find_related_topics`, `explain_task`,
+/// `trace_dependencies`, `search_content`'s optional narrowing param,
+/// `analyze_impact`) names it `topicId`; this one used to be the lone
+/// `id` holdout. Found live, not by inspection: a real Claude Code
+/// session driving this server over MCP called `generate_summary` with
+/// `topicId` first (matching the rest of the tool set, the same way any
+/// agent would reasonably infer this tool's shape from the others) and
+/// got `missing required argument \`id\`` twice before it happened to
+/// try `id` -- a real, reproducible usability bug caught by watching
+/// live tool use, not something a hand-written test with the "correct"
+/// parameter name baked in would ever catch.
 fn generate_summary(bundle: &BundleReader, arguments: &Value) -> Result<String> {
-    let id = arg_str(arguments, "id")?;
+    let id = arg_str(arguments, "topicId")?;
     let (frontmatter, _) = bundle.read_concept(id)?;
     let title = frontmatter
         .get("title")

@@ -93,7 +93,34 @@ import java.util.function.Consumer;
  * refbody}/{@code glossdef}/generic {@code body}, per {@link
  * #bodyElementTag}) is also captured as whitespace-normalized plain text
  * -- markup stripped, nothing else cleaned up -- for both the OKF
- * bundle's body content and the RAG index (§4.4, §13.1).
+ * bundle's body content and the RAG index (§4.4, §13.1). A *block-level*
+ * subtree ({@code <p>}/{@code <step>}/{@code <note>}/{@code <li>}/etc.)
+ * pulled in via {@code conref}/{@code conkeyref} is excluded from that
+ * capture (canonical-node deduplication, {@code
+ * docs/dev/canonical-node-dedup-spec.md}): it's already fully
+ * represented in its source topic's own body, and this topic's {@code
+ * generated-from} edge to that source is the pointer, so duplicating the
+ * text here too would just inflate the bundle and RAG index with copies
+ * of identical content -- exactly the failure mode a heavily-reused real
+ * DITA corpus (shared warnings, boilerplate, common steps) would hit.
+ * A foreign *inline* element ({@link #INLINE_ELEMENTS}) is never
+ * excluded this way, even though it's still recorded for {@code
+ * generated-from} -- dropping a reused word or two out of the middle of
+ * an authored sentence would mangle the surrounding prose, not cleanly
+ * remove a self-contained chunk of it the way a whole excluded {@code
+ * <p>}/{@code <step>} does.
+ *
+ * <p>A topic's graph node id normally comes straight from its own {@code
+ * id} attribute -- but two different topics sharing the same {@code id}
+ * (confirmed against a real, large third-party corpus: 33 separate
+ * topics all carrying the literal, unfilled authoring-template
+ * placeholder {@code id="ID"}, plus several genuine {@code id} reuses
+ * across near-duplicate topics) would otherwise collapse onto the same
+ * OKF concept file path, the second one written silently overwriting
+ * the first -- real data loss a small hand-built fixture would never
+ * surface. Detected and disambiguated (the later topic's own id plus a
+ * source-path-derived suffix), logged as {@code DITA2GRAPH070W} naming
+ * both files, never silently dropped.
  *
  * <p>{@code maxDepth} (§2.3's {@code args.dita2graph.depth}) limits how
  * many levels of *real* map containment the {@code contains} edges
@@ -233,6 +260,18 @@ final class DitaModelExtractor {
         Map<String, TopicNode> topicsByPath = new LinkedHashMap<>();
         List<RawLink> rawLinks = new ArrayList<>();
         List<RawGeneratedFrom> rawGeneratedFrom = new ArrayList<>();
+        // Duplicate-topic-id guard (confirmed against a real, large
+        // third-party corpus, dita-ot/docs: 33 separate topics sharing
+        // the literal id "ID" -- an unfilled authoring-template
+        // placeholder, common enough in real DITA content that a small
+        // hand-built fixture would never surface it). Without this, two
+        // topics sharing an id collapse into one OKF concept file path
+        // (id.okf_type()'s bundle_dir + "/" + id + ".md") and the second
+        // one written silently overwrites the first -- real data loss,
+        // no error, no warning. `Map<id, path of the topic that
+        // currently owns it>` so a collision's warning can name both
+        // files, not just announce that *a* collision happened.
+        Map<String, String> topicIdOwners = new HashMap<>();
         for (JobFile file : files) {
             if (!"dita".equals(file.format)) {
                 continue;
@@ -242,6 +281,21 @@ final class DitaModelExtractor {
 
             TopicNode topic = new TopicNode();
             topic.id = attr(root, "id", stem(file.path));
+            String existingOwner = topicIdOwners.putIfAbsent(topic.id, file.path);
+            if (existingOwner != null) {
+                String original = topic.id;
+                String disambiguated = original + "--" + file.path.replace('/', '-');
+                int suffix = 2;
+                while (topicIdOwners.putIfAbsent(disambiguated, file.path) != null) {
+                    disambiguated = original + "--" + file.path.replace('/', '-') + "-" + suffix;
+                    suffix++;
+                }
+                topic.id = disambiguated;
+                warn.accept("DITA2GRAPH070W: " + file.path + " has the same id (\"" + original
+                        + "\") as " + existingOwner + " -- using \"" + disambiguated
+                        + "\" for this topic's graph node instead of silently overwriting "
+                        + existingOwner + "'s OKF concept file");
+            }
             topic.topicType = mapTopicType(root.getTagName());
             if ("topic".equals(topic.topicType) && !root.getTagName().equals("topic")) {
                 // Plain ASCII: Ant's console logging mangles "§" into "?"
@@ -254,8 +308,6 @@ final class DitaModelExtractor {
             topic.title = childText(root, "title", topic.id);
             String shortdesc = directChildText(root, "shortdesc");
             topic.shortdesc = shortdesc.isEmpty() ? null : shortdesc;
-            String body = bodyText(root, topic.topicType);
-            topic.body = body.isEmpty() ? null : body;
             topic.audience.addAll(splitAttr(root, "audience"));
             topic.product.addAll(splitAttr(root, "product"));
             topic.sourceFile = file.path;
@@ -279,32 +331,16 @@ final class DitaModelExtractor {
             }
             topic.cmdUicontrols.addAll(collectDistinctText(cmdUicontrolElements));
 
-            // generated-from (finding 15): any descendant element whose
-            // xtrf points at a *different* file than this topic's own
-            // was pulled in via conref/conkeyref -- DITA-OT replaces a
-            // conref'd/conkeyref'd element wholesale with the referenced
-            // one, inheriting *its* xtrf, while a plain keyref-resolved
-            // <keyword>/<ph> (variable substitution, not reuse) keeps its
-            // own xtrf unchanged (confirmed directly, not assumed --
-            // see docs/dev/phase-0-findings.md finding 15). One edge per
-            // distinct source file, not one per reused element.
+            // generated-from (finding 15) and body-text extraction
+            // (canonical-node dedup, docs/dev/canonical-node-dedup-spec.md)
+            // in one combined walk of the topic instead of two separate
+            // full-topic scans -- both need the same xtrf-mismatch check
+            // at every element, so they share a single traversal rather
+            // than paying for it twice per topic.
             Set<String> generatedFromSeen = new HashSet<>();
-            for (Element el : descendants(root, "*")) {
-                if (isInsideRelatedLinks(el) || "related-links".equals(el.getNodeName())) {
-                    continue;
-                }
-                String xtrf = el.getAttribute("xtrf");
-                if (xtrf.isEmpty()) {
-                    continue;
-                }
-                String fromPath = ditaSrcToPath.get(xtrf);
-                if (fromPath == null || fromPath.equals(file.path)) {
-                    continue;
-                }
-                if (generatedFromSeen.add(fromPath)) {
-                    rawGeneratedFrom.add(new RawGeneratedFrom(file.path, fromPath));
-                }
-            }
+            String body = extractBodyAndGeneratedFrom(
+                    root, topic.topicType, file.path, ditaSrcToPath, generatedFromSeen, rawGeneratedFrom);
+            topic.body = body.isEmpty() ? null : body;
 
             for (Element xref : descendants(root, "xref", "link")) {
                 if (isInsideRelatedLinks(xref)) {
@@ -323,9 +359,7 @@ final class DitaModelExtractor {
                     continue;
                 }
                 String href = xref.getAttribute("href");
-                String scope = xref.getAttribute("scope");
-                if (href.isEmpty() || href.startsWith("http://") || href.startsWith("https://")
-                        || "external".equals(scope) || "peer".equals(scope)) {
+                if (href.isEmpty() || isExternal(href, xref.getAttribute("scope"))) {
                     continue;
                 }
                 String fragmentless = href.contains("#") ? href.substring(0, href.indexOf('#')) : href;
@@ -361,6 +395,20 @@ final class DitaModelExtractor {
             }
             container.links.add(new Link("contains", target.id));
         }
+        // Deduplicated by (source, relation, target) -- confirmed against
+        // a real, large third-party corpus (dita-ot/docs): prose that
+        // mentions the same keyref-based cross-reference several times
+        // (e.g. a glossary-style term referenced from multiple sentences
+        // in one topic) produced one RawLink per mention, so the same
+        // target ended up repeated under one topic's "# Requires"/
+        // "# References" heading up to four times over -- real, visible
+        // noise (`okf_validator`'s own "redundant link" warning fired
+        // ~150 times across that corpus) that a small hand-built fixture
+        // never surfaces, since none of them repeat the same
+        // xref/keyref mention within one topic. One edge per distinct
+        // (source, relation, target), same "one edge per distinct
+        // source" discipline `generated-from` below already follows.
+        Set<String> seenLinks = new HashSet<>();
         for (RawLink raw : rawLinks) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
             TopicNode target = topicsByPath.get(raw.href);
@@ -371,7 +419,11 @@ final class DitaModelExtractor {
             if (source == target) {
                 continue;
             }
-            source.links.add(new Link(raw.hasKeyref ? "requires" : "references", target.id));
+            String relation = raw.hasKeyref ? "requires" : "references";
+            if (!seenLinks.add(raw.sourceTopicPath + ' ' + relation + ' ' + target.id)) {
+                continue;
+            }
+            source.links.add(new Link(relation, target.id));
         }
         for (RawGeneratedFrom raw : rawGeneratedFrom) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
@@ -479,6 +531,32 @@ final class DitaModelExtractor {
                         walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                         break;
                     }
+                    if (isExternal(href, child.getAttribute("scope"))) {
+                        // A topicref pointing outside the corpus entirely
+                        // -- most commonly a keyref-resolved <keydef
+                        // href="https://..." scope="external"> (a
+                        // "related talk"/"further reading" entry, DITA-OT
+                        // resolves the keyref onto the topicref itself
+                        // during preprocessing before this class ever
+                        // sees it), confirmed directly against a real,
+                        // large third-party corpus (dita-ot/docs'
+                        // conference-talk maps) where this pattern is
+                        // common and previously produced one
+                        // DITA2GRAPH010W "unresolved topicref target" per
+                        // external link -- real noise, not a real gap:
+                        // there was never a local topic for it to be. No
+                        // contains edge, no warning, same treatment
+                        // <xref>/<link> already give an external target
+                        // below. Still walked (not skipped) for any
+                        // nested *local* topicrefs, same as
+                        // topichead/topicgroup -- an external topicref
+                        // isn't a real container any more than they are,
+                        // so descendants keep the same containerPath/
+                        // level rather than treating this href as a new
+                        // container level.
+                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        break;
+                    }
                     if (level > maxDepth) {
                         // Beyond args.dita2graph.depth (§2.3): the topic
                         // itself is still extracted as a node (Pass 2
@@ -531,6 +609,29 @@ final class DitaModelExtractor {
                     break;
             }
         }
+    }
+
+    /**
+     * Whether {@code href}/{@code scope} point outside this corpus
+     * entirely -- a bare {@code http://}/{@code https://} URL, or an
+     * explicit {@code scope="external"}/{@code scope="peer"} (the DITA
+     * way of saying "don't resolve this within the current map/topic
+     * set" even for an otherwise plausible-looking relative {@code
+     * href}). Shared between {@code <xref>}/{@code <link>} handling and
+     * {@code <topicref>} containment: both need the same "is this
+     * pointing at real content in this corpus, or somewhere else
+     * entirely" check, and a {@code <topicref>} carrying it is just as
+     * common as an {@code <xref>} carrying it -- most often a {@code
+     * keyref}-resolved {@code <keydef href="https://..."
+     * scope="external">} (a "related talk"/"further reading" entry),
+     * which DITA-OT resolves onto the {@code topicref} itself during
+     * preprocessing before this class ever sees it (confirmed directly
+     * against a real, large third-party corpus where this pattern is
+     * common).
+     */
+    private static boolean isExternal(String href, String scope) {
+        return href.startsWith("http://") || href.startsWith("https://")
+                || "external".equals(scope) || "peer".equals(scope);
     }
 
     /** Whether {@code el} has a {@code <related-links>} ancestor (see the caller). */
@@ -623,22 +724,130 @@ final class DitaModelExtractor {
     }
 
     /**
-     * The topic's body element's full text content, markup stripped and
-     * whitespace collapsed to single spaces -- the "cleaned text" input
-     * for the RAG index (docs/plugin-specification.md §13.1). {@code
-     * shortdesc} is a separate sibling element in DITA and is not
-     * included here (see {@link #directChildText} for that).
+     * DITA phrase/inline elements (the "inline" content model, as opposed
+     * to block containers like {@code <p>}/{@code <step>}/{@code <note>}/
+     * {@code <li>}) -- canonical-node dedup (below) never excludes one of
+     * these from body text even when its {@code xtrf} is foreign, per
+     * {@code docs/dev/canonical-node-dedup-spec.md}'s v1 policy: excluding
+     * a reused word or two out of the *middle* of an authored sentence
+     * (e.g. {@code Click the <ph conref="...">Save</ph> button.}) would
+     * mangle the surrounding prose, not just drop a self-contained chunk
+     * of it the way excluding a whole {@code <p>}/{@code <step>} does.
+     * Deliberately conservative (a known, common subset of the DITA base
+     * phrase domain, not exhaustive) -- an unrecognized element defaults
+     * to block behavior (excludable), the safer direction: worst case a
+     * rare inline element still gets dropped like today, not a garbled
+     * sentence from treating an actual block wrapper as inline.
      */
-    private static String bodyText(Element root, String topicType) {
-        String tag = bodyElementTag(topicType);
-        for (Element child : directChildren(root, tag)) {
-            String text = child.getTextContent();
-            if (text == null) {
-                return "";
-            }
-            return text.trim().replaceAll("\\s+", " ");
+    private static final Set<String> INLINE_ELEMENTS = Set.of(
+            "ph", "b", "i", "u", "tt", "sup", "sub", "cite", "q", "term",
+            "keyword", "wintitle", "menucascade", "shortcut", "uicontrol",
+            "filepath", "userinput", "systemoutput", "msgnum", "msgph",
+            "varname", "apiname", "parmname", "option", "cmdname", "envvar",
+            "codeph", "synph", "tm", "indexterm", "indextermref", "xref",
+            "image", "data", "text", "numcharref", "textentity");
+
+    /**
+     * One combined walk of the whole topic doing two things that both
+     * need the same per-element {@code xtrf}-mismatch check, instead of
+     * two separate full-topic scans: (1) {@code generated-from} detection
+     * (finding 15) -- any element whose {@code xtrf} points at a
+     * different source file than {@code ownPath} was pulled in via
+     * {@code conref}/{@code conkeyref}, recorded once per distinct
+     * source, anywhere in the topic (title/shortdesc/prolog included, not
+     * just the body); (2) the body element's own text, markup stripped
+     * and whitespace collapsed to single spaces -- the "cleaned text"
+     * input for both the OKF bundle body and the RAG index
+     * (docs/plugin-specification.md §13.1, §4.4). {@code shortdesc} is a
+     * separate sibling element in DITA and is not included here (see
+     * {@link #directChildText} for that).
+     *
+     * <p>(2)'s "own" excludes any *block-level* subtree pulled in via
+     * {@code conref}/{@code conkeyref} -- canonical-node deduplication
+     * ({@code docs/dev/canonical-node-dedup-spec.md}): that text is
+     * already fully represented in its source topic's own body, reachable
+     * from this topic via the {@code generated-from} edge ({@link
+     * RawGeneratedFrom}) this same walk just recorded, so duplicating it
+     * here too would inflate both the OKF bundle and RAG chunk text with
+     * copies of identical content -- the exact real-dataset problem
+     * heavily-reused DITA content (shared warnings, boilerplate, common
+     * steps) creates. A foreign {@link #INLINE_ELEMENTS} element is
+     * never excluded from (2), even though it's still recorded for (1) --
+     * see that field's own docs.
+     */
+    private static String extractBodyAndGeneratedFrom(Element root, String topicType, String ownPath,
+            Map<String, String> ditaSrcToPath, Set<String> generatedFromSeen, List<RawGeneratedFrom> rawGeneratedFrom) {
+        Element bodyRoot = null;
+        for (Element child : directChildren(root, bodyElementTag(topicType))) {
+            bodyRoot = child;
+            break;
         }
-        return "";
+        StringBuilder bodyText = new StringBuilder();
+        walkGeneratedFromAndBodyText(root, ownPath, ditaSrcToPath, bodyRoot, false, false,
+                generatedFromSeen, rawGeneratedFrom, bodyText);
+        return bodyText.toString().trim().replaceAll("\\s+", " ");
+    }
+
+    /**
+     * @param insideBody         whether {@code el} is {@code bodyRoot} or
+     *                           one of its descendants -- text only
+     *                           accumulates within the body, but
+     *                           generated-from detection runs everywhere.
+     * @param textExcludedByAncestor
+     *                           whether an ancestor of {@code el} was
+     *                           itself a foreign, non-inline (block)
+     *                           element -- once true, stays true for
+     *                           every descendant regardless of that
+     *                           descendant's own {@code xtrf}: DITA-OT
+     *                           replaces a {@code conref}'d/{@code
+     *                           conkeyref}'d element wholesale with the
+     *                           referenced one (inheriting its whole
+     *                           subtree's {@code xtrf}, finding 15), so
+     *                           there's no "partially own, partially
+     *                           foreign" subtree to worry about
+     *                           splitting -- but the walk still descends
+     *                           into it regardless, for generated-from
+     *                           coverage, matching the previous
+     *                           full-topic scan's exhaustive semantics
+     *                           (a second, distinct foreign source
+     *                           nested inside an already-excluded
+     *                           subtree, however unlikely, must still be
+     *                           detected).
+     */
+    private static void walkGeneratedFromAndBodyText(Element el, String ownPath, Map<String, String> ditaSrcToPath,
+            Element bodyRoot, boolean insideBody, boolean textExcludedByAncestor,
+            Set<String> generatedFromSeen, List<RawGeneratedFrom> rawGeneratedFrom, StringBuilder bodyText) {
+        if (isInsideRelatedLinks(el) || "related-links".equals(el.getNodeName())) {
+            return;
+        }
+        boolean nowInsideBody = insideBody || el == bodyRoot;
+
+        boolean foreign = false;
+        String xtrf = el.getAttribute("xtrf");
+        if (!xtrf.isEmpty()) {
+            String fromPath = ditaSrcToPath.get(xtrf);
+            if (fromPath != null && !fromPath.equals(ownPath)) {
+                foreign = true;
+                if (generatedFromSeen.add(fromPath)) {
+                    rawGeneratedFrom.add(new RawGeneratedFrom(ownPath, fromPath));
+                }
+            }
+        }
+
+        boolean excludeThisElementText = foreign && !INLINE_ELEMENTS.contains(el.getNodeName());
+        boolean textExcluded = textExcludedByAncestor || excludeThisElementText;
+
+        NodeList children = el.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node n = children.item(i);
+            if (n.getNodeType() == Node.ELEMENT_NODE) {
+                walkGeneratedFromAndBodyText((Element) n, ownPath, ditaSrcToPath, bodyRoot, nowInsideBody,
+                        textExcluded, generatedFromSeen, rawGeneratedFrom, bodyText);
+            } else if (nowInsideBody && !textExcluded
+                    && (n.getNodeType() == Node.TEXT_NODE || n.getNodeType() == Node.CDATA_SECTION_NODE)) {
+                bodyText.append(n.getTextContent());
+            }
+        }
     }
 
     private static String bodyElementTag(String topicType) {

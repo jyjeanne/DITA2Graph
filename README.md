@@ -1,5 +1,7 @@
 # DITA2Graph
 
+![DITA2Graph overview](docs/images/dita2graph-overview.png)
+
 A DITA-OT plugin that converts DITA content into a semantic knowledge
 graph (using [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 v0.2 as the representation) and exposes it to AI agents over MCP.
@@ -9,6 +11,8 @@ Phase-by-phase status and what's next: **[`Roadmap.md`](Roadmap.md)**.
 The evidence behind that status — what was actually tested against a
 live DITA-OT 4.4, what broke, and how it was fixed:
 **[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**.
+Component, class, activity, and sequence diagrams of the system:
+**[`docs/architecture.md`](docs/architecture.md)**.
 
 ## Status
 
@@ -54,6 +58,37 @@ are automated: run the **Tag release** workflow from the Actions tab
 (`workflow_dispatch`, takes a version number) to tag, which triggers
 **Release** to test, build, and publish a GitHub Release with the Rust
 binaries and the DITA-OT plugin zip attached.
+
+## Workflow
+
+From native DITA content to AI-ready knowledge graphs and MCP-powered
+intelligent applications:
+
+![DITA2Graph complete workflow](docs/images/dita2graph-workflow.png)
+
+### Conversion pipeline (UML activity diagram)
+
+```mermaid
+flowchart TD
+    A([Start: DITA Repository<br/>maps, topics, keys, conrefs]) --> B["DITA-OT preprocessing<br/>resolves maps, keys, conrefs"]
+    B --> C["Java ExtractTask<br/>parses resolved output into the normalized model"]
+    C --> D["Rust dita2graph-core<br/>normalize · infer relations · enrich"]
+    D --> E{"okf_validator +<br/>secret-leak scan"}
+    E -- fails --> F([Build fails<br/>errors reported]):::fail
+    E -- passes --> G["OKF bundle<br/>okf/ nodes, edges, metadata"]
+    D --> H["RAG content index<br/>rag/chunks.jsonl, rag/metadata.json"]
+    G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
+    H --> I
+    I --> J["MCP tools<br/>search_topics · search_content · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle"]
+    J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
+
+    classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
+```
+
+For the system's component boundaries, the Rust type architecture, the
+parsing/graph-generation/incremental-update workflows, and an MCP
+request/response walkthrough, see
+**[`docs/architecture.md`](docs/architecture.md)**.
 
 ## Toolchain requirements
 
@@ -117,12 +152,12 @@ Once registered, an agent can call:
 | Tool | What it does |
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
-| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
+| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic |
-| `explain_task(topicId)` | Title, description, and key relations for a topic |
+| `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
 | `analyze_impact(topicId, depth?)` | Reverse, transitive traversal — everything that would be affected by changing this topic, with content excerpts (§13.1) |
-| `generate_summary(id)` | Title + description for a topic or map |
+| `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.
@@ -141,6 +176,7 @@ DITA-OT and invoke it directly — see `docs/plugin-specification.md` §15
 ```
 Roadmap.md                      # phase-by-phase status and what's next
 docs/plugin-specification.md    # design spec, source of truth
+docs/architecture.md            # component/class/activity/sequence diagrams
 docs/dev/phase-0-findings.md    # spike results and decisions made from them
 core/dita2graph-core/           # Rust: normalized model, OKF writer, CLI (§3)
 mcp/dita2graph-mcp/             # Rust: MCP server (§5)
