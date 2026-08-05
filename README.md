@@ -124,6 +124,43 @@ of tens of tokens each (§9.2) — instead of reading raw resolved
 XML/HTML output or grepping the repo. Useful for onboarding an agent
 (or a new writer) into a doc set it hasn't seen before.
 
+## Use cases for technical writers
+
+The graph isn't only for AI agents acting on their own — it's just as
+useful queried by a writer (directly, or through Claude Code as an
+authoring assistant) during content maintenance and pre-publish review:
+
+### 1. Content reuse and provenance auditing
+
+`generated-from` edges are derived straight from DITA-OT's own `xtrf`
+source-trace attributes, so they distinguish a real `conref`/`conkeyref`
+reuse from an ordinary `keyref` variable substitution. Before editing a
+topic that looks like reused content, a writer can confirm whether
+they're looking at the canonical source or a pulled-in copy — editing
+the wrong one is a classic way DITA content sets drift out of sync.
+(Note: the graph tracks this provenance today but doesn't yet collapse
+duplicate storage into one canonical node — that's an open Phase 6+ item,
+see `docs/dev/canonical-node-dedup-spec.md`.)
+
+### 2. Safe restructuring — what references this before you rename, merge, or delete it
+
+The same `analyze_impact`/`find_related_topics`/`trace_dependencies`
+tools used for code-impact analysis answer a writer's version of the
+same question: "if I merge these two topics" or "if I retire this
+concept, what else in the doc set points to it?" — a deterministic
+answer from declared `requires`/`references`/`related-to` edges instead
+of manually grepping cross-references across the map.
+
+### 3. Pre-publish review — audience/product scoping and structural QA
+
+The DITAVAL-driven public/internal bundle split (§6.1) lets a writer
+build and inspect exactly what a given audience or product variant of
+the docs will actually contain before it ships — catching content that
+leaked across a filtering boundary it shouldn't have. `validate_bundle()`
+complements this by re-running `okf-validator` and the secret-leak scan
+on demand, catching broken cross-references or accidentally-committed
+secrets in the same pre-publish pass.
+
 ## Toolchain requirements
 
 Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
