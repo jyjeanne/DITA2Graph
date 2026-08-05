@@ -13,6 +13,9 @@ live DITA-OT 4.4, what broke, and how it was fixed:
 **[`docs/dev/phase-0-findings.md`](docs/dev/phase-0-findings.md)**.
 Component, class, activity, and sequence diagrams of the system:
 **[`docs/architecture.md`](docs/architecture.md)**.
+A complete install-to-query walkthrough, on both the bundled sample
+project and your own existing DITA project:
+**[`docs/tutorial.md`](docs/tutorial.md)**.
 
 ## Status
 
@@ -172,6 +175,11 @@ at the repo root pins the Java requirement for tooling that reads it.
 subproject's README).
 
 ## Quickstart (what works today)
+
+For the terse version, keep reading. For a full walkthrough — including
+installing the plugin on your own existing DITA project and a worked
+set of example questions to ask over MCP — see
+**[`docs/tutorial.md`](docs/tutorial.md)**.
 
 ```bash
 # Build the Rust workspace (rustup fetches the pinned toolchain automatically)
