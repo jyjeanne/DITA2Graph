@@ -90,6 +90,40 @@ parsing/graph-generation/incremental-update workflows, and an MCP
 request/response walkthrough, see
 **[`docs/architecture.md`](docs/architecture.md)**.
 
+## Use cases with AI tools (Claude Code)
+
+Once `dita2graph-mcp` is registered with an MCP-capable client (see
+[Quickstart](#quickstart-what-works-today)), these are the most useful
+ways to put it to work:
+
+### 1. Impact analysis before touching a doc set
+
+`analyze_impact(topicId)` runs a reverse, transitive graph traversal —
+"everything that depends on this topic" — with a text excerpt per
+affected concept. Ask Claude Code "what breaks if I deprecate the
+`authentication` concept?" and it gets a deterministic answer from real
+`requires`/`applies-to` edges instead of a guess. This is the standout
+case because it's something plain-text RAG can't do at all — there's no
+dependency graph in a vector index (§9.1 of the spec).
+
+### 2. Grounded documentation Q&A that doesn't hallucinate
+
+`search_content` is graph-narrowed and keyword-ranked over the actual
+`rag/` text, and can be scoped to a topic's neighborhood
+(`topicId`/`relation`/`depth`). Chained with `find_related_topics`, an
+agent answering "how do I configure X?" gets a typed traversal (task →
+requires → concept/reference) with citable topic IDs, instead of
+best-effort nearest-neighbor chunks that may mash together unrelated
+sections.
+
+### 3. Fast doc-set orientation for an agent dropped into an unfamiliar corpus
+
+`search_topics` → `explain_task` → `generate_summary` lets an agent map
+a large DITA project in a handful of cheap, typed calls — on the order
+of tens of tokens each (§9.2) — instead of reading raw resolved
+XML/HTML output or grepping the repo. Useful for onboarding an agent
+(or a new writer) into a doc set it hasn't seen before.
+
 ## Toolchain requirements
 
 Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
