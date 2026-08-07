@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing vX.Y.Z tag to build and release (e.g. v0.2.0)"
+        description: "Existing tag to build and release, with or without the leading v (e.g. v0.2.0 or 0.2.0)"
         required: true
 
 permissions:
@@ -50,7 +50,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Accept the tag input with or without a leading v/V --
+            # the field asks for "vX.Y.Z" but a bare "X.Y.Z" is just
+            # as easy to type, and previously failed validation
+            # outright instead of just being normalized.
             TAG="${{ inputs.tag }}"
+            TAG="${TAG#v}"
+            TAG="${TAG#V}"
+            TAG="v$TAG"
           else
             TAG="${{ github.ref_name }}"
           fi
