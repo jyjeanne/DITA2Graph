@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to tag, without the leading v (e.g. 0.2.0)"
+        description: "Version to tag, with or without the leading v (e.g. 0.2.0 or v0.2.0)"
         required: true
       message:
         description: "Tag annotation message (optional; defaults to \"vX.Y.Z\")"
@@ -50,10 +50,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Accept the version input with or without a leading v/V -- the
+      # field's description asks for it bare, but a v0.1.1-shaped entry
+      # (matching how the tag itself reads) is exactly as easy to type,
+      # and previously failed validation outright instead of just being
+      # normalized. VERSION is always bare here on; TAG always has the v.
+      - name: Normalize the version input
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION#V}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
       - name: Validate version format
         run: |
-          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::version must be X.Y.Z or X.Y.Z-prerelease (got '${{ inputs.version }}')"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must be X.Y.Z or X.Y.Z-prerelease, optionally prefixed with v (got '${{ inputs.version }}')"
             exit 1
           fi
 
@@ -65,15 +78,15 @@ jobs:
       - name: Confirm Cargo.toml's workspace version matches
         run: |
           cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          if [ "$cargo_version" != "${{ inputs.version }}" ]; then
-            echo "::error::Cargo.toml's [workspace.package].version ($cargo_version) doesn't match the requested tag v${{ inputs.version }}. Bump it, merge that to main, then re-run this workflow."
+          if [ "$cargo_version" != "$VERSION" ]; then
+            echo "::error::Cargo.toml's [workspace.package].version ($cargo_version) doesn't match the requested tag $TAG. Bump it, merge that to main, then re-run this workflow."
             exit 1
           fi
 
       - name: Reject an already-existing tag
         run: |
-          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::v${{ inputs.version }} already exists."
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists."
             exit 1
           fi
 
@@ -83,13 +96,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           MESSAGE="${{ inputs.message }}"
           if [ -z "$MESSAGE" ]; then
-            MESSAGE="v${{ inputs.version }}"
+            MESSAGE="$TAG"
           fi
-          git tag -a "v${{ inputs.version }}" -m "$MESSAGE"
-          git push origin "v${{ inputs.version }}"
+          git tag -a "$TAG" -m "$MESSAGE"
+          git push origin "$TAG"
 
       - name: Dispatch the release workflow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run release.yml --ref main -f tag="v${{ inputs.version }}"
+          gh workflow run release.yml --ref main -f tag="$TAG"
