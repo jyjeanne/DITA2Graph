@@ -15,19 +15,62 @@ on:
   # workflow runs (it would create recursive workflow chains). That
   # exemption list has exactly two entries: workflow_dispatch and
   # repository_dispatch. So tag.yml calls `gh workflow run release.yml
-  # --ref vX.Y.Z` right after pushing the tag, which lands here instead
+  # -f tag=vX.Y.Z` right after pushing the tag, which lands here instead
   # of on the (silently suppressed) push event. A maintainer with local
   # tag-push access still triggers this the "normal" way via `push`.
+  #
+  # `tag` is required (not defaulted from github.ref_name) because a
+  # manual "Run workflow" from the Actions UI runs against whatever
+  # branch is selected there -- usually main -- and this workflow has no
+  # way to force that selector onto a tag. Trusting ref_name in that case
+  # silently built a "main" release and failed at `gh release create`
+  # with "tag main doesn't exist". Requiring an explicit tag input and
+  # validating it below closes that off for every trigger path.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to build and release (e.g. v0.2.0)"
+        required: true
 
 permissions:
   contents: write
 
 jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate the release tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$TAG' isn't a vX.Y.Z tag."
+            exit 1
+          fi
+          if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG doesn't exist in this repo -- create/push it first (e.g. via tag.yml) before releasing it."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: resolve-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
@@ -46,10 +89,14 @@ jobs:
         run: ./gradlew test --no-daemon
 
   release:
-    needs: test
+    needs: [resolve-tag, test]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@1.97.1
       - name: Build release binaries
@@ -79,12 +126,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          tar -czf "dist/dita2graph-core-${{ github.ref_name }}-linux-x86_64.tar.gz" \
+          tar -czf "dist/dita2graph-core-${RELEASE_TAG}-linux-x86_64.tar.gz" \
             -C target/release dita2graph-core
-          tar -czf "dist/dita2graph-mcp-${{ github.ref_name }}-linux-x86_64.tar.gz" \
+          tar -czf "dist/dita2graph-mcp-${RELEASE_TAG}-linux-x86_64.tar.gz" \
             -C target/release dita2graph-mcp
           cp gradle-build/build/plugin-zip/org.dita.dita2graph.zip \
-            "dist/org.dita.dita2graph-${{ github.ref_name }}.zip"
+            "dist/org.dita.dita2graph-${RELEASE_TAG}.zip"
 
       - name: Create GitHub Release
         env:
@@ -94,12 +141,12 @@ jobs:
           # A version with a "-" suffix (e.g. v0.2.0-beta.1) publishes as
           # a prerelease; a plain vX.Y.Z does not.
           PRERELEASE_FLAG=()
-          if [[ "${{ github.ref_name }}" == *-* ]]; then
+          if [[ "$RELEASE_TAG" == *-* ]]; then
             PRERELEASE_FLAG=(--prerelease)
           fi
-          gh release create "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
             dist/* \
-            --title "${{ github.ref_name }}" \
+            --title "$RELEASE_TAG" \
             --generate-notes \
             --verify-tag \
             "${PRERELEASE_FLAG[@]}"
