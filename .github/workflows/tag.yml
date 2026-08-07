@@ -15,7 +15,12 @@ name: Tag release
 # guard), so release.yml's `on: push: tags` never fires on its own here
 # -- confirmed against v0.1.0, which never triggered a release.yml run.
 # workflow_dispatch is exempt from that restriction, so this workflow
-# calls it directly once the tag is pushed.
+# calls it directly once the tag is pushed -- passing the tag as an
+# explicit `tag` input rather than `--ref`, since `--ref` only selects
+# which copy of the workflow *file* to run, not what release.yml checks
+# out or releases (a manual UI dispatch left on the "main" branch was
+# seen building/releasing "main" itself and failing at `gh release
+# create` because no such tag existed).
 
 on:
   workflow_dispatch:
@@ -87,4 +92,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run release.yml --ref "v${{ inputs.version }}"
+          gh workflow run release.yml --ref main -f tag="v${{ inputs.version }}"
