@@ -1,14 +1,21 @@
 name: Tag release
 
-# Manually creates and pushes an annotated vX.Y.Z tag from main, which
-# then triggers release.yml (build + publish a GitHub Release). Kept as
-# its own workflow_dispatch step, separate from release.yml, so a
-# maintainer can trigger tagging from the Actions UI without needing
+# Manually creates and pushes an annotated vX.Y.Z tag from main, then
+# explicitly dispatches release.yml (build + publish a GitHub Release).
+# Kept as its own workflow_dispatch step, separate from release.yml, so
+# a maintainer can trigger tagging from the Actions UI without needing
 # local tag-push access -- v0.1.0 itself had to be tagged and pushed
 # manually because this session's own git remote is restricted to
 # branch updates only (a session-level policy, not a GitHub permission
 # -- the GITHUB_TOKEN this workflow runs with isn't subject to it).
-# Future releases can go through here instead.
+#
+# The explicit dispatch at the end matters: this job pushes the tag
+# using the default GITHUB_TOKEN, and GitHub does not let a
+# GITHUB_TOKEN-authored push trigger *other* workflow runs (recursion
+# guard), so release.yml's `on: push: tags` never fires on its own here
+# -- confirmed against v0.1.0, which never triggered a release.yml run.
+# workflow_dispatch is exempt from that restriction, so this workflow
+# calls it directly once the tag is pushed.
 
 on:
   workflow_dispatch:
@@ -22,6 +29,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tag:
@@ -74,3 +82,9 @@ jobs:
           fi
           git tag -a "v${{ inputs.version }}" -m "$MESSAGE"
           git push origin "v${{ inputs.version }}"
+
+      - name: Dispatch the release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml --ref "v${{ inputs.version }}"

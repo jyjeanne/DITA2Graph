@@ -10,6 +10,15 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # tag.yml pushes the tag using the default GITHUB_TOKEN, and GitHub
+  # deliberately does not let a GITHUB_TOKEN-authored push trigger other
+  # workflow runs (it would create recursive workflow chains). That
+  # exemption list has exactly two entries: workflow_dispatch and
+  # repository_dispatch. So tag.yml calls `gh workflow run release.yml
+  # --ref vX.Y.Z` right after pushing the tag, which lands here instead
+  # of on the (silently suppressed) push event. A maintainer with local
+  # tag-push access still triggers this the "normal" way via `push`.
+  workflow_dispatch:
 
 permissions:
   contents: write
