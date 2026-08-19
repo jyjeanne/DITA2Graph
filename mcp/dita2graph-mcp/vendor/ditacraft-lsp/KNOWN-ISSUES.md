@@ -7,7 +7,11 @@ of these means either updating the vendored copy once upstream fixes
 it, or reporting/patching it in
 [`jyjeanne/ditacraft`](https://github.com/jyjeanne/ditacraft) directly.
 
-## 1. Pathological CPU spin on some real-world `<codeblock>` content
+**Currently open:** none.
+
+## Resolved
+
+### 1. Pathological CPU spin on some real-world `<codeblock>` content — fixed in v0.9.1
 
 **Found:** running `validate_live` against every one of the 267 real
 `.dita` topics in [`dita-ot/docs`](https://github.com/dita-ot/docs)
@@ -24,7 +28,7 @@ separate runs.
 repeatedly truncating the real file to smaller and smaller fragments
 and re-running `validate_live` against each with a short cap — not
 guessed): this exact `<codeblock>`, alone, in an otherwise-empty topic,
-reproduces the hang:
+reproduced the hang:
 
 ```xml
 <codeblock outputclass="language-json" xml:space="preserve">[
@@ -47,43 +51,58 @@ reproduces the hang:
 ]</codeblock>
 ```
 
-Further bisection of the JSON content itself: `xml:space="preserve"` is
-*not* required (removing it still hangs). Trimming the block down to
-everything *except* the last (`cksum`) line drops it from "still
-hanging past 8s" to "completes in ~4.1s" — nearly 3x slower than every
-other real topic's ~1.4s baseline for one 90-character line removed.
-That shape (small, linear-looking input growth producing disproportionate,
-apparently super-linear time growth) is the signature of a regex with
-catastrophic backtracking somewhere in the regex-based validation
-pipeline that scans raw document text (`docs/DITA_LSP_ARCHITECTURE.md`
-in `jyjeanne/ditacraft` documents this design choice explicitly: "Most
-features operate on raw document text via regex rather than building a
-full AST") — most likely triggered by the density of quoted
-`"key": "value"` pairs and/or nested `[`/`{` structure inside a single
-`<codeblock>`, not by any single character sequence in isolation
-(isolated tests of the `cksum` hash alone, the `>=2.3.0` string alone,
-and minimal `[{}]`/nested-bracket skeletons with no long strings all
-ran fast — see the session that produced this file for the full
-bisection trail).
+Reported upstream as
+[`jyjeanne/ditacraft#125`](https://github.com/jyjeanne/ditacraft/issues/125)
+with the full bisection trail (this file's own history has the original
+version of that trail, if needed).
 
-**Impact on `dita2graph-mcp`:** contained, not catastrophic.
-`RESPONSE_TIMEOUT` (`live.rs`) kills the child and returns a normal
-`isError: true` tool result ("timed out waiting for ditacraft-lsp to
-respond") instead of hanging the whole MCP server; confirmed the server
-process itself stayed responsive and correctly served the remaining
-topics in the same batch afterward. `validate_file`'s cleanup
-(`child.kill()`/`wait()`) leaves no orphaned `node` process behind. This
-is exactly the scenario `RESPONSE_TIMEOUT` exists for.
+**Actual root cause, per the upstream fix** (confirming the bisection's
+"regex with catastrophic backtracking" hypothesis, more precisely than
+this file's own investigation could without `server/src/`): the XXE/
+entity-expansion pre-check (`checkEntityExpansion`, run unconditionally
+as step 1 of `validateDITADocument` for *every* document — not a
+Schematron rule, not something specific to `<codeblock>` handling)
+used two backtracking regexes with a classic ReDoS shape: a lazy
+`[\s\S]*?` scanning for a DOCTYPE internal subset that, on a DOCTYPE
+*without* one, doesn't stop at the DOCTYPE's own `>` and keeps scanning
+the rest of the document for the next `[` — which the `<codeblock>`'s
+JSON content supplies, handing the subsequent quoted/unquoted
+alternation combinatorially many ways to fail to match `]>`.
 
-**Not fixed here:** the offending code is inside the minified,
-vendored `dist/lsp-server.js`, not TypeScript source this repo owns —
-bisecting to a specific regex/line in `jyjeanne/ditacraft`'s
-`server/src/` would need that repo's source and its own test harness.
+**Fixed upstream:** `jyjeanne/ditacraft`
+[`213548b`](https://github.com/jyjeanne/ditacraft/commit/213548bdbbf8ae7cd75a597613f32818db3d0a76)
+(`fix(server): eliminate ReDoS in entity-expansion pre-check (#125)`)
+replaced both backtracking regexes with linear, single-pass scanners
+that track quote/bracket state by hand instead of backtracking —
+immune to this input class by construction, not just faster on this
+one input. A same-day follow-up,
+[`0c190c3`](https://github.com/jyjeanne/ditacraft/commit/0c190c31cda39734f17168c0571038e5a916ddf8)
+(`fix(server): comments in DOCTYPE subset desync the linear ReDoS-fix
+scan`), fixed a correctness regression the first fix introduced (an
+apostrophe inside an XML comment in the DOCTYPE internal subset could
+desync the new scanner's quote-tracking and cause it to silently skip
+the rest of the entity-expansion/XXE check) — both landed together in
+the `v0.9.1` release (2026-08-19).
 
-**Reported upstream:**
-[`jyjeanne/ditacraft#125`](https://github.com/jyjeanne/ditacraft/issues/125).
-Once fixed there and the vendored bundle is updated (see `README.md`'s
-"Updating this vendored copy"), re-run
-`cargo test -p dita2graph-mcp -- --ignored validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs`
-to confirm, then remove this file (or flip it to a changelog entry) and
-the `#[ignore]` on that test.
+**Confirmed fixed here:** re-vendored `dist/lsp-server.js` from the
+`v0.9.1` release asset
+(`https://github.com/jyjeanne/ditacraft/releases/download/v0.9.1/lsp-server-0.9.1.zip`)
+and re-ran the exact same `validate_live` call that used to time out —
+now completes in ~1.3s instead of pegging a CPU core for the full 20s.
+Also re-ran the full 267-topic `dita-ot/docs` end-to-end pass; see
+`README.md`'s version header for exact commit/version and this
+directory's git history for the confirming test run. The regression
+test that used to assert the *known-bad* timeout
+(`validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs`) has been
+flipped to `validate_file_no_longer_hangs_on_a_real_codeblock_from_dita_ot_docs`
+in `live.rs`, now asserting the fix (no diagnostics, completes in under
+5s) and kept permanently as a regression guard — not deleted — so a
+future vendored-bundle update can't silently reintroduce this.
+
+**Impact on `dita2graph-mcp` while this was open:** contained, not
+catastrophic — worth noting for anyone reading this after the fact.
+`RESPONSE_TIMEOUT` (`live.rs`) killed the child and returned a normal
+`isError: true` tool result instead of hanging the whole MCP server;
+the server process itself stayed responsive and correctly served the
+remaining topics in the same batch afterward, with no orphaned `node`
+process left behind. Exactly the scenario `RESPONSE_TIMEOUT` exists for.

@@ -1,12 +1,15 @@
 # Vendored: DitaCraft standalone LSP server
 
 **Source:** [`jyjeanne/ditacraft`](https://github.com/jyjeanne/ditacraft)
-**Version vendored:** v0.9.0 (commit `abc5070bd4d07610e93094d3f2e35d527b5bd61a`,
-2026-08-15 release, per that repo's `CHANGELOG.md`)
+**Version vendored:** v0.9.1 (commit `4036354f4b4ea35231712ff9e1f90b728d87b8d3`,
+2026-08-19 release; downloaded from that release's
+`lsp-server-0.9.1.zip` GitHub Release asset rather than rebuilt from
+source, to vendor exactly what upstream shipped)
 **License:** MIT (`jyjeanne/ditacraft`'s `LICENSE`) — compatible with
 DITA2Graph's own dual MIT OR Apache-2.0. See root `NOTICE`.
 **Known issues in this specific vendored build:** see `KNOWN-ISSUES.md`
-in this directory.
+in this directory (none currently open — v0.9.1 fixed the one
+previously tracked there, `jyjeanne/ditacraft#125`).
 
 ## What this is
 
@@ -70,16 +73,34 @@ pointing at one) — Node.js itself is not vendored.
 
 ## Updating this vendored copy
 
-From a checkout of `jyjeanne/ditacraft` at the release tag to pick up:
+Two equally valid ways to get a fresh `dist/lsp-server.js`, matching
+exactly what `jyjeanne/ditacraft`'s own release workflow produces
+either way:
+
+**Preferred — download the release asset directly** (what the v0.9.1
+update did), so what's vendored here is byte-identical to what upstream
+actually shipped, not a local rebuild that merely *should* match:
+
+```bash
+curl -sSLO https://github.com/jyjeanne/ditacraft/releases/download/vX.Y.Z/lsp-server-X.Y.Z.zip
+unzip -o lsp-server-X.Y.Z.zip   # -> lsp-server.js
+```
+
+**Or rebuild from source**, e.g. if you need an unreleased commit:
 
 ```bash
 npm ci && (cd server && npm ci)
 node esbuild-standalone.js --minify   # matches release.yml's own build step
 ```
 
-Then replace this directory's `dist/lsp-server.js` and `dtds/` with the
-freshly built ones, and update the version/commit/date at the top of
-this file plus the `NOTICE` entry. `dist/mcp-server.js` (DitaCraft's own
+Either way, replace this directory's `dist/lsp-server.js` and `dtds/`
+(only needed if the DTD set itself changed upstream) with the fresh
+ones, and update the version/commit/date at the top of this file plus
+the `NOTICE` entry. Then re-run
+`cargo test -p dita2graph-mcp` (the full suite, not just `live::`) —
+`validate_file_no_longer_hangs_on_a_real_codeblock_from_dita_ot_docs`
+in particular is a standing regression guard against the one bug this
+vendored copy has already had. `dist/mcp-server.js` (DitaCraft's own
 separate MCP server) is a sibling build output but is *not* vendored
 here — it exposes a different tool set
 (`docs/mcp-server-implementation.md` in that repo) meant to be

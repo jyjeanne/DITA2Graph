@@ -26,7 +26,7 @@ This product includes software adapted from third-party projects:
 - `mcp/dita2graph-mcp/vendor/ditacraft-lsp/` vendors the standalone LSP
   server bundle (`dist/lsp-server.js`, built with esbuild from
   `server/src/`) and DITA DTD set (`dtds/`) from jyjeanne/ditacraft
-  (https://github.com/jyjeanne/ditacraft), MIT licensed, v0.9.0. Unlike
+  (https://github.com/jyjeanne/ditacraft), MIT licensed, v0.9.1. Unlike
   the `okf-mcp` adaptation above, this is a vendored build artifact of a
   third-party project (Node.js/TypeScript), not adapted Rust source —
   `mcp/dita2graph-mcp/src/live.rs` is original code that spawns it and

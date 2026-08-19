@@ -769,26 +769,23 @@ mod tests {
         Ok(())
     }
 
-    /// Known upstream issue, documented in
-    /// `vendor/ditacraft-lsp/KNOWN-ISSUES.md` and reported as
-    /// `jyjeanne/ditacraft#125` -- found by running `validate_live`
-    /// against every real topic in the DITA-OT project's own
-    /// documentation (`dita-ot/docs`, 267 topics; this is the one
+    /// Regression test for a since-fixed upstream bug, reported as
+    /// `jyjeanne/ditacraft#125` and previously documented in
+    /// `vendor/ditacraft-lsp/KNOWN-ISSUES.md` -- found by running
+    /// `validate_live` against every real topic in the DITA-OT project's
+    /// own documentation (`dita-ot/docs`, 267 topics; this was the one
     /// exception out of all of them). The vendored LSP's own process
-    /// (not `dita2graph-mcp`) pegs a full CPU core and never responds
-    /// for this exact `<codeblock>` content, bisected down from the real
-    /// file that triggered it. `#[ignore]`d: this intentionally takes
-    /// the full `RESPONSE_TIMEOUT` (20s) to complete and asserts on a
-    /// currently-known-bad upstream behavior, so it doesn't belong in
-    /// the default `cargo test` run -- re-run it explicitly
-    /// (`cargo test -p dita2graph-mcp -- --ignored
-    /// validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs`) after
-    /// updating the vendored bundle to check whether upstream fixed it;
-    /// if it starts passing, that's the signal to remove this test (or
-    /// flip its assertion) rather than leave a stale `#[ignore]` behind.
+    /// (not `dita2graph-mcp`) used to peg a full CPU core and never
+    /// respond for this exact `<codeblock>` content (real content,
+    /// bisected down from the real file that triggered it), reliably
+    /// timing out at the full `RESPONSE_TIMEOUT` (20s). Fixed upstream
+    /// in `jyjeanne/ditacraft` v0.9.1 -- confirmed by re-vendoring that
+    /// release's `dist/lsp-server.js` and re-running this exact test,
+    /// which now completes in ~1.3s instead of timing out at 20s. Kept
+    /// as a permanent regression test (not deleted) so a future vendored
+    /// bundle update that reintroduces this can't land silently.
     #[test]
-    #[ignore = "documents a known upstream hang in the vendored bundle; ~20s to run, see vendor/ditacraft-lsp/KNOWN-ISSUES.md"]
-    fn validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs() {
+    fn validate_file_no_longer_hangs_on_a_real_codeblock_from_dita_ot_docs() {
         if Command::new("node").arg("--version").output().is_err() {
             eprintln!("skipping: no `node` on PATH");
             return;
@@ -835,18 +832,29 @@ mod tests {
         )
         .unwrap();
 
-        let result = validate_file(&config, dir.path(), &topic_path);
-
-        // Currently-known-bad: this times out rather than returning
-        // diagnostics. If upstream fixes the underlying regex, this
-        // assertion starts failing -- see the doc comment above.
-        let err = result.expect_err(
-            "if this now succeeds, the vendored bundle's known CPU-spin bug (KNOWN-ISSUES.md #1) \
-             appears to be fixed -- update that file and this test instead of just deleting it",
+        let started = std::time::Instant::now();
+        let diagnostics = validate_file(&config, dir.path(), &topic_path).expect(
+            "validate_file should complete normally now -- if this times out again, the \
+             CPU-spin bug (jyjeanne/ditacraft#125) has regressed in whatever bundle is \
+             currently vendored",
         );
+        let elapsed = started.elapsed();
+
+        // A well-formed, DOCTYPE-declared, id-bearing topic with a
+        // single codeblock: genuinely no diagnostics expected.
         assert!(
-            err.to_string().contains("timed out"),
-            "expected the known timeout, got a different error: {err}"
+            diagnostics.is_empty(),
+            "expected no diagnostics for this well-formed fixture, got: {diagnostics:#?}"
+        );
+        // The bug's signature was pegging a CPU core for the entire
+        // RESPONSE_TIMEOUT (20s); completing in a small fraction of
+        // that is the actual regression signal, not just "didn't hit
+        // the timeout error path" (which a much slower but still-under-
+        // timeout fix could also satisfy without truly being fixed).
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "expected this to complete quickly (previously it pegged a CPU core for the \
+             full 20s timeout); took {elapsed:?}"
         );
     }
 }

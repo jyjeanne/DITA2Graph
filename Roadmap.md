@@ -428,10 +428,14 @@ state, most-complete first:
    verified:** ran `validate_live` against all 267 real topics in
    [`dita-ot/docs`](https://github.com/dita-ot/docs) (the DITA-OT
    project's own documentation) — 266/267 completed in 1.4–2.0s with
-   plausible, source-verified diagnostics; the one exception is a real,
-   reproducible upstream performance bug in the vendored bundle,
-   correctly contained by `RESPONSE_TIMEOUT` rather than hanging the
-   server. See `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`.
+   plausible, source-verified diagnostics; the 267th exposed a real,
+   reproducible upstream performance bug (a ReDoS in the vendored
+   bundle's XXE/entity-expansion pre-check), correctly contained by
+   `RESPONSE_TIMEOUT` rather than hanging the server, reported as
+   `jyjeanne/ditacraft#125`, and **fixed upstream in v0.9.1** — the
+   vendored bundle has been updated to that release and the fix
+   reconfirmed against the same real fixture and the full corpus. See
+   `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`.
 7. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
