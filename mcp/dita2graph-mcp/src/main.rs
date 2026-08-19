@@ -70,19 +70,31 @@ fn main() -> Result<()> {
 #[derive(Deserialize)]
 struct McpServerConfig {
     graph: GraphConfig,
-    /// Optional `[dita]` table -- not written by `dita2graph-core build`
-    /// today (`core/dita2graph-core/src/mcp_config.rs` only writes
-    /// `[server]`/`[graph]`), so this is forward-compatible parsing for
-    /// a hand-edited or future-tooling-written config; `#[serde(default)]`
-    /// keeps every existing `mcp-server.toml` without this table parsing
-    /// exactly as before.
-    #[serde(default)]
-    dita: Option<DitaConfig>,
 }
 
 #[derive(Deserialize)]
 struct GraphConfig {
     okf: String,
+}
+
+/// Just the optional `[dita]` table, parsed independently of
+/// `McpServerConfig` -- not written by `dita2graph-core build` today
+/// (`core/dita2graph-core/src/mcp_config.rs` only writes
+/// `[server]`/`[graph]`), so this is forward-compatible parsing for a
+/// hand-edited or future-tooling-written config. Kept as its own struct
+/// (rather than a field on `McpServerConfig`) deliberately: with no
+/// `graph`/`server` fields, serde ignores those tables here regardless
+/// of their shape, and symmetrically `McpServerConfig` (with no `dita`
+/// field) ignores `[dita]` regardless of *its* shape -- so a malformed
+/// `[dita]` table (e.g. a hand-edited `source_root` of the wrong type)
+/// can't break `bundle_root_from_config`'s parse and take down the
+/// whole server over a table only the optional `validate_live` feature
+/// even reads. A single shared struct with both fields optional would
+/// still reject the whole document on a type mismatch in either table.
+#[derive(Deserialize, Default)]
+struct DitaSection {
+    #[serde(default)]
+    dita: Option<DitaConfig>,
 }
 
 #[derive(Deserialize)]
@@ -158,7 +170,7 @@ fn resolve_live_validation_config(args: &[String]) -> live::LiveValidationConfig
     if let Some(config_path) = find_flag_value(args, "--config")
         && let Ok(raw) = fs_read_to_string(Path::new(config_path))
     {
-        match toml::from_str::<McpServerConfig>(&raw) {
+        match toml::from_str::<DitaSection>(&raw) {
             Ok(parsed) => {
                 if let Some(source_root) = parsed.dita.and_then(|d| d.source_root) {
                     let config_dir = Path::new(config_path)
@@ -284,6 +296,35 @@ mod tests {
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
         write_mcp_config, write_rag_index,
     };
+
+    #[test]
+    fn resolve_bundle_root_tolerates_a_malformed_dita_section() {
+        // Regression test: bundle-root resolution (needed by every tool,
+        // not just validate_live) must not fail just because a
+        // hand-edited `[dita]` table has the wrong shape -- that table
+        // is read only by resolve_live_validation_config, which already
+        // degrades gracefully on its own parse errors; a shared struct
+        // used to make bundle_root_from_config's parse fail too.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("okf")).unwrap();
+        let config_path = dir.path().join("mcp-server.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\nname = \"dita2graph\"\n[graph]\nokf = \"okf\"\n\
+             [dita]\nsource_root = [\"a\", \"b\"]\n",
+        )
+        .unwrap();
+
+        let resolved = resolve_bundle_root(&[
+            "--config".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
 
     #[test]
     fn resolve_bundle_root_uses_a_real_config_file() {
