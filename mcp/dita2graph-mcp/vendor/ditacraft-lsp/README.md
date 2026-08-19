@@ -5,6 +5,8 @@
 2026-08-15 release, per that repo's `CHANGELOG.md`)
 **License:** MIT (`jyjeanne/ditacraft`'s `LICENSE`) — compatible with
 DITA2Graph's own dual MIT OR Apache-2.0. See root `NOTICE`.
+**Known issues in this specific vendored build:** see `KNOWN-ISSUES.md`
+in this directory.
 
 ## What this is
 

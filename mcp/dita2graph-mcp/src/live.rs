@@ -768,4 +768,84 @@ mod tests {
         }
         Ok(())
     }
+
+    /// Known upstream issue, documented in
+    /// `vendor/ditacraft-lsp/KNOWN-ISSUES.md` -- found by running
+    /// `validate_live` against every real topic in the DITA-OT project's
+    /// own documentation (`dita-ot/docs`, 267 topics; this is the one
+    /// exception out of all of them). The vendored LSP's own process
+    /// (not `dita2graph-mcp`) pegs a full CPU core and never responds
+    /// for this exact `<codeblock>` content, bisected down from the real
+    /// file that triggered it. `#[ignore]`d: this intentionally takes
+    /// the full `RESPONSE_TIMEOUT` (20s) to complete and asserts on a
+    /// currently-known-bad upstream behavior, so it doesn't belong in
+    /// the default `cargo test` run -- re-run it explicitly
+    /// (`cargo test -p dita2graph-mcp -- --ignored
+    /// validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs`) after
+    /// updating the vendored bundle to check whether upstream fixed it;
+    /// if it starts passing, that's the signal to remove this test (or
+    /// flip its assertion) rather than leave a stale `#[ignore]` behind.
+    #[test]
+    #[ignore = "documents a known upstream hang in the vendored bundle; ~20s to run, see vendor/ditacraft-lsp/KNOWN-ISSUES.md"]
+    fn validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs() {
+        if Command::new("node").arg("--version").output().is_err() {
+            eprintln!("skipping: no `node` on PATH");
+            return;
+        }
+        let config = LiveValidationConfig::default();
+        if !config.lsp_root.join("dist").join("lsp-server.js").is_file() {
+            eprintln!(
+                "skipping: vendored bundle not found at {}",
+                config.lsp_root.display()
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let topic_path = dir.path().join("plugin-entry.dita");
+        std::fs::write(
+            &topic_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE topic PUBLIC "-//OASIS//DTD DITA Topic//EN" "topic.dtd">
+<topic id="plugin-entry">
+  <title>Sample plug-in entry file</title>
+  <body>
+    <codeblock outputclass="language-json" xml:space="preserve">[
+  {
+    "name": "org.dita.docbook",
+    "description": "Convert DITA to DocBook.",
+    "keywords": ["DocBook"],
+    "homepage": "https://github.com/dita-ot/org.dita.docbook/",
+    "vers": "2.3.0",
+    "license": "Apache-2.0",
+    "deps": [
+      {
+        "name": "org.dita.base",
+        "req": ">=2.3.0"
+      }
+    ],
+    "url": "https://github.com/dita-ot/org.dita.docbook/archive/2.3.zip",
+    "cksum": "eaf06b0dca8d942bd4152615e39ee8cfb73a624b96d70e10ab269ed6f8a13e21"
+  }
+]</codeblock>
+  </body>
+</topic>
+"#,
+        )
+        .unwrap();
+
+        let result = validate_file(&config, dir.path(), &topic_path);
+
+        // Currently-known-bad: this times out rather than returning
+        // diagnostics. If upstream fixes the underlying regex, this
+        // assertion starts failing -- see the doc comment above.
+        let err = result.expect_err(
+            "if this now succeeds, the vendored bundle's known CPU-spin bug (KNOWN-ISSUES.md #1) \
+             appears to be fixed -- update that file and this test instead of just deleting it",
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "expected the known timeout, got a different error: {err}"
+        );
+    }
 }
