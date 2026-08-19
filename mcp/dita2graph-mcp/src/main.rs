@@ -140,9 +140,11 @@ fn fs_read_to_string(path: &Path) -> Result<String> {
 
 /// Resolves the `validate_live` tool's config (`live::LiveValidationConfig`)
 /// from, in increasing priority: the `[dita] source_root` table in an
-/// `mcp-server.toml` passed via `--config` (if any, and if parseable --
-/// failures here are logged and skipped, not fatal, since this whole
-/// feature is optional); the `DITA2GRAPH_SOURCE_ROOT`/
+/// `mcp-server.toml` passed via `--config` (found anywhere in `args`,
+/// like the other live-validation flags below -- not just when it's
+/// positionally first, unlike `resolve_bundle_root`'s own `--config`
+/// handling; if any, and if parseable -- failures here are logged and
+/// skipped, not fatal, since this whole feature is optional); the `DITA2GRAPH_SOURCE_ROOT`/
 /// `DITA2GRAPH_DITACRAFT_LSP_ROOT`/`DITA2GRAPH_NODE_BIN` environment
 /// variables; then `--source-root`/`--ditacraft-lsp-root`/`--node-bin`
 /// CLI flags, which win over everything else. Never errors: an
@@ -153,8 +155,7 @@ fn fs_read_to_string(path: &Path) -> Result<String> {
 fn resolve_live_validation_config(args: &[String]) -> live::LiveValidationConfig {
     let mut config = live::LiveValidationConfig::default();
 
-    if args.first().map(String::as_str) == Some("--config")
-        && let Some(config_path) = args.get(1)
+    if let Some(config_path) = find_flag_value(args, "--config")
         && let Ok(raw) = fs_read_to_string(Path::new(config_path))
     {
         match toml::from_str::<McpServerConfig>(&raw) {
@@ -368,6 +369,33 @@ mod tests {
             resolve_bundle_root(&after).unwrap(),
             PathBuf::from("some/bundle/dir")
         );
+    }
+
+    #[test]
+    fn resolve_live_validation_config_reads_dita_source_root_when_config_flag_is_not_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mcp-server.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\nname = \"dita2graph\"\n[graph]\nokf = \"okf\"\n\
+             [dita]\nsource_root = \"../sample-docs\"\n",
+        )
+        .unwrap();
+
+        // --config is preceded by another live-validation flag here, on
+        // purpose -- regression test for a bug where the `[dita]
+        // source_root` table was only ever read when `--config`
+        // happened to be args[0], unlike every other live-validation
+        // flag (and unlike resolve_bundle_root via
+        // strip_live_validation_flags), which tolerate any ordering.
+        let args = [
+            "--node-bin".to_string(),
+            "/opt/node/bin/node".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ];
+        let config = resolve_live_validation_config(&args);
+        assert_eq!(config.source_root, Some(dir.path().join("../sample-docs")));
     }
 
     fn sample_bundle_root() -> tempfile::TempDir {

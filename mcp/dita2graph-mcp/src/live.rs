@@ -20,9 +20,10 @@
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long a single `validate_file` call is allowed to take before its
@@ -187,14 +188,56 @@ pub fn validate_file(
             )
         })?;
 
+    // Drain stderr continuously on its own thread for the whole session,
+    // not just at the end: `Stdio::piped()` gives it a fixed-size OS
+    // pipe buffer (~64KB on Linux), and nothing else in this module ever
+    // reads it. Left undrained, a verbose child (console.error/warn
+    // calls exist in the vendored bundle, or a Node stack trace) fills
+    // that buffer and blocks on its next stderr write -- while this
+    // process sits blocked reading stdout for a response that child can
+    // now never produce, silently eating the full RESPONSE_TIMEOUT and
+    // reporting a misleading "timed out" error instead of the real
+    // stderr content. Captured (not discarded) so a genuine failure's
+    // error message can include it.
+    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_thread = child.stderr.take().map(|mut stderr| {
+        let stderr_buf = Arc::clone(&stderr_buf);
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            if let Ok(mut captured) = stderr_buf.lock() {
+                *captured = buf;
+            }
+        })
+    });
+
     let result = run_session_with_timeout(&mut child, &workspace_root, &file_path, &text);
 
     // Best-effort cleanup regardless of how the session ended -- an
     // error or timeout mid-handshake must not leak a live node process.
     let _ = child.kill();
     let _ = child.wait();
+    // The stderr pipe closes once the (now-killed) child has fully
+    // exited, so the reader thread above is done shortly after `wait()`
+    // returns -- join it so the captured buffer below is complete.
+    if let Some(stderr_thread) = stderr_thread {
+        let _ = stderr_thread.join();
+    }
 
-    result
+    match result {
+        Ok(diagnostics) => Ok(diagnostics),
+        Err(e) => {
+            let captured = stderr_buf
+                .lock()
+                .map(|buf| String::from_utf8_lossy(&buf).trim().to_string())
+                .unwrap_or_default();
+            if captured.is_empty() {
+                Err(e)
+            } else {
+                Err(e.context(format!("ditacraft-lsp stderr:\n{captured}")))
+            }
+        }
+    }
 }
 
 /// Runs the handshake on a worker thread and bounds the whole exchange
