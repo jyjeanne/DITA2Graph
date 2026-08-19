@@ -79,9 +79,11 @@ is exactly the scenario `RESPONSE_TIMEOUT` exists for.
 vendored `dist/lsp-server.js`, not TypeScript source this repo owns —
 bisecting to a specific regex/line in `jyjeanne/ditacraft`'s
 `server/src/` would need that repo's source and its own test harness.
-Worth reporting upstream (issue or PR against
-`jyjeanne/ditacraft`) with the minimal repro above; once fixed there and
-the vendored bundle is updated (see `README.md`'s "Updating this
-vendored copy"), re-run
-`cargo test -p dita2graph-mcp -- --ignored validate_live_hangs_on_a_real_codeblock_from_dita_ot_docs`
-to confirm.
+
+**Reported upstream:**
+[`jyjeanne/ditacraft#125`](https://github.com/jyjeanne/ditacraft/issues/125).
+Once fixed there and the vendored bundle is updated (see `README.md`'s
+"Updating this vendored copy"), re-run
+`cargo test -p dita2graph-mcp -- --ignored validate_file_hangs_on_a_real_codeblock_from_dita_ot_docs`
+to confirm, then remove this file (or flip it to a changelog entry) and
+the `#[ignore]` on that test.

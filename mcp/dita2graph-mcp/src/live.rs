@@ -770,9 +770,10 @@ mod tests {
     }
 
     /// Known upstream issue, documented in
-    /// `vendor/ditacraft-lsp/KNOWN-ISSUES.md` -- found by running
-    /// `validate_live` against every real topic in the DITA-OT project's
-    /// own documentation (`dita-ot/docs`, 267 topics; this is the one
+    /// `vendor/ditacraft-lsp/KNOWN-ISSUES.md` and reported as
+    /// `jyjeanne/ditacraft#125` -- found by running `validate_live`
+    /// against every real topic in the DITA-OT project's own
+    /// documentation (`dita-ot/docs`, 267 topics; this is the one
     /// exception out of all of them). The vendored LSP's own process
     /// (not `dita2graph-mcp`) pegs a full CPU core and never responds
     /// for this exact `<codeblock>` content, bisected down from the real
