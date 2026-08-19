@@ -801,6 +801,7 @@ trace_dependencies(topicId, depth?)
 analyze_impact(topicId, depth?)
 generate_summary(topicId)
 validate_bundle()
+validate_live(topicId)
 ```
 
 This is the current, implemented tool contract — real tool names and
@@ -877,6 +878,25 @@ for an agent (or a human) to confirm a bundle it's about to rely on is
 actually well-formed before trusting its answers, without shelling out
 to the CLI separately.
 
+`validate_live(topicId)` is a different kind of check from
+`validate_bundle`: rather than re-checking the *last build's* OKF/
+secret-leak output, it runs [jyjeanne/ditacraft](https://github.com/jyjeanne/ditacraft)'s
+live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules,
+cross-reference resolution, circular-reference detection, subject-scheme
+profiling — `docs/DITA_LSP_ARCHITECTURE.md` in that repo) against the
+topic's *current* on-disk DITA source, resolved via the `resource` field
+in its OKF frontmatter (§4.4) against a configured `--source-root`
+(§5.4). It's implemented by vendoring DitaCraft's standalone LSP server
+bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT licensed — see
+that directory's own `README.md`) and speaking its LSP JSON-RPC protocol
+as a client (`mcp/dita2graph-mcp/src/live.rs`) — a second reuse pattern
+alongside §5.5's `okf-mcp` adaptation, but a different kind: DitaCraft's
+server is Node.js/TypeScript with no Rust equivalent worth writing from
+scratch, so the integration seam is the LSP wire protocol
+(`Content-Length`-framed JSON-RPC, spawned per call), not shared source.
+Requires a `node` binary on `PATH`; degrades to a clear configuration
+error (not a crash) when `--source-root` isn't set.
+
 ### 5.3 Example interaction
 
 ```
@@ -932,6 +952,27 @@ registers as a normal MCP server for Claude Code / Claude Desktop / any
 MCP-compatible client over stdio; there is no `serve` subcommand and no
 HTTP transport (§6.3 describes that as a future direction, not
 something built).
+
+**`validate_live` config.** Not written by `dita2graph-core build --mcp
+true` today — resolved at `dita2graph-mcp` invocation time only, from
+(lowest to highest priority) a hand-added `[dita] source_root = "..."`
+table in `mcp-server.toml`, the `DITA2GRAPH_SOURCE_ROOT`/
+`DITA2GRAPH_DITACRAFT_LSP_ROOT`/`DITA2GRAPH_NODE_BIN` environment
+variables, then `--source-root`/`--ditacraft-lsp-root`/`--node-bin` CLI
+flags:
+
+```bash
+dita2graph-mcp --config output/mcp/mcp-server.toml --source-root /path/to/dita/project
+```
+
+`source_root` is the only one usually needed — `--ditacraft-lsp-root`
+defaults to the vendored bundle at
+`mcp/dita2graph-mcp/vendor/ditacraft-lsp/` and `--node-bin` to `node` on
+`PATH`. Wiring `source_root` into `dita2graph-core build`'s own
+`args.dita2graph.*` params (so it lands in the generated
+`mcp-server.toml` automatically, the way `graph.okf` already does) is
+tracked as follow-up work, not done here — see
+`lsp-dita-integration-plan.md` at the repo root.
 
 ### 5.5 Reference implementation pattern (adapted from `jyjeanne/okf-rs`)
 

@@ -299,11 +299,35 @@ type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>);
 pub struct BundleCache {
     root: PathBuf,
     loaded: Option<(BundleFingerprint, BundleReader)>,
+    /// Config for the `validate_live` tool's DitaCraft LSP client
+    /// (`crate::live`). Defaulted, not required -- most tool calls
+    /// never touch it, and `validate_live` itself reports a clear
+    /// configuration error when `source_root` is unset rather than
+    /// this constructor needing to fail early.
+    live: crate::live::LiveValidationConfig,
 }
 
 impl BundleCache {
     pub fn new(root: PathBuf) -> Self {
-        BundleCache { root, loaded: None }
+        BundleCache {
+            root,
+            loaded: None,
+            live: crate::live::LiveValidationConfig::default(),
+        }
+    }
+
+    /// Builder-style setter for the live-validation config, used only by
+    /// `main()` once it has resolved `--source-root`/CLI/env overrides
+    /// (`resolve_live_validation_config`). Tests and other call sites
+    /// that never invoke `validate_live` can ignore this entirely and
+    /// keep using the `Default` config `new()` already sets up.
+    pub fn with_live_config(mut self, live: crate::live::LiveValidationConfig) -> Self {
+        self.live = live;
+        self
+    }
+
+    pub fn live_config(&self) -> &crate::live::LiveValidationConfig {
+        &self.live
     }
 
     /// The bundle root this cache is bound to -- needed directly (not

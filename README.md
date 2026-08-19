@@ -26,7 +26,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 |---|---|
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
-| `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
+| `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
 | `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested `topicref`/`topichead`/`topicgroup` map structures at any depth, not just the top level, excludes DITA-OT's auto-generated `related-links` navigation from cross-reference extraction, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16) |
 | `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all five, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
@@ -82,7 +82,7 @@ flowchart TD
     D --> H["RAG content index<br/>rag/chunks.jsonl, rag/metadata.json"]
     G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
     H --> I
-    I --> J["MCP tools<br/>search_topics · search_content · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle"]
+    I --> J["MCP tools<br/>search_topics · search_content · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle · validate_live"]
     J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
 
     classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
@@ -238,8 +238,46 @@ Once registered, an agent can call:
 | `analyze_impact(topicId, depth?)` | Reverse, transitive traversal — everything that would be affected by changing this topic, with content excerpts (§13.1) |
 | `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
+| `validate_live(topicId)` | Runs [DitaCraft](https://github.com/jyjeanne/ditacraft)'s live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules, cross-reference, circular-reference, subject-scheme profiling) against the topic's *current* on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp) below |
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.
+
+### Live validation via DitaCraft's LSP
+
+`validate_bundle` only re-checks what the *last build* produced —
+`okf_validator` conformance and the secret-leak scan on the OKF/RAG
+output. It says nothing about whether a topic's source has since
+drifted out of DTD/RNG/Schematron-rule compliance without a rebuild.
+
+`validate_live` closes that gap by vendoring
+[jyjeanne/ditacraft](https://github.com/jyjeanne/ditacraft)'s standalone
+LSP server bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT
+licensed — see that directory's `README.md` and this repo's `NOTICE`)
+and spawning it as an LSP client (`mcp/dita2graph-mcp/src/live.rs`): the
+same 13-phase validation pipeline DitaCraft runs as-you-type in VS Code,
+called on demand against a topic id's real source file instead of the
+graph.
+
+It needs to know where the original DITA project lives (to resolve a
+topic's `resource` frontmatter path) and, optionally, where the
+vendored bundle/`node` binary are if not using the defaults:
+
+| Setting | Flag | Env var | Default |
+|---|---|---|---|
+| DITA source root | `--source-root <path>` | `DITA2GRAPH_SOURCE_ROOT` | *(required — no default)* |
+| DitaCraft LSP bundle dir | `--ditacraft-lsp-root <path>` | `DITA2GRAPH_DITACRAFT_LSP_ROOT` | `mcp/dita2graph-mcp/vendor/ditacraft-lsp/` |
+| `node` executable | `--node-bin <path>` | `DITA2GRAPH_NODE_BIN` | `node` (resolved from `PATH`) |
+
+```bash
+./target/release/dita2graph-mcp --source-root sample-docs gradle-build/build/dita2graph
+```
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"validate_live","arguments":{"topicId":"installing-product"}}}' \
+  | ./target/release/dita2graph-mcp --source-root sample-docs gradle-build/build/dita2graph
+```
+
+Requires a `node` binary on `PATH` (Node.js itself is not vendored).
 
 ### Using your own DITA project
 

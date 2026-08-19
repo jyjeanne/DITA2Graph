@@ -411,7 +411,21 @@ state, most-complete first:
    silent.
 5. **MCP Resources** (§5.1) and **HTTP transport** (§6.3) for the MCP
    server — stdio + tools cover real use today; these are additive.
-6. **Other extended capabilities** (§13.2, least scoped): multi-map/
+6. **Live LSP validation via a vendored `jyjeanne/ditacraft`** — ✅
+   done. `validate_live(topicId)` (`docs/plugin-specification.md`
+   §5.2/§5.4) spawns DitaCraft's standalone LSP server bundle (vendored
+   at `mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT, see that
+   directory's `README.md` and root `NOTICE`) and speaks its
+   `Content-Length`-framed LSP JSON-RPC protocol
+   (`mcp/dita2graph-mcp/src/live.rs`) to run DitaCraft's 13-phase
+   validation pipeline against a topic's *current* on-disk source,
+   complementing `validate_bundle`'s last-build-only check. Not yet
+   wired end to end: `--source-root` is configured only at
+   `dita2graph-mcp` invocation time (flag/env var/hand-edited config),
+   not written automatically by `dita2graph-core build` the way
+   `graph.okf` is — see `lsp-dita-integration-plan.md` at the repo root
+   for the fuller integration study this grew out of.
+7. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
    pages with links back into the graph.

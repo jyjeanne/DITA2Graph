@@ -5,7 +5,44 @@
 **Author of both projects:** Jeremy Jeanne — no cross-org licensing or governance
 friction; both are MIT-family licensed (DitaCraft: MIT; DITA2Graph: dual
 MIT OR Apache-2.0), so any code reuse across them is unencumbered.
-**Status:** Study + proposed plan, no implementation yet.
+**Status:** Study + proposed plan, largely not implemented — **except**
+one piece, added directly to DITA2Graph rather than DitaCraft (see
+Update below).
+
+---
+
+## Update: `validate_live` shipped (DITA2Graph side)
+
+The plan below recommended Option B (DitaCraft grows an MCP client for
+DITA2Graph's tools) and explicitly set aside a DITA2Graph-side LSP
+integration as premature (§4, Option C). One narrower piece of that
+rejected direction turned out to be worth doing after all, and has been
+implemented: `dita2graph-mcp` now vendors DitaCraft's **standalone LSP
+server bundle** (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT,
+provenance in that directory's `README.md` and root `NOTICE`) and spawns
+it as an LSP client (`mcp/dita2graph-mcp/src/live.rs`) to back a new
+`validate_live(topicId)` tool — DitaCraft's live 13-phase validation
+pipeline, called against a topic's current on-disk source instead of
+DitaCraft's own editor.
+
+This isn't Option C (DITA2Graph growing its *own* live/incremental
+editor layer, still correctly out of scope — DITA2Graph has no
+incremental rebuild yet, §6/Roadmap Phase 6+) or Option D (porting
+DitaCraft's key-space algorithm into DITA2Graph's Java, still a
+separate follow-up). It's a third, narrower path this study didn't
+originally enumerate: DitaCraft *already* ships a headless,
+VS-Code-independent build of its LSP (`server/src/standalone.ts` →
+`dist/lsp-server.js`, attached to every DitaCraft GitHub Release as
+`lsp-server-<version>.zip`) — speaking plain LSP JSON-RPC over stdio,
+with no code sharing required, just a small Rust client for the wire
+protocol. That made a direct, in-process (well, in-subprocess)
+integration cheap enough to do outright rather than only plan for.
+
+Options B (DitaCraft registers DITA2Graph's MCP server) and this one are
+not mutually exclusive — B is still the right way to get DITA2Graph's
+*graph*-level tools (`analyze_impact`, `search_content`, etc.) in front
+of a DitaCraft/VS Code user, and remains unimplemented. See §5 below for
+that plan, still current.
 
 ---
 

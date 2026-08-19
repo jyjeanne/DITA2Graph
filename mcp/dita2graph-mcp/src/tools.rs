@@ -4,6 +4,7 @@
 //! generic graph/search calls for the DITA-relation-aware ones here.
 
 use crate::bundle::{BundleCache, BundleReader};
+use crate::live::{self, LiveValidationConfig};
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -92,18 +93,37 @@ pub fn list() -> Vec<Value> {
             "description": "Re-run okf-validator conformance checks against the bundle this server is bound to (§2.5, §6.4, §10).",
             "inputSchema": { "type": "object", "properties": {} },
         }),
+        json!({
+            "name": "validate_live",
+            "description": "Runs jyjeanne/ditacraft's live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules, cross-reference, circular-reference, subject-scheme profiling -- the same checks DitaCraft runs as-you-type in VS Code) against a topic id's *current* on-disk DITA source file, not the last-built bundle. Complements validate_bundle (which only re-checks the build-time OKF/secret-leak gates) with finer-grained, editor-grade diagnostics. Requires --source-root/DITA2GRAPH_SOURCE_ROOT to be configured, and a `node` binary on PATH.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "topicId": { "type": "string" } },
+                "required": ["topicId"],
+            },
+        }),
     ]
 }
 
-/// Dispatches one `tools/call`. `validate_bundle` is deliberately
-/// special-cased ahead of `cache.get()`: it's meant to check the
-/// bundle's live on-disk state (`§2.5`/`§6.4`/`§10`), not go through the
-/// cached `BundleReader` at all -- and unlike every other tool here, it
+/// Dispatches one `tools/call`. `validate_bundle` and `validate_live`
+/// are deliberately special-cased ahead of `cache.get()`'s single
+/// `match`: `validate_bundle` is meant to check the bundle's live
+/// on-disk state (`§2.5`/`§6.4`/`§10`), not go through the cached
+/// `BundleReader` at all -- and unlike every other tool here, it
 /// doesn't need `graph.json` to exist to do its job, so it shouldn't
 /// fail just because a `dita2graph-core build` hasn't produced one yet.
+/// `validate_live` needs both the cached `BundleReader` (to resolve a
+/// topic id to its source file) *and* `cache`'s `live_config()` --
+/// cloned out before `cache.get()`'s `&mut self` borrow, since the two
+/// can't be held at once.
 pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<String> {
     if name == "validate_bundle" {
         return validate_bundle(cache.root());
+    }
+    if name == "validate_live" {
+        let live_config = cache.live_config().clone();
+        let bundle = cache.get()?;
+        return validate_live(bundle, arguments, &live_config);
     }
     let bundle = cache.get()?;
     match name {
@@ -516,6 +536,70 @@ fn validate_bundle(bundle_root: &Path) -> Result<String> {
         .map(|i| format!("{:?} {}: {}", i.severity, i.file, i.message))
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+/// Resolves `topicId` to its source `.dita` file (via the `resource`
+/// frontmatter field `okf.rs`'s `render_concept` writes for every
+/// concept -- the same field `explain_task`/`generate_summary` leave
+/// alone but this tool specifically needs) and runs it through the
+/// vendored DitaCraft LSP (`crate::live`), live, not from the bundle.
+fn validate_live(
+    bundle: &BundleReader,
+    arguments: &Value,
+    live_config: &LiveValidationConfig,
+) -> Result<String> {
+    let topic_id = arg_str(arguments, "topicId")?;
+    let (frontmatter, _) = bundle.read_concept(topic_id)?;
+    let resource = frontmatter
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("{topic_id} has no `resource` in its frontmatter"))?;
+
+    let source_root = live_config.source_root.as_ref().ok_or_else(|| {
+        anyhow!(
+            "validate_live needs the original DITA source tree -- pass --source-root, \
+             set DITA2GRAPH_SOURCE_ROOT, or add a [dita] source_root to mcp-server.toml"
+        )
+    })?;
+    let file_path = source_root.join(resource);
+    if !file_path.is_file() {
+        return Err(anyhow!(
+            "resolved source file {} (from {topic_id}'s `resource: {resource}`) does not \
+             exist -- is --source-root pointing at the right DITA project?",
+            file_path.display()
+        ));
+    }
+
+    let diagnostics = live::validate_file(live_config, source_root, &file_path)?;
+    if diagnostics.is_empty() {
+        return Ok(format!(
+            "No diagnostics -- {resource} is valid (live DitaCraft LSP check)."
+        ));
+    }
+    let mut lines = vec![format!(
+        "{} diagnostic{} for {topic_id} ({resource}), live from DitaCraft's LSP validation pipeline:",
+        diagnostics.len(),
+        if diagnostics.len() == 1 { "" } else { "s" },
+    )];
+    for d in &diagnostics {
+        let code = d
+            .code
+            .as_ref()
+            .map(|c| format!(" {}", live::code_str(c)))
+            .unwrap_or_default();
+        let source = d
+            .source
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- [{}]{code}{source} line {}: {}",
+            live::severity_label(d.severity),
+            d.range.start.line + 1,
+            d.message,
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]
