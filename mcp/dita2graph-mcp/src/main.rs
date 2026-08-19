@@ -11,6 +11,7 @@
 //! print would corrupt the stream for whatever's reading it.
 
 mod bundle;
+mod live;
 mod tools;
 
 use anyhow::{Context, Result, anyhow};
@@ -23,11 +24,18 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let bundle_root = resolve_bundle_root(&args)?;
+    let live_config = resolve_live_validation_config(&args);
+    // resolve_bundle_root only understands "--config <path>" or a bare
+    // positional path as args[0] -- strip the validate_live-specific
+    // flags (already consumed above) out first so e.g.
+    // `--source-root x <bundle-root>` or `--config c.toml --node-bin y`
+    // still resolve the bundle root correctly regardless of where the
+    // live-validation flags were placed on the command line.
+    let bundle_root = resolve_bundle_root(&strip_live_validation_flags(&args))?;
     // One cache for the whole process lifetime, not reopened per
     // request (bundle::BundleCache's own docs) -- a real agent session
     // against a real, sizeable bundle issues many tool calls, not one.
-    let mut cache = bundle::BundleCache::new(bundle_root);
+    let mut cache = bundle::BundleCache::new(bundle_root).with_live_config(live_config);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -67,6 +75,35 @@ struct McpServerConfig {
 #[derive(Deserialize)]
 struct GraphConfig {
     okf: String,
+}
+
+/// Just the optional `[dita]` table, parsed independently of
+/// `McpServerConfig` -- not written by `dita2graph-core build` today
+/// (`core/dita2graph-core/src/mcp_config.rs` only writes
+/// `[server]`/`[graph]`), so this is forward-compatible parsing for a
+/// hand-edited or future-tooling-written config. Kept as its own struct
+/// (rather than a field on `McpServerConfig`) deliberately: with no
+/// `graph`/`server` fields, serde ignores those tables here regardless
+/// of their shape, and symmetrically `McpServerConfig` (with no `dita`
+/// field) ignores `[dita]` regardless of *its* shape -- so a malformed
+/// `[dita]` table (e.g. a hand-edited `source_root` of the wrong type)
+/// can't break `bundle_root_from_config`'s parse and take down the
+/// whole server over a table only the optional `validate_live` feature
+/// even reads. A single shared struct with both fields optional would
+/// still reject the whole document on a type mismatch in either table.
+#[derive(Deserialize, Default)]
+struct DitaSection {
+    #[serde(default)]
+    dita: Option<DitaConfig>,
+}
+
+#[derive(Deserialize)]
+struct DitaConfig {
+    /// Root of the original DITA source project, for `validate_live`
+    /// (`tools.rs`) to resolve a topic's `resource` frontmatter path
+    /// against. Relative paths are resolved against the config file's
+    /// own directory, same as `graph.okf` above.
+    source_root: Option<String>,
 }
 
 /// The bundle root to serve, from either a bare positional path (the
@@ -111,6 +148,94 @@ fn bundle_root_from_config(config_path: &Path) -> Result<PathBuf> {
 
 fn fs_read_to_string(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// Resolves the `validate_live` tool's config (`live::LiveValidationConfig`)
+/// from, in increasing priority: the `[dita] source_root` table in an
+/// `mcp-server.toml` passed via `--config` (found anywhere in `args`,
+/// like the other live-validation flags below -- not just when it's
+/// positionally first, unlike `resolve_bundle_root`'s own `--config`
+/// handling; if any, and if parseable -- failures here are logged and
+/// skipped, not fatal, since this whole feature is optional); the `DITA2GRAPH_SOURCE_ROOT`/
+/// `DITA2GRAPH_DITACRAFT_LSP_ROOT`/`DITA2GRAPH_NODE_BIN` environment
+/// variables; then `--source-root`/`--ditacraft-lsp-root`/`--node-bin`
+/// CLI flags, which win over everything else. Never errors: an
+/// unconfigured `source_root` just means `validate_live` reports its
+/// own clear configuration error when actually called (`tools.rs`),
+/// rather than this function -- or `main()` -- failing to start a
+/// server that every *other* tool works fine without.
+fn resolve_live_validation_config(args: &[String]) -> live::LiveValidationConfig {
+    let mut config = live::LiveValidationConfig::default();
+
+    if let Some(config_path) = find_flag_value(args, "--config")
+        && let Ok(raw) = fs_read_to_string(Path::new(config_path))
+    {
+        match toml::from_str::<DitaSection>(&raw) {
+            Ok(parsed) => {
+                if let Some(source_root) = parsed.dita.and_then(|d| d.source_root) {
+                    let config_dir = Path::new(config_path)
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."));
+                    config.source_root = Some(config_dir.join(source_root));
+                }
+            }
+            Err(e) => eprintln!("dita2graph-mcp: ignoring unparseable {config_path}: {e}"),
+        }
+    }
+
+    if let Ok(v) = std::env::var("DITA2GRAPH_SOURCE_ROOT") {
+        config.source_root = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("DITA2GRAPH_DITACRAFT_LSP_ROOT") {
+        config.lsp_root = PathBuf::from(v);
+    }
+    if let Ok(v) = std::env::var("DITA2GRAPH_NODE_BIN") {
+        config.node_bin = v;
+    }
+
+    if let Some(v) = find_flag_value(args, "--source-root") {
+        config.source_root = Some(PathBuf::from(v));
+    }
+    if let Some(v) = find_flag_value(args, "--ditacraft-lsp-root") {
+        config.lsp_root = PathBuf::from(v);
+    }
+    if let Some(v) = find_flag_value(args, "--node-bin") {
+        config.node_bin = v.to_string();
+    }
+
+    config
+}
+
+/// Finds `--flag value` anywhere in `args` (not just positionally
+/// first, unlike `resolve_bundle_root`'s `--config` handling) and
+/// returns `value`. Used for the optional `validate_live` flags, which
+/// can be combined with either bundle-root form (`--config <path>` or a
+/// bare positional path).
+fn find_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+}
+
+/// Removes `--source-root`/`--ditacraft-lsp-root`/`--node-bin` and
+/// their values from `args`, so `resolve_bundle_root` -- which only
+/// understands `--config <path>` or a single positional path -- sees
+/// just the bundle-root-relevant arguments regardless of where on the
+/// command line the live-validation flags were placed.
+fn strip_live_validation_flags(args: &[String]) -> Vec<String> {
+    const LIVE_FLAGS: [&str; 3] = ["--source-root", "--ditacraft-lsp-root", "--node-bin"];
+    let mut result = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if LIVE_FLAGS.contains(&args[i].as_str()) {
+            i += 2; // skip the flag and its value
+        } else {
+            result.push(args[i].clone());
+            i += 1;
+        }
+    }
+    result
 }
 
 /// Dispatches one JSON-RPC message, returning the response to write (or
@@ -173,6 +298,35 @@ mod tests {
     };
 
     #[test]
+    fn resolve_bundle_root_tolerates_a_malformed_dita_section() {
+        // Regression test: bundle-root resolution (needed by every tool,
+        // not just validate_live) must not fail just because a
+        // hand-edited `[dita]` table has the wrong shape -- that table
+        // is read only by resolve_live_validation_config, which already
+        // degrades gracefully on its own parse errors; a shared struct
+        // used to make bundle_root_from_config's parse fail too.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("okf")).unwrap();
+        let config_path = dir.path().join("mcp-server.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\nname = \"dita2graph\"\n[graph]\nokf = \"okf\"\n\
+             [dita]\nsource_root = [\"a\", \"b\"]\n",
+        )
+        .unwrap();
+
+        let resolved = resolve_bundle_root(&[
+            "--config".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
     fn resolve_bundle_root_uses_a_real_config_file() {
         let dir = sample_bundle_root();
         write_mcp_config(dir.path()).unwrap();
@@ -204,6 +358,85 @@ mod tests {
     #[test]
     fn resolve_bundle_root_errors_when_config_flag_has_no_path() {
         assert!(resolve_bundle_root(&["--config".to_string()]).is_err());
+    }
+
+    #[test]
+    fn strip_live_validation_flags_removes_source_root_before_a_positional_bundle_root() {
+        let args = [
+            "--source-root".to_string(),
+            "sample-docs".to_string(),
+            "some/bundle/dir".to_string(),
+        ];
+        assert_eq!(
+            strip_live_validation_flags(&args),
+            vec!["some/bundle/dir".to_string()]
+        );
+    }
+
+    #[test]
+    fn strip_live_validation_flags_removes_all_three_flags_around_a_config_path() {
+        let args = [
+            "--node-bin".to_string(),
+            "/opt/node/bin/node".to_string(),
+            "--config".to_string(),
+            "mcp-server.toml".to_string(),
+            "--ditacraft-lsp-root".to_string(),
+            "/opt/ditacraft-lsp".to_string(),
+        ];
+        assert_eq!(
+            strip_live_validation_flags(&args),
+            vec!["--config".to_string(), "mcp-server.toml".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_bundle_root_works_when_combined_with_source_root_either_order() {
+        let before = strip_live_validation_flags(&[
+            "--source-root".to_string(),
+            "sample-docs".to_string(),
+            "some/bundle/dir".to_string(),
+        ]);
+        assert_eq!(
+            resolve_bundle_root(&before).unwrap(),
+            PathBuf::from("some/bundle/dir")
+        );
+
+        let after = strip_live_validation_flags(&[
+            "some/bundle/dir".to_string(),
+            "--source-root".to_string(),
+            "sample-docs".to_string(),
+        ]);
+        assert_eq!(
+            resolve_bundle_root(&after).unwrap(),
+            PathBuf::from("some/bundle/dir")
+        );
+    }
+
+    #[test]
+    fn resolve_live_validation_config_reads_dita_source_root_when_config_flag_is_not_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("mcp-server.toml");
+        std::fs::write(
+            &config_path,
+            "[server]\nname = \"dita2graph\"\n[graph]\nokf = \"okf\"\n\
+             [dita]\nsource_root = \"../sample-docs\"\n",
+        )
+        .unwrap();
+
+        // --config is preceded by another live-validation flag here, on
+        // purpose -- regression test for a bug where the `[dita]
+        // source_root` table was only ever read when `--config`
+        // happened to be args[0], unlike every other live-validation
+        // flag (and unlike resolve_bundle_root via
+        // strip_live_validation_flags), which tolerate any ordering.
+        let args = [
+            "--node-bin".to_string(),
+            "/opt/node/bin/node".to_string(),
+            "--config".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ];
+        let config = resolve_live_validation_config(&args);
+        assert_eq!(config.source_root, Some(dir.path().join("../sample-docs")));
     }
 
     fn sample_bundle_root() -> tempfile::TempDir {
@@ -365,6 +598,64 @@ mod tests {
         assert!(names.contains(&"find_related_topics"));
         assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
+        assert!(names.contains(&"validate_live"));
+    }
+
+    #[test]
+    fn validate_live_reports_a_clear_error_with_no_source_root_configured() {
+        let dir = sample_bundle_root();
+        // Default live config: no source_root -- must fail with a
+        // configuration error, not attempt to spawn `node` at all.
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "validate_live", "arguments": { "topicId": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("--source-root"), "got: {text}");
+    }
+
+    #[test]
+    fn validate_live_reports_a_clear_error_when_the_resolved_source_file_is_missing() {
+        let dir = sample_bundle_root();
+        let empty_source_root = tempfile::tempdir().unwrap();
+        let live_config = live::LiveValidationConfig {
+            source_root: Some(empty_source_root.path().to_path_buf()),
+            ..live::LiveValidationConfig::default()
+        };
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "validate_live", "arguments": { "topicId": "installing-product" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()).with_live_config(live_config),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("does not exist"), "got: {text}");
+    }
+
+    #[test]
+    fn validate_live_reports_an_unknown_topic_id_like_other_tools_do() {
+        let dir = sample_bundle_root();
+        let live_config = live::LiveValidationConfig {
+            source_root: Some(dir.path().to_path_buf()),
+            ..live::LiveValidationConfig::default()
+        };
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "validate_live", "arguments": { "topicId": "no-such-topic" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()).with_live_config(live_config),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], true);
     }
 
     #[test]
