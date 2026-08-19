@@ -34,12 +34,25 @@ use std::time::Duration;
 /// plus a pathological document, not normal operation.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long to wait after `textDocument/didOpen` before pulling
-/// diagnostics -- past DitaCraft's own 300ms validation debounce, with
-/// margin for its async key-space BFS across a map hierarchy. See the
-/// call site in `run_session` for what was actually observed without
-/// this delay.
+/// How long to wait after `textDocument/didOpen` before the *first*
+/// diagnostic pull -- past DitaCraft's own 300ms validation debounce,
+/// with margin for its async key-space BFS across a map hierarchy. See
+/// the call site in `run_session` for what was actually observed
+/// without this delay. Not the only wait: `run_session` keeps polling
+/// past this point (`DIAGNOSTIC_POLL_INTERVAL`/`MAX_DIAGNOSTIC_POLLS`
+/// below) until results stop changing, since a single fixed delay isn't
+/// long enough for every map size.
 const DIAGNOSTIC_SETTLE_DELAY: Duration = Duration::from_millis(600);
+
+/// Interval between re-pulls once the settle delay has elapsed.
+const DIAGNOSTIC_POLL_INTERVAL: Duration = Duration::from_millis(400);
+
+/// Upper bound on re-pulls after the first one -- caps the extra time
+/// this can add at `MAX_DIAGNOSTIC_POLLS * DIAGNOSTIC_POLL_INTERVAL`
+/// (2.4s), comfortably inside `RESPONSE_TIMEOUT`. A document whose
+/// diagnostics are still changing after this many polls just returns
+/// its latest snapshot rather than polling forever.
+const MAX_DIAGNOSTIC_POLLS: u32 = 6;
 
 /// Where to find the vendored DitaCraft LSP bundle and how to invoke
 /// it. `Default` points at this crate's own `vendor/ditacraft-lsp/`
@@ -284,8 +297,8 @@ fn run_session(
 ) -> Result<Vec<LiveDiagnostic>> {
     let mut reader = std::io::BufReader::new(stdout);
 
-    let root_uri = format!("file://{}", workspace_root.display());
-    let file_uri = format!("file://{}", file_path.display());
+    let root_uri = path_to_file_uri(workspace_root)?;
+    let file_uri = path_to_file_uri(file_path)?;
 
     write_message(
         &mut stdin,
@@ -327,46 +340,96 @@ fn run_session(
     // either has settled -- was confirmed live to return spurious
     // DITA-XREF-001/DITA-KEY-001 findings for targets and keys that do
     // exist, on a topic whose map hasn't finished resolving yet.
-    // Waiting past the debounce window (with margin for the key-space
-    // BFS) fixes it; there's no server-pushed "diagnostics are ready"
-    // signal implemented in the vendored bundle for this client to wait
-    // on instead (`workspace/diagnostic/refresh` is sent immediately on
-    // open, before validation finishes, not after -- confirmed by log
-    // message ordering, so waiting on it wouldn't help).
+    // There's no server-pushed "diagnostics are ready" signal
+    // implemented in the vendored bundle to wait on instead
+    // (`workspace/diagnostic/refresh` is sent immediately on open,
+    // before validation finishes, not after -- confirmed by log message
+    // ordering). So: wait past the debounce window, then keep re-pulling
+    // until two consecutive pulls agree (or the poll cap is hit) --
+    // a single fixed delay only covers documents whose key-space BFS
+    // finishes within it; a larger map hierarchy can still be resolving
+    // past that point.
     std::thread::sleep(DIAGNOSTIC_SETTLE_DELAY);
 
-    write_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0", "id": 2, "method": "textDocument/diagnostic",
-            "params": { "textDocument": { "uri": file_uri } },
-        }),
-    )?;
-    let diagnostic_result = read_response(&mut reader, 2)?;
+    let mut next_id: u64 = 2;
+    let mut items = pull_diagnostics(&mut stdin, &mut reader, &file_uri, next_id)?;
+    for _ in 0..MAX_DIAGNOSTIC_POLLS {
+        std::thread::sleep(DIAGNOSTIC_POLL_INTERVAL);
+        next_id += 1;
+        let next_items = pull_diagnostics(&mut stdin, &mut reader, &file_uri, next_id)?;
+        if next_items == items {
+            break;
+        }
+        items = next_items;
+    }
 
     // Best-effort from here on: the diagnostics we actually came for are
-    // already in `diagnostic_result` above. `shutdown`/`exit` are pure
-    // cleanup courtesy to the child (LSP spec) -- a broken pipe on
-    // either write (e.g. the child exiting on its own right after
-    // answering the diagnostic request) must not turn a *successful*
-    // call into an error and discard the diagnostics we already have.
+    // already in `items` above. `shutdown`/`exit` are pure cleanup
+    // courtesy to the child (LSP spec) -- a broken pipe on either write
+    // (e.g. the child exiting on its own right after answering the last
+    // diagnostic request) must not turn a *successful* call into an
+    // error and discard the diagnostics we already have.
     // `validate_file`'s `child.kill()`/`wait()` reap the process
     // regardless of whether this handshake completes cleanly.
+    next_id += 1;
     let _ = write_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
+        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown", "params": null }),
     );
-    let _ = read_response(&mut reader, 3);
+    let _ = read_response(&mut reader, next_id);
     let _ = write_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
     );
 
-    let items = diagnostic_result
-        .get("items")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
     serde_json::from_value(items).context("parsing textDocument/diagnostic result items")
+}
+
+/// Sends one `textDocument/diagnostic` pull request with the given
+/// request `id` and returns its `items` array (or an empty one if the
+/// response omitted it).
+fn pull_diagnostics<R: BufRead>(
+    stdin: &mut ChildStdin,
+    reader: &mut R,
+    file_uri: &str,
+    id: u64,
+) -> Result<Value> {
+    write_message(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/diagnostic",
+            "params": { "textDocument": { "uri": file_uri } },
+        }),
+    )?;
+    let result = read_response(reader, id)?;
+    Ok(result.get("items").cloned().unwrap_or_else(|| json!([])))
+}
+
+/// Converts an absolute filesystem path to a `file://` URI,
+/// percent-encoding every byte outside RFC 3986's unreserved set
+/// (letters, digits, `-._~`), `/` aside (kept as the path separator).
+/// A raw `format!("file://{}", path.display())` left a space, `#`, `%`,
+/// `?`, or any non-ASCII byte unencoded -- the vendored LSP's own URI
+/// handling (`vscode-uri`, used to compare href/keyref targets against
+/// document URIs) treats those specially (`#` starts a fragment; a
+/// literal space or `%` is simply invalid unescaped), so a workspace or
+/// topic file whose path contains one broke every cross-reference
+/// lookup against it, the same "target not found" false positive the
+/// `canonicalize()` call above exists to prevent for relative paths.
+fn path_to_file_uri(path: &Path) -> Result<String> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow!("{} is not valid UTF-8", path.display()))?;
+    let mut uri = String::from("file://");
+    for byte in path_str.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                uri.push(byte as char);
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    Ok(uri)
 }
 
 fn write_message<W: Write>(w: &mut W, value: &Value) -> Result<()> {
@@ -515,6 +578,42 @@ mod tests {
         assert_eq!(severity_label(None), "unknown");
     }
 
+    #[test]
+    fn path_to_file_uri_leaves_unreserved_characters_unencoded() {
+        let uri = path_to_file_uri(Path::new("/home/user/project/topic.dita")).unwrap();
+        assert_eq!(uri, "file:///home/user/project/topic.dita");
+    }
+
+    #[test]
+    fn path_to_file_uri_percent_encodes_a_space() {
+        // Regression test: a raw `file://{path}` left spaces unencoded,
+        // which the vendored LSP's URI handling doesn't accept as part
+        // of a path -- breaking every href/keyref comparison against a
+        // workspace or topic path containing one (e.g. "My Docs").
+        let uri = path_to_file_uri(Path::new("/home/user/My Docs/topic.dita")).unwrap();
+        assert_eq!(uri, "file:///home/user/My%20Docs/topic.dita");
+    }
+
+    #[test]
+    fn path_to_file_uri_percent_encodes_reserved_uri_characters() {
+        // '#' starts a URI fragment, '%' begins a percent-escape, and
+        // '?' starts a query string -- all three must themselves be
+        // encoded when they're literal path characters, or the
+        // resulting URI's path is truncated/misparsed at that point.
+        let uri = path_to_file_uri(Path::new("/docs/install guide #2 (100%)?.dita")).unwrap();
+        assert_eq!(
+            uri,
+            "file:///docs/install%20guide%20%232%20%28100%25%29%3F.dita"
+        );
+    }
+
+    #[test]
+    fn path_to_file_uri_percent_encodes_non_ascii_bytes() {
+        let uri = path_to_file_uri(Path::new("/docs/café.dita")).unwrap();
+        // "é" is the two UTF-8 bytes 0xC3 0xA9.
+        assert_eq!(uri, "file:///docs/caf%C3%A9.dita");
+    }
+
     /// Real end-to-end smoke test against the vendored bundle. Skips
     /// (rather than fails) when `node` isn't on `PATH` -- `rust.yml`
     /// doesn't install Node.js (only `integration.yml`'s DITA-OT job
@@ -614,5 +713,59 @@ mod tests {
             "cross-reference/key lookups should have resolved against the real map, \
              got: {diagnostics:#?}"
         );
+    }
+
+    /// Regression test for the `path_to_file_uri` unit tests above,
+    /// exercised through the real vendored bundle: a workspace root
+    /// containing a space (a common, entirely valid path on every
+    /// platform this targets) must not turn into `file://` URIs the
+    /// LSP's own URI handling mis-resolves. Same fixture as the
+    /// relative-path test above, copied into a directory whose name has
+    /// a space in it.
+    #[test]
+    fn validate_file_resolves_cross_references_given_a_workspace_root_with_a_space() {
+        if Command::new("node").arg("--version").output().is_err() {
+            eprintln!("skipping: no `node` on PATH");
+            return;
+        }
+        let config = LiveValidationConfig::default();
+        if !config.lsp_root.join("dist").join("lsp-server.js").is_file() {
+            eprintln!(
+                "skipping: vendored bundle not found at {}",
+                config.lsp_root.display()
+            );
+            return;
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let workspace_root = parent.path().join("sample docs");
+        copy_dir_recursive(Path::new("../../sample-docs"), &workspace_root).unwrap();
+        let file_path = workspace_root.join("topics/installing-product.dita");
+        assert!(file_path.is_file());
+
+        let diagnostics = validate_file(&config, &workspace_root, &file_path).unwrap();
+
+        assert!(
+            diagnostics.iter().all(|d| d.code.as_ref().is_none_or(|c| {
+                let c = code_str(c);
+                c != "DITA-XREF-001" && c != "DITA-KEY-001"
+            })),
+            "cross-reference/key lookups should have resolved even with a space \
+             in the workspace path, got: {diagnostics:#?}"
+        );
+    }
+
+    fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let dest = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_dir_recursive(&entry.path(), &dest)?;
+            } else {
+                std::fs::copy(entry.path(), dest)?;
+            }
+        }
+        Ok(())
     }
 }
