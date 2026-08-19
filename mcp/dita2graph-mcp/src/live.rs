@@ -344,15 +344,23 @@ fn run_session(
     )?;
     let diagnostic_result = read_response(&mut reader, 2)?;
 
-    write_message(
+    // Best-effort from here on: the diagnostics we actually came for are
+    // already in `diagnostic_result` above. `shutdown`/`exit` are pure
+    // cleanup courtesy to the child (LSP spec) -- a broken pipe on
+    // either write (e.g. the child exiting on its own right after
+    // answering the diagnostic request) must not turn a *successful*
+    // call into an error and discard the diagnostics we already have.
+    // `validate_file`'s `child.kill()`/`wait()` reap the process
+    // regardless of whether this handshake completes cleanly.
+    let _ = write_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": null }),
-    )?;
+    );
     let _ = read_response(&mut reader, 3);
-    write_message(
+    let _ = write_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
-    )?;
+    );
 
     let items = diagnostic_result
         .get("items")
