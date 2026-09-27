@@ -443,13 +443,23 @@ state, most-complete first:
    sqlite` answers the same unscoped and relation-scoped queries
    identically from either backend (order aside — neither backend
    promises row order), and a rebuild from a smaller model doesn't leave
-   stale rows for a removed topic queryable. **Not yet done: incremental
-   rebuild** (diffing against an existing `graph.db` on rebuild, keyed by
-   source-file hash, so an unchanged topic isn't rewritten) — `graph.db`
-   is always a full rewrite today, and RocksDB storage (for very large
-   graphs, per §7) remains unimplemented. The MCP server still reads
-   `graph.json`/`rag/` directly (`BundleReader`), not `graph.db` — a
-   natural following step, not yet wired.
+   stale rows for a removed topic queryable. **`dita2graph-mcp` reads it
+   too**, now wired: `BundleReader::open` prefers `graph.db` over
+   `graph.json` whenever it exists, skipping the JSON parse entirely and
+   loading the identical nodes/edges via indexed SQL instead — verified
+   against a real server with `graph.json` deleted afterward, answering
+   `find_related_topics` from `graph.db` alone. `run_build` deletes any
+   leftover `graph.db` from an earlier `--store sqlite` build when a
+   later rebuild omits it, so its mere presence stays a reliable,
+   race-free signal for "the most recent build asked for this" —
+   `BundleCache`'s fingerprint watches its mtime too, alongside
+   `graph.json`/`rag/chunks.jsonl`, so a `graph.db` that appears,
+   changes, or disappears mid-session is picked up the same way those
+   two already were. **Not yet done: incremental rebuild** (diffing
+   against an existing `graph.db` on rebuild, keyed by source-file hash,
+   so an unchanged topic isn't rewritten) — `graph.db` is always a full
+   rewrite today, and RocksDB storage (for very large graphs, per §7)
+   remains unimplemented.
 4. **Full `<navref>` map composition** — would need this plugin to
    independently parse and merge referenced navigation maps outside
    DITA-OT's own pipeline, losing keyref/conref resolution and DITAVAL

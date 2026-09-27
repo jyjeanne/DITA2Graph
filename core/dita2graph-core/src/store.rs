@@ -127,6 +127,48 @@ fn row_to_pair(row: &rusqlite::Row) -> rusqlite::Result<(String, String)> {
     Ok((row.get(0)?, row.get(1)?))
 }
 
+/// `(id, type)`, as dumped by [`read_sqlite_store`].
+pub type StoreNode = (String, String);
+/// `(from, to, relation)`, as dumped by [`read_sqlite_store`].
+pub type StoreEdge = (String, String, String);
+
+/// Every node (`id`, `type`) and edge (`from`, `to`, `relation`) in
+/// `db_path` -- the same full nodes+edges view `graph.json` itself
+/// provides, for a caller that wants to load a bundle straight from
+/// `graph.db` instead of parsing `graph.json`, skipping the JSON parse
+/// entirely (`mcp/dita2graph-mcp/src/bundle.rs::BundleReader::open`,
+/// the "fast MCP queries" motivation §7 documents for this file). Row
+/// order is whatever SQLite returns with no `ORDER BY` -- not guaranteed
+/// to match `graph.json`'s insertion order, and callers that care about
+/// order (none in this codebase do -- `BundleReader`'s own node storage
+/// is a `HashMap`, unordered regardless of source) need to sort it
+/// themselves.
+pub fn read_sqlite_store(db_path: &Path) -> Result<(Vec<StoreNode>, Vec<StoreEdge>)> {
+    let conn =
+        Connection::open(db_path).with_context(|| format!("opening {}", db_path.display()))?;
+
+    let mut node_stmt = conn
+        .prepare("SELECT id, type FROM nodes")
+        .context("preparing node dump")?;
+    let nodes = node_stmt
+        .query_map([], row_to_pair)
+        .context("reading graph.db nodes")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting graph.db nodes")?;
+    drop(node_stmt);
+
+    let mut edge_stmt = conn
+        .prepare("SELECT from_id, to_id, relation FROM edges")
+        .context("preparing edge dump")?;
+    let edges = edge_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .context("reading graph.db edges")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting graph.db edges")?;
+
+    Ok((nodes, edges))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +343,44 @@ mod tests {
         assert_eq!(
             count, 1,
             "the second node should replace the first, not duplicate it"
+        );
+    }
+
+    #[test]
+    fn read_sqlite_store_dumps_every_node_and_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        write_sqlite_store(&sample_nodes(), dir.path()).unwrap();
+
+        let (mut nodes, mut edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        nodes.sort();
+        edges.sort();
+        assert_eq!(
+            nodes,
+            vec![
+                ("configuration".to_string(), "Concept".to_string()),
+                ("installing-product".to_string(), "Task".to_string()),
+                ("user-guide".to_string(), "DITA Map".to_string()),
+            ]
+        );
+        assert_eq!(
+            edges,
+            vec![
+                (
+                    "installing-product".to_string(),
+                    "configuration".to_string(),
+                    "references".to_string()
+                ),
+                (
+                    "installing-product".to_string(),
+                    "configuration".to_string(),
+                    "requires".to_string()
+                ),
+                (
+                    "user-guide".to_string(),
+                    "installing-product".to_string(),
+                    "contains".to_string()
+                ),
+            ]
         );
     }
 }

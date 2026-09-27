@@ -305,17 +305,21 @@ need a full-file JSON parse on a real corpus; it can always be rebuilt
 from the same input the rest of the bundle comes from, the same
 relationship `okf-rs` itself uses between its bundle and its
 `okf-search`/`okf-graph` indices. `rag/` is likewise derived and
-rebuildable from the same normalized model as `okf/` (§13.1), and unlike
-`graph.db` is read by MCP tools already (`search_content`,
-`analyze_impact`, `explain_task`).
+rebuildable from the same normalized model as `okf/` (§13.1).
 
 **Implementation status of the tree above:** `okf/`, `graph.json`, and
 `rag/` are all written today by `dita2graph-core build`, unconditionally.
-`graph.db` is written only when `--store sqlite` is given (§7/§3.3) —
-`dita2graph-mcp` itself doesn't read `graph.db` yet, only
-`dita2graph-core query` does; wiring the MCP server to prefer it when
-present is a natural following step, not yet done. `mcp/` is written
-only when `args.dita2graph.mcp=true` (§2.3), and only as
+`graph.db` is written only when `--store sqlite` is given (§7/§3.3), and
+both readers use it when present: `dita2graph-core query` (§3.4) and
+`dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over
+`graph.json` whenever it exists — skipping the JSON parse entirely and
+loading the identical nodes/edges via indexed SQL instead
+(`mcp/dita2graph-mcp/src/bundle.rs::open`). `run_build` removes any
+`graph.db` left over from an earlier `--store sqlite` build when a later
+rebuild omits it, so its mere presence stays a reliable signal for
+"the most recent build asked for this" for both readers, not a stale
+leftover silently preferred over a freshly rewritten `graph.json`. `mcp/`
+is written only when `args.dita2graph.mcp=true` (§2.3), and only as
 `mcp-server.toml` (§5.4) — `mcp/manifest.json` is not written by
 anything; a `manifest.json` would describe declared resources/tools the
 way §5.1 describes them, but `dita2graph-mcp` answers `tools/list`
@@ -535,7 +539,9 @@ versioned on its own.
   in-memory normalized model — not a second parse, not a divergent
   source of truth. `rusqlite`'s `bundled` feature compiles SQLite from
   vendored C source, so this stays offline at build time too, same as
-  the rest of this crate's dependencies. RocksDB remains unimplemented.
+  the rest of this crate's dependencies. Both `dita2graph-core query` and
+  `dita2graph-mcp`'s `BundleReader` (§2.4) read it when present. RocksDB
+  remains unimplemented.
 
 ### 3.4 CLI (Rust, Clap-based)
 

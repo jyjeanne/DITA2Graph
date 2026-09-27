@@ -38,7 +38,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
 | Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
-| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges; `dita2graph-core query --store <path>` reads either a `graph.db` file directly or a bundle directory's `graph.json` (unchanged default). Still open: incremental rebuild (diffing against an existing store, keyed by source-file hash — `graph.db` is always a full rewrite today), RocksDB storage, and wiring `dita2graph-mcp` itself to read `graph.db` |
+| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: incremental rebuild (diffing against an existing store, keyed by source-file hash — `graph.db` is always a full rewrite today) and RocksDB storage |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions: full `<navref>` map composition (`mapref`/
@@ -217,8 +217,10 @@ cat gradle-build/build/dita2graph/rag/chunks.jsonl
 
 # Optional: also write a SQLite-backed query index alongside graph.json
 # (§7/§3.3) -- an indexed mirror of the same nodes/edges, for fast
-# `query` lookups on a real, sizeable corpus. Skip this and `query` keeps
-# reading graph.json directly, unchanged from before this existed.
+# lookups on a real, sizeable corpus. Both `query` and `dita2graph-mcp`
+# itself prefer graph.db over graph.json whenever it exists. Skip this
+# and both keep reading graph.json directly, unchanged from before this
+# existed.
 ./target/release/dita2graph-core build \
   --input <normalized-model.json> --output gradle-build/build/dita2graph \
   --store sqlite

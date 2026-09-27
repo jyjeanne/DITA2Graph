@@ -112,7 +112,71 @@ pub struct BundleReader {
 }
 
 impl BundleReader {
+    /// Loads nodes/edges from `graph.db` when it exists (skipping the
+    /// `graph.json` parse entirely), falling back to `graph.json`
+    /// otherwise -- the "fast MCP queries" motivation
+    /// `docs/plugin-specification.md` §2.4/§7 documents for `graph.db`
+    /// (`core/dita2graph-core/src/store.rs`), finally wired up on the
+    /// read side. `graph.db`'s existence is a reliable signal for "the
+    /// most recent `dita2graph-core build` used `--store sqlite`" --
+    /// `main.rs::run_build` removes any stale leftover file when a later
+    /// build omits `--store sqlite`, so there's no risk of silently
+    /// preferring an out-of-date index here.
+    ///
+    /// Every downstream method (`all_nodes`, `edges_from`, `edges_to`,
+    /// `title` via `read_concept`) operates on the same `nodes`/`edges`
+    /// fields regardless of which source populated them -- this is the
+    /// only place the two backends differ.
+    ///
+    /// A `graph.db` that exists but fails to read (e.g. an interrupted
+    /// `--store sqlite` build: `write_sqlite_store` removes the old file,
+    /// *then* creates its schema, *then* populates it, so a crash in that
+    /// window leaves a `graph.db` with no usable tables) falls back to
+    /// `graph.json` rather than failing `open` outright -- `graph.json`
+    /// is written earlier in the same `build` run, before
+    /// `write_sqlite_store` even starts, so it's unaffected and safe to
+    /// use. Without this, a broken `graph.db` would take down every MCP
+    /// tool call for a bundle whose `graph.json` is perfectly fine.
     pub fn open(root: &Path) -> Result<Self> {
+        let db_path = root.join("graph.db");
+        let (nodes, edges) = if db_path.exists() {
+            match dita2graph_core::read_sqlite_store(&db_path) {
+                Ok((raw_nodes, raw_edges)) => {
+                    let nodes = raw_nodes
+                        .into_iter()
+                        .map(|(id, type_)| (id.clone(), GraphNode { id, type_ }))
+                        .collect();
+                    let edges = raw_edges
+                        .into_iter()
+                        .map(|(from, to, relation)| GraphEdge { from, to, relation })
+                        .collect();
+                    (nodes, edges)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "dita2graph-mcp: {} exists but couldn't be read ({e:#}); falling back to graph.json",
+                        db_path.display()
+                    );
+                    Self::load_from_graph_json(root)?
+                }
+            }
+        } else {
+            Self::load_from_graph_json(root)?
+        };
+        Ok(BundleReader {
+            root: root.to_path_buf(),
+            nodes,
+            edges,
+            concept_cache: RefCell::new(HashMap::new()),
+            rag_chunks_cache: RefCell::new(None),
+            embeddings_cache: RefCell::new(None),
+        })
+    }
+
+    /// The original, `graph.json`-only load path -- still the sole
+    /// source when `graph.db` doesn't exist, and the fallback when it
+    /// exists but can't be read (see [`Self::open`]).
+    fn load_from_graph_json(root: &Path) -> Result<(HashMap<String, GraphNode>, Vec<GraphEdge>)> {
         let graph_path = root.join("graph.json");
         let raw = fs::read_to_string(&graph_path).with_context(|| {
             format!(
@@ -122,14 +186,10 @@ impl BundleReader {
         })?;
         let graph: GraphJson = serde_json::from_str(&raw)
             .with_context(|| format!("parsing {}", graph_path.display()))?;
-        Ok(BundleReader {
-            root: root.to_path_buf(),
-            nodes: graph.nodes.into_iter().map(|n| (n.id.clone(), n)).collect(),
-            edges: graph.edges,
-            concept_cache: RefCell::new(HashMap::new()),
-            rag_chunks_cache: RefCell::new(None),
-            embeddings_cache: RefCell::new(None),
-        })
+        Ok((
+            graph.nodes.into_iter().map(|n| (n.id.clone(), n)).collect(),
+            graph.edges,
+        ))
     }
 
     pub fn all_nodes(&self) -> impl Iterator<Item = &GraphNode> {
@@ -303,9 +363,9 @@ impl BundleReader {
     }
 }
 
-/// The mtimes `BundleCache` fingerprints a bundle by. Both files, not
-/// just `graph.json` -- `dita2graph-core build` (`main.rs::run_build`)
-/// writes them in two separate steps, `write_bundle` (which writes
+/// The mtimes `BundleCache` fingerprints a bundle by. Not just
+/// `graph.json` -- `dita2graph-core build` (`main.rs::run_build`)
+/// writes its outputs in separate steps, `write_bundle` (which writes
 /// `graph.json` last, after every concept file) finishing before
 /// `write_rag_index` even starts. Fingerprinting `graph.json` alone
 /// would mean a `get()` landing in that window reopens the reader (safe
@@ -316,7 +376,14 @@ impl BundleReader {
 /// the *next* rebuild -- meanwhile `search_content`/`analyze_impact`
 /// silently serve outdated excerpts against an otherwise fully
 /// up-to-date bundle for the entire rest of the session.
-type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>);
+///
+/// The third component is `graph.db`'s mtime, for the same reason:
+/// `write_sqlite_store` (or its removal, when a later build omits
+/// `--store sqlite`) runs after both of the above, so a fingerprint that
+/// only watched `graph.json`/`rag/chunks.jsonl` could miss a `graph.db`
+/// rewrite (or removal) entirely and keep `BundleReader::open`'s choice
+/// of source frozen at whatever it was on the previous load.
+type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>, Option<SystemTime>);
 
 /// The process-lifetime handle `main.rs` holds across every JSON-RPC
 /// request, instead of calling `BundleReader::open` fresh per
@@ -427,7 +494,11 @@ impl BundleCache {
                 .and_then(|m| m.modified())
                 .ok()
         };
-        (mtime_of("graph.json"), mtime_of("rag/chunks.jsonl"))
+        (
+            mtime_of("graph.json"),
+            mtime_of("rag/chunks.jsonl"),
+            mtime_of("graph.db"),
+        )
     }
 
     pub fn get(&mut self) -> Result<&BundleReader> {
@@ -474,7 +545,7 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
-        write_rag_index,
+        write_rag_index, write_sqlite_store,
     };
     use std::{fs, thread, time::Duration};
 
@@ -532,6 +603,64 @@ mod tests {
             "Original Title",
             "second call on the same BundleReader should serve the cached read, not the edit"
         );
+    }
+
+    /// `BundleReader::open` has two independent read paths for the same
+    /// nodes/edges data (`graph.db` when present, `graph.json`
+    /// otherwise) -- the real risk is those paths silently drifting and
+    /// producing different results for the same underlying bundle. Opens
+    /// a `graph.json`-only bundle, records what it sees, then adds
+    /// `graph.db` from the identical model (exactly what `--store
+    /// sqlite` does) and asserts a fresh `open` sees the same nodes and
+    /// edges, order aside.
+    #[test]
+    fn open_sees_the_same_nodes_and_edges_from_graph_db_as_from_graph_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = one_topic_nodes("topic-a", "Title A");
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+
+        let from_json = BundleReader::open(dir.path()).unwrap();
+        let mut json_node_ids: Vec<&str> = from_json.all_nodes().map(|n| n.id.as_str()).collect();
+        json_node_ids.sort();
+        let mut json_edges: Vec<(String, String, String)> = from_json
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone(), e.relation.clone()))
+            .collect();
+        json_edges.sort();
+
+        write_sqlite_store(&nodes, dir.path()).unwrap();
+        assert!(dir.path().join("graph.db").exists());
+
+        let from_db = BundleReader::open(dir.path()).unwrap();
+        let mut db_node_ids: Vec<&str> = from_db.all_nodes().map(|n| n.id.as_str()).collect();
+        db_node_ids.sort();
+        let mut db_edges: Vec<(String, String, String)> = from_db
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone(), e.relation.clone()))
+            .collect();
+        db_edges.sort();
+
+        assert_eq!(json_node_ids, db_node_ids);
+        assert_eq!(json_edges, db_edges);
+    }
+
+    /// A `graph.db` that exists but has no usable schema -- exactly what
+    /// an interrupted `--store sqlite` build leaves (`write_sqlite_store`
+    /// removes the old file, then creates its schema, then populates it;
+    /// a crash in that window leaves an unreadable file) -- must not take
+    /// `open` down when `graph.json`, written earlier in the same build,
+    /// is still perfectly valid right next to it.
+    #[test]
+    fn open_falls_back_to_graph_json_when_graph_db_exists_but_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        fs::write(dir.path().join("graph.db"), b"not a real sqlite file").unwrap();
+
+        let reader = BundleReader::open(dir.path())
+            .expect("a corrupt graph.db must not fail open() when graph.json is valid");
+        assert!(reader.all_nodes().any(|n| n.id == "topic-a"));
     }
 
     /// Same proof as above, for `rag_chunks()`.
@@ -651,6 +780,34 @@ mod tests {
             chunks.iter().any(|c| c.id == "topic-b"),
             "cache should reload once rag/chunks.jsonl changes even when graph.json didn't change again: {:?}",
             chunks.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// Mirrors the `rag/chunks.jsonl`-only-changes test above, for the
+    /// fingerprint's third component: `graph.db` appearing after
+    /// `graph.json`/`rag/chunks.jsonl` have already settled (exactly
+    /// what a `dita2graph-core build --store sqlite` looks like from the
+    /// cache's point of view, since `write_sqlite_store` runs after both)
+    /// must still trigger a reopen -- and once it does, `BundleReader`
+    /// should now be reading from `graph.db`, not `graph.json`.
+    #[test]
+    fn bundle_cache_reloads_when_only_graph_db_appears_after_graph_json_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        let mut cache = BundleCache::new(dir.path().to_path_buf());
+        assert!(cache.get().unwrap().all_nodes().any(|n| n.id == "topic-a"));
+
+        thread::sleep(Duration::from_millis(1100));
+        // A `--store sqlite` build of a *different* model -- graph.json
+        // and rag/chunks.jsonl are untouched, only graph.db is new.
+        // BundleReader::open prefers graph.db once it exists, so seeing
+        // topic-b here proves both that the fingerprint noticed and that
+        // the reopened reader actually switched sources.
+        write_sqlite_store(&one_topic_nodes("topic-b", "Title B"), dir.path()).unwrap();
+
+        assert!(
+            cache.get().unwrap().all_nodes().any(|n| n.id == "topic-b"),
+            "cache should reload once graph.db appears, even though graph.json didn't change"
         );
     }
 

@@ -196,6 +196,28 @@ fn run_build(
             store_summary.edges_written,
             output.join("graph.db").display()
         );
+    } else {
+        // `dita2graph-mcp`'s `BundleReader` prefers `graph.db` over
+        // `graph.json` whenever the file exists (`bundle.rs::open`), on
+        // the assumption that its presence means the most recent build
+        // asked for it. A leftover `graph.db` from an *earlier* build
+        // that used `--store sqlite`, followed by a later rebuild that
+        // didn't, would otherwise silently violate that assumption --
+        // the MCP server would keep serving a stale graph index forever,
+        // never touching the freshly rewritten graph.json. Removing it
+        // here keeps "graph.db exists" a reliable signal for "this
+        // build's own --store sqlite", the same discipline
+        // `write_sqlite_store` already applies *within* a single sqlite
+        // build (always starting from a clean file).
+        let stale_db = output.join("graph.db");
+        if stale_db.exists() {
+            fs::remove_file(&stale_db)
+                .with_context(|| format!("removing stale {}", stale_db.display()))?;
+            println!(
+                "removed stale {} (this build didn't request --store sqlite)",
+                stale_db.display()
+            );
+        }
     }
 
     if let (Some(model_path), Some(tokenizer_path)) = (&embedding_model, &embedding_tokenizer) {
@@ -450,6 +472,50 @@ mod tests {
                 links: vec![],
             }),
         ]
+    }
+
+    /// `dita2graph-mcp`'s `BundleReader` treats `graph.db`'s mere
+    /// existence as "the most recent build asked for --store sqlite"
+    /// (`mcp/dita2graph-mcp/src/bundle.rs::open`) -- a `graph.db` left
+    /// over from an *earlier* sqlite build, still sitting next to a
+    /// freshly rewritten `graph.json` from a later non-sqlite build,
+    /// would violate that and serve a silently stale index forever.
+    /// `run_build` must remove it when `--store` isn't `sqlite`.
+    #[test]
+    fn run_build_removes_a_stale_graph_db_when_store_reverts_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+
+        let code = run_build(
+            input_path.clone(),
+            output.clone(),
+            "sqlite".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.join("graph.db").exists());
+
+        let code = run_build(
+            input_path,
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            !output.join("graph.db").exists(),
+            "a rebuild without --store sqlite must remove the earlier build's graph.db"
+        );
     }
 
     /// The real bug risk in having two independent read paths

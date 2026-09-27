@@ -33,4 +33,4 @@ pub use okf::{BundleSummary, write_bundle};
 pub use rag::{RagSummary, write_rag_index};
 pub use relations::{infer_applies_to, infer_related_to};
 pub use secrets::{SecretFinding, scan_bundle};
-pub use store::{StoreSummary, query_sqlite_store, write_sqlite_store};
+pub use store::{StoreSummary, query_sqlite_store, read_sqlite_store, write_sqlite_store};
