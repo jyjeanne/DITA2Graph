@@ -74,6 +74,9 @@ impl Embedder {
     /// means the model produced zero tokens from non-empty input, which
     /// is worth surfacing rather than masking.
     pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        if text.trim().is_empty() {
+            return Err(anyhow!("cannot embed empty/all-whitespace text"));
+        }
         let encoding = self
             .tokenizer
             .encode(text, true)
@@ -194,9 +197,14 @@ pub struct EmbeddingSummary {
 /// Writes `<output_dir>/rag/embeddings.jsonl`: one record per topic that
 /// has chunk text (the same `shortdesc`/`body` combination
 /// `rag::write_rag_index` chunks, via the same [`chunk_text`] helper --
-/// a topic with no text has nothing to embed and is skipped, same as it
-/// is in `chunks.jsonl`). `model_name` is recorded on every record so a
-/// later query-time embedder built from a *different* model is at least
+/// a topic with no text has nothing to embed and is skipped here --
+/// unlike `chunks.jsonl`, which still writes a text-less record for
+/// such a topic, so `embeddings.jsonl` is not guaranteed to have a
+/// record for every id `chunks.jsonl` does; `search_content` already
+/// treats a missing embeddings-map entry as "no semantic signal" for
+/// that chunk, so this asymmetry is harmless). `model_name` is recorded
+/// on every record so a later query-time embedder built from a
+/// *different* model is at least
 /// identifiable as such, even though the actual mismatch guard
 /// ([`cosine_similarity`] returning `0.0` on a dimension mismatch) is
 /// enforced structurally, not by checking this string.
