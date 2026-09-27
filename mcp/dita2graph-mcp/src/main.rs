@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -31,11 +32,15 @@ fn main() -> Result<()> {
     // `--source-root x <bundle-root>` or `--config c.toml --node-bin y`
     // still resolve the bundle root correctly regardless of where the
     // live-validation flags were placed on the command line.
-    let bundle_root = resolve_bundle_root(&strip_live_validation_flags(&args))?;
+    let bundle_root =
+        resolve_bundle_root(&strip_embedding_flags(&strip_live_validation_flags(&args)))?;
+    let embedder = resolve_embedder(&args);
     // One cache for the whole process lifetime, not reopened per
     // request (bundle::BundleCache's own docs) -- a real agent session
     // against a real, sizeable bundle issues many tool calls, not one.
-    let mut cache = bundle::BundleCache::new(bundle_root).with_live_config(live_config);
+    let mut cache = bundle::BundleCache::new(bundle_root)
+        .with_live_config(live_config)
+        .with_embedder(embedder);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -104,6 +109,25 @@ struct DitaConfig {
     /// against. Relative paths are resolved against the config file's
     /// own directory, same as `graph.okf` above.
     source_root: Option<String>,
+}
+
+/// Just the optional `[embeddings]` table, parsed the same
+/// independently-ignorable way [`DitaSection`] is -- see that struct's
+/// own docs for why this isn't folded into `McpServerConfig` directly.
+/// Not written by `dita2graph-core build` today (it writes `rag/
+/// embeddings.jsonl` itself, §13.1, but doesn't echo the model/tokenizer
+/// paths it was given into `mcp-server.toml`) -- forward-compatible
+/// parsing for a hand-edited config, same as `[dita]`.
+#[derive(Deserialize, Default)]
+struct EmbeddingsSection {
+    #[serde(default)]
+    embeddings: Option<EmbeddingsConfig>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingsConfig {
+    model: Option<String>,
+    tokenizer: Option<String>,
 }
 
 /// The bundle root to serve, from either a bare positional path (the
@@ -206,6 +230,80 @@ fn resolve_live_validation_config(args: &[String]) -> live::LiveValidationConfig
     config
 }
 
+/// Resolves and loads the query-time [`dita2graph_core::Embedder`] for
+/// `search_content`'s semantic ranking (§13.1), from the same
+/// increasing-priority sources `resolve_live_validation_config` reads
+/// for `source_root`: an `mcp-server.toml` `[embeddings]` table passed
+/// via `--config`, then `DITA2GRAPH_EMBEDDING_MODEL`/
+/// `DITA2GRAPH_EMBEDDING_TOKENIZER` env vars, then `--embedding-model`/
+/// `--embedding-tokenizer` CLI flags, which win over everything else.
+/// Returns `None` -- never errors, never aborts startup -- when neither
+/// a model nor a tokenizer is configured (the common case: embeddings
+/// are opt-in) or when loading what *was* configured fails (logged to
+/// stderr); a server that can't load its embedding model should still
+/// start and serve every other tool, `search_content` included, just
+/// without semantic ranking, exactly as it already behaves against a
+/// bundle with no `rag/embeddings.jsonl` regardless of this config.
+fn resolve_embedder(args: &[String]) -> Option<Rc<dita2graph_core::Embedder>> {
+    let mut model: Option<PathBuf> = None;
+    let mut tokenizer: Option<PathBuf> = None;
+
+    if let Some(config_path) = find_flag_value(args, "--config")
+        && let Ok(raw) = fs_read_to_string(Path::new(config_path))
+    {
+        match toml::from_str::<EmbeddingsSection>(&raw) {
+            Ok(parsed) => {
+                let config_dir = Path::new(config_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                if let Some(embeddings) = parsed.embeddings {
+                    model = embeddings.model.map(|m| config_dir.join(m));
+                    tokenizer = embeddings.tokenizer.map(|t| config_dir.join(t));
+                }
+            }
+            Err(e) => eprintln!("dita2graph-mcp: ignoring unparseable {config_path}: {e}"),
+        }
+    }
+
+    if let Ok(v) = std::env::var("DITA2GRAPH_EMBEDDING_MODEL") {
+        model = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("DITA2GRAPH_EMBEDDING_TOKENIZER") {
+        tokenizer = Some(PathBuf::from(v));
+    }
+    if let Some(v) = find_flag_value(args, "--embedding-model") {
+        model = Some(PathBuf::from(v));
+    }
+    if let Some(v) = find_flag_value(args, "--embedding-tokenizer") {
+        tokenizer = Some(PathBuf::from(v));
+    }
+
+    let (model, tokenizer) = match (model, tokenizer) {
+        (Some(m), Some(t)) => (m, t),
+        (None, None) => return None,
+        _ => {
+            eprintln!(
+                "dita2graph-mcp: embedding model and tokenizer must both be set to enable \
+                 semantic search -- ignoring the one that was given"
+            );
+            return None;
+        }
+    };
+
+    match dita2graph_core::Embedder::load(&model, &tokenizer) {
+        Ok(embedder) => Some(Rc::new(embedder)),
+        Err(e) => {
+            eprintln!(
+                "dita2graph-mcp: failed to load embedding model {} / tokenizer {}: {e:#} -- \
+                 search_content will use keyword-only ranking",
+                model.display(),
+                tokenizer.display()
+            );
+            None
+        }
+    }
+}
+
 /// Finds `--flag value` anywhere in `args` (not just positionally
 /// first, unlike `resolve_bundle_root`'s `--config` handling) and
 /// returns `value`. Used for the optional `validate_live` flags, which
@@ -225,10 +323,25 @@ fn find_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 /// command line the live-validation flags were placed.
 fn strip_live_validation_flags(args: &[String]) -> Vec<String> {
     const LIVE_FLAGS: [&str; 3] = ["--source-root", "--ditacraft-lsp-root", "--node-bin"];
+    strip_flags(args, &LIVE_FLAGS)
+}
+
+/// Same purpose as `strip_live_validation_flags`, for
+/// `--embedding-model`/`--embedding-tokenizer` (`resolve_embedder`) --
+/// kept as its own function (not folded into the live-validation one)
+/// since the two flag sets configure unrelated optional features and a
+/// test exercising one set's stripping shouldn't need to know the other
+/// exists.
+fn strip_embedding_flags(args: &[String]) -> Vec<String> {
+    const EMBEDDING_FLAGS: [&str; 2] = ["--embedding-model", "--embedding-tokenizer"];
+    strip_flags(args, &EMBEDDING_FLAGS)
+}
+
+fn strip_flags(args: &[String], flags: &[&str]) -> Vec<String> {
     let mut result = Vec::with_capacity(args.len());
     let mut i = 0;
     while i < args.len() {
-        if LIVE_FLAGS.contains(&args[i].as_str()) {
+        if flags.contains(&args[i].as_str()) {
             i += 2; // skip the flag and its value
         } else {
             result.push(args[i].clone());
@@ -865,6 +978,135 @@ mod tests {
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("no rag/chunks.jsonl found"), "{text}");
         assert_eq!(response["result"]["isError"], false);
+    }
+
+    /// The toy fixture `dita2graph-core`'s own embedding tests use
+    /// (`core/dita2graph-core/tests/fixtures/embeddings/README.md`) --
+    /// shared rather than duplicated, since both crates need the exact
+    /// same deterministic clustering to make assertions like "an
+    /// install-cluster query matches an install-cluster chunk" true.
+    fn embeddings_fixture(name: &str) -> PathBuf {
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../core/dita2graph-core/tests/fixtures/embeddings"
+        ))
+        .join(name)
+    }
+
+    fn have_ort_dylib() -> bool {
+        std::env::var_os("ORT_DYLIB_PATH").is_some()
+    }
+
+    /// A bundle plus a real `rag/embeddings.jsonl` written the same way
+    /// `dita2graph-core build --embedding-model/--embedding-tokenizer`
+    /// writes one (`write_embeddings_index`), from the toy fixture's
+    /// install-cluster/weather-cluster vocabulary -- `install-notes`'s
+    /// body shares zero literal words with the queries these tests use,
+    /// only the same hand-assigned embedding cluster, so a match proves
+    /// semantic (not keyword) ranking found it.
+    fn semantic_search_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = vec![
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "install-notes".into(),
+                topic_type: TopicType::Task,
+                title: "Install Notes".into(),
+                shortdesc: None,
+                body: Some("install product installing".into()),
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/install-notes.dita".into(),
+                links: vec![],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "weather-notes".into(),
+                topic_type: TopicType::Concept,
+                title: "Weather Notes".into(),
+                shortdesc: None,
+                body: Some("weather forecast rain".into()),
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/weather-notes.dita".into(),
+                links: vec![],
+            }),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+
+        let embedder = dita2graph_core::Embedder::load(
+            &embeddings_fixture("tiny-embedding-model.onnx"),
+            &embeddings_fixture("tokenizer.json"),
+        )
+        .expect("loading toy embedding model + tokenizer");
+        dita2graph_core::write_embeddings_index(&nodes, dir.path(), &embedder, "toy-fixture")
+            .expect("writing rag/embeddings.jsonl");
+
+        dir
+    }
+
+    #[test]
+    fn search_content_finds_a_semantic_match_with_zero_keyword_overlap() {
+        if !have_ort_dylib() {
+            eprintln!("skipping: ORT_DYLIB_PATH not set (no ONNX Runtime available)");
+            return;
+        }
+        let dir = semantic_search_bundle_root();
+        let embedder = dita2graph_core::Embedder::load(
+            &embeddings_fixture("tiny-embedding-model.onnx"),
+            &embeddings_fixture("tokenizer.json"),
+        )
+        .expect("loading toy embedding model + tokenizer at query time");
+
+        let mut cache = bundle::BundleCache::new(dir.path().to_path_buf())
+            .with_embedder(Some(Rc::new(embedder)));
+        // "run download" shares no literal word with "install product
+        // installing" -- relevance_score alone would score it 0 and
+        // exclude it, same as it already excludes weather-notes.
+        let text = tools::call(
+            "search_content",
+            &json!({ "query": "run download" }),
+            &mut cache,
+        )
+        .unwrap();
+        assert!(
+            text.contains("Install Notes"),
+            "expected a semantic match despite zero keyword overlap:\n{text}"
+        );
+        assert!(
+            !text.contains("Weather Notes"),
+            "an unrelated cluster should stay below the semantic-match threshold:\n{text}"
+        );
+    }
+
+    #[test]
+    fn search_content_stays_keyword_only_without_an_embedder_configured() {
+        if !have_ort_dylib() {
+            eprintln!("skipping: ORT_DYLIB_PATH not set (no ONNX Runtime available)");
+            return;
+        }
+        let dir = semantic_search_bundle_root();
+        // No `.with_embedder(...)` -- regression check that a bundle
+        // carrying rag/embeddings.jsonl still behaves exactly like
+        // before embeddings existed when the *server* wasn't configured
+        // with one (the common case today: embeddings are opt-in on
+        // both the build and the serve side independently).
+        let mut cache = bundle::BundleCache::new(dir.path().to_path_buf());
+        let text = tools::call(
+            "search_content",
+            &json!({ "query": "run download" }),
+            &mut cache,
+        )
+        .unwrap();
+        assert!(
+            text.contains("no content matched"),
+            "expected no keyword match and no semantic ranking without an embedder:\n{text}"
+        );
     }
 
     #[test]

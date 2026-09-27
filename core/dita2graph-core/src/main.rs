@@ -11,8 +11,8 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
 use dita2graph_core::{
-    NormalizedNode, infer_applies_to, infer_related_to, scan_bundle, write_bundle,
-    write_mcp_config, write_rag_index,
+    Embedder, NormalizedNode, infer_applies_to, infer_related_to, scan_bundle, write_bundle,
+    write_embeddings_index, write_mcp_config, write_rag_index,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,17 @@ enum Command {
         /// --config` can read. Accepts "true"/"false".
         #[arg(long, default_value = "false")]
         mcp: String,
+        /// Path to an ONNX sentence-embedding model (§13.1's node-level
+        /// embeddings). Optional -- when given, must be paired with
+        /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
+        /// is written and `search_content` stays keyword-only, unchanged
+        /// from today. Requires `ORT_DYLIB_PATH` to point at a real ONNX
+        /// Runtime shared library at run time (`src/embeddings.rs`).
+        #[arg(long, requires = "embedding_tokenizer")]
+        embedding_model: Option<PathBuf>,
+        /// Path to the tokenizer.json matching `--embedding-model`.
+        #[arg(long, requires = "embedding_model")]
+        embedding_tokenizer: Option<PathBuf>,
     },
     /// Validate an existing OKF bundle with `okf-validator` (§2.5, §6.4, §10).
     Validate {
@@ -85,7 +96,17 @@ fn main() -> ExitCode {
             store,
             emit_graph_json,
             mcp,
-        } => run_build(input, output, store, emit_graph_json, mcp),
+            embedding_model,
+            embedding_tokenizer,
+        } => run_build(
+            input,
+            output,
+            store,
+            emit_graph_json,
+            mcp,
+            embedding_model,
+            embedding_tokenizer,
+        ),
         Command::Validate { bundle } => run_validate(bundle),
         Command::Query {
             output_dir,
@@ -108,6 +129,8 @@ fn run_build(
     store: String,
     emit_graph_json: String,
     mcp: String,
+    embedding_model: Option<PathBuf>,
+    embedding_tokenizer: Option<PathBuf>,
 ) -> Result<ExitCode> {
     if store != "none" {
         eprintln!(
@@ -157,6 +180,27 @@ fn run_build(
         rag_summary.chunks_written,
         output.join("rag").display()
     );
+
+    if let (Some(model_path), Some(tokenizer_path)) = (&embedding_model, &embedding_tokenizer) {
+        let model_name = model_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| model_path.display().to_string());
+        let embedder = Embedder::load(model_path, tokenizer_path).with_context(|| {
+            format!(
+                "loading embedding model {} / tokenizer {}",
+                model_path.display(),
+                tokenizer_path.display()
+            )
+        })?;
+        let embedding_summary = write_embeddings_index(&nodes, &output, &embedder, &model_name)?;
+        println!(
+            "wrote {} embedding(s) (dim {}) to {}",
+            embedding_summary.embeddings_written,
+            embedding_summary.dim,
+            output.join("rag/embeddings.jsonl").display()
+        );
+    }
 
     if mcp {
         write_mcp_config(&output)?;

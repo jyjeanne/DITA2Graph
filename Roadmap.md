@@ -392,14 +392,41 @@ state, most-complete first:
    existing `generated-from` edge as the pointer. See
    [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)
    for the design, edge cases, and exit-criteria evidence.
-2. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
-   extraction (same single pass as `okf/`), `search_content`'s
-   graph-narrowed and keyword-frequency-ranked query routing, and
-   `analyze_impact`'s reverse traversal with text excerpts are all
-   implemented and verified. Only node-level embeddings (semantic
-   similarity ranking, as opposed to keyword overlap) remain — a
-   heavier change to the OKF bundle format itself, listed as a
-   direction under consideration, not a committed design.
+2. **Hybrid graph + RAG architecture** — all four pieces implemented and
+   verified: `rag/chunks.jsonl` extraction (same single pass as `okf/`),
+   `search_content`'s graph-narrowed query routing, `analyze_impact`'s
+   reverse traversal with text excerpts, and now node-level embeddings
+   for semantic ranking, opt-in and additive rather than the heavier
+   "fold embeddings into the OKF bundle format itself" direction §13.1
+   floats for later. `dita2graph-core build --embedding-model
+   <path.onnx> --embedding-tokenizer <path/tokenizer.json>` runs a local
+   ONNX sentence-embedding model (`core/dita2graph-core/src/
+   embeddings.rs`, the `ort` crate with `load-dynamic`, not
+   `download-binaries` — the actual ONNX Runtime shared library is a
+   runtime dependency the operator points at via `ORT_DYLIB_PATH`, no
+   network at build time) over each chunk's text, writing
+   `rag/embeddings.jsonl` alongside `chunks.jsonl`. `dita2graph-mcp`
+   picks up the same model at serve time via an `[embeddings]` table in
+   `mcp-server.toml` (or `DITA2GRAPH_EMBEDDING_MODEL`/
+   `DITA2GRAPH_EMBEDDING_TOKENIZER`/`--embedding-model`/
+   `--embedding-tokenizer`, same priority order as the existing
+   live-validation config) and blends cosine similarity into
+   `search_content`'s ranking — a strong semantic match (≥0.5 cosine
+   similarity) now surfaces even with zero literal keyword overlap,
+   closing the "can't match a paraphrase" gap keyword-frequency ranking
+   always had. No specific model is bundled or mandated: this is a
+   "bring your own" shape, same as DITA-OT itself and the vendored
+   DitaCraft LSP. Verified with a real ONNX Runtime and a small,
+   deterministic test-fixture model (`core/dita2graph-core/tests/
+   fixtures/embeddings/README.md`) proving the full pipeline
+   (tokenize → inference → mean-pool → L2-normalize → cosine
+   similarity) end to end, not just that the surrounding Rust compiles;
+   every existing keyword-only test still passes unchanged, since no
+   embedder configured means byte-identical behavior to before this
+   existed. Still open: no real-model (e.g. `all-MiniLM-L6-v2`) accuracy
+   benchmark against a regression corpus — §10 would need one before
+   recommending a specific model/threshold combination as production
+   guidance rather than a working default.
 3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
    storage** for the query index.
 4. **Full `<navref>` map composition** — would need this plugin to

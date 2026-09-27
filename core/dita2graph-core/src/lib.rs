@@ -15,6 +15,7 @@
 //! today and is enough for the `query` CLI subcommand.
 
 pub mod diagnostics;
+pub mod embeddings;
 pub mod mcp_config;
 pub mod model;
 pub mod okf;
@@ -22,6 +23,7 @@ pub mod rag;
 pub mod relations;
 pub mod secrets;
 
+pub use embeddings::{Embedder, EmbeddingSummary, cosine_similarity, write_embeddings_index};
 pub use mcp_config::write_mcp_config;
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
 pub use okf::{BundleSummary, write_bundle};

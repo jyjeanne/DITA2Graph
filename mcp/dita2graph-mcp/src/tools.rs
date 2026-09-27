@@ -55,7 +55,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "search_content",
-            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Ranked by keyword frequency, plus cosine similarity against rag/embeddings.jsonl when this server was started with an embedding model configured -- a strong semantic match can surface even with no shared words, not just literal term overlap. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -115,7 +115,8 @@ pub fn list() -> Vec<Value> {
 /// `validate_live` needs both the cached `BundleReader` (to resolve a
 /// topic id to its source file) *and* `cache`'s `live_config()` --
 /// cloned out before `cache.get()`'s `&mut self` borrow, since the two
-/// can't be held at once.
+/// can't be held at once. `search_content` needs the same treatment for
+/// `cache.embedder()`.
 pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<String> {
     if name == "validate_bundle" {
         return validate_bundle(cache.root());
@@ -125,10 +126,11 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
         let bundle = cache.get()?;
         return validate_live(bundle, arguments, &live_config);
     }
+    let embedder = cache.embedder();
     let bundle = cache.get()?;
     match name {
         "search_topics" => search_topics(bundle, arguments),
-        "search_content" => search_content(bundle, arguments),
+        "search_content" => search_content(bundle, arguments, embedder.as_deref()),
         "find_related_topics" => find_related_topics(bundle, arguments),
         "explain_task" => explain_task(bundle, arguments),
         "trace_dependencies" => trace_dependencies(bundle, arguments),
@@ -161,15 +163,39 @@ fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     Ok(hits.join("\n"))
 }
 
+/// A semantic-similarity match this strong counts on its own, even with
+/// zero keyword overlap -- a real paraphrase (different words, same
+/// meaning) is exactly the gap keyword-frequency ranking can't close
+/// (§13.1's "only node-level embeddings... remain"). Below this, a
+/// keyword hit is still required: cosine similarity between two
+/// unrelated real-model embeddings rarely sits at zero, so treating any
+/// positive similarity as a match would flood results with noise.
+const SEMANTIC_MATCH_THRESHOLD: f32 = 0.5;
+/// How much a full-strength (cosine similarity 1.0) semantic match adds
+/// to the combined score, relative to `relevance_score`'s scale (+5 for
+/// a title hit, +1 per body occurrence) -- large enough that a strong
+/// paraphrase match can outrank a single incidental body mention, not so
+/// large that it always drowns out a real, repeated keyword match.
+const SEMANTIC_WEIGHT: f64 = 8.0;
+
 /// Content search over `rag/chunks.jsonl` (§13.1), optionally scoped to
 /// the topics reachable from `topicId` via a forward graph traversal --
 /// the "graph narrows first, content search runs only on what's left"
 /// pattern that section describes, made concrete: `search_topics` above
 /// only ever matches titles/ids against `okf/`, never a topic's actual
-/// prose. Results are ranked by keyword-frequency score (see
-/// `relevance_score`), not returned in an arbitrary/alphabetical order
-/// the way `search_topics` still is.
-fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
+/// prose. Results are ranked by a combined score: keyword-frequency (see
+/// `relevance_score`) plus, when `embedder` is configured and
+/// `rag/embeddings.jsonl` exists, cosine similarity against the query's
+/// own embedding (§13.1's node-level embeddings, the one piece that
+/// section left unimplemented) -- not returned in an arbitrary/
+/// alphabetical order the way `search_topics` still is. With no embedder
+/// configured (the default), this reduces to exactly the keyword-only
+/// behavior from before embeddings existed.
+fn search_content(
+    bundle: &BundleReader,
+    arguments: &Value,
+    embedder: Option<&dita2graph_core::Embedder>,
+) -> Result<String> {
     let query = arg_str(arguments, "query")?.to_lowercase();
     let terms: Vec<&str> = query.split_whitespace().collect();
     if terms.is_empty() {
@@ -190,9 +216,21 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         );
     }
 
+    // Best-effort: an embedder that fails on this particular query text
+    // (or a bundle with no rag/embeddings.jsonl) degrades to keyword-only
+    // ranking rather than failing the whole search -- the same
+    // graceful-degradation discipline `rag_chunks()`/`embeddings()`
+    // themselves already apply to a missing file.
+    let query_embedding = embedder.and_then(|e| e.embed(&query).ok());
+    let embeddings = if query_embedding.is_some() {
+        bundle.embeddings().unwrap_or_default()
+    } else {
+        Default::default()
+    };
+
     let allowed = scope_topic.map(|id| forward_reachable(bundle, id, relation, depth));
 
-    let mut scored: Vec<(i64, &str, &str, &str, Option<String>)> = Vec::new();
+    let mut scored: Vec<(f64, &str, &str, &str, Option<String>)> = Vec::new();
     for chunk in chunks.iter() {
         if let Some(allowed) = &allowed
             && !allowed.contains(&chunk.id)
@@ -201,29 +239,40 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         }
         let title_lower = chunk.title.to_lowercase();
         let text_lower = chunk.text.as_deref().unwrap_or_default().to_lowercase();
-        let score = relevance_score(&terms, &title_lower, &text_lower);
-        if score > 0 {
-            scored.push((
-                score,
-                chunk.id.as_str(),
-                chunk.title.as_str(),
-                chunk.topic_type.as_str(),
-                // Found live: a real Claude Code session searched for
-                // content, got back title/id/score for every hit, and
-                // still had no way to see *what actually matched*
-                // without a second round trip -- and no other tool
-                // fills that gap either (explain_task/generate_summary
-                // only ever surface title + shortdesc, never body).
-                // This is the one place `search_content` can answer
-                // "what does this topic actually say" directly, so it
-                // should.
-                chunk.text.as_deref().map(|t| excerpt(t, 200)),
-            ));
+        let keyword_score = relevance_score(&terms, &title_lower, &text_lower);
+
+        let semantic_score = query_embedding.as_deref().and_then(|q| {
+            embeddings
+                .get(&chunk.id)
+                .map(|v| dita2graph_core::cosine_similarity(q, v))
+        });
+        let semantic_match = semantic_score.is_some_and(|s| s >= SEMANTIC_MATCH_THRESHOLD);
+        if keyword_score == 0 && !semantic_match {
+            continue;
         }
+        let combined =
+            keyword_score as f64 + semantic_score.unwrap_or(0.0).max(0.0) as f64 * SEMANTIC_WEIGHT;
+
+        scored.push((
+            combined,
+            chunk.id.as_str(),
+            chunk.title.as_str(),
+            chunk.topic_type.as_str(),
+            // Found live: a real Claude Code session searched for
+            // content, got back title/id/score for every hit, and
+            // still had no way to see *what actually matched*
+            // without a second round trip -- and no other tool
+            // fills that gap either (explain_task/generate_summary
+            // only ever surface title + shortdesc, never body).
+            // This is the one place `search_content` can answer
+            // "what does this topic actually say" directly, so it
+            // should.
+            chunk.text.as_deref().map(|t| excerpt(t, 200)),
+        ));
     }
     // Highest score first; tie-break by id so the ordering is
     // deterministic rather than dependent on chunks.jsonl's file order.
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
 
     if scored.is_empty() {
         let query = terms.join(" ");
@@ -251,7 +300,7 @@ fn search_content(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let mut out = scored
         .into_iter()
         .map(|(score, id, title, topic_type, text_excerpt)| {
-            let mut line = format!("{title} ({topic_type}) [{id}] (score: {score})");
+            let mut line = format!("{title} ({topic_type}) [{id}] (score: {score:.2})");
             if let Some(text_excerpt) = text_excerpt {
                 line.push_str(&format!("\n  {text_excerpt}"));
             }

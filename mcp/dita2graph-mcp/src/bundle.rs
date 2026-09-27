@@ -56,6 +56,24 @@ pub struct RagChunk {
     pub topic_type: String,
 }
 
+/// One record from `rag/embeddings.jsonl` (§13.1's node-level
+/// embeddings, written by `dita2graph-core build
+/// --embedding-model/--embedding-tokenizer`,
+/// `core/dita2graph-core/src/embeddings.rs::write_embeddings_index`).
+/// `model`/`dim` are written for provenance but not read back here --
+/// a dimension mismatch against a query embedding from a *different*
+/// model is already handled structurally, by
+/// `dita2graph_core::cosine_similarity` returning `0.0` rather than
+/// panicking, so there's nothing this reader needs to check up front.
+#[derive(Deserialize)]
+struct EmbeddingRecord {
+    id: String,
+    vector: Vec<f32>,
+}
+
+/// id -> embedding vector, parsed from `rag/embeddings.jsonl`.
+type EmbeddingsMap = HashMap<String, Vec<f32>>;
+
 pub struct BundleReader {
     /// The directory containing `okf/` and `graph.json` (i.e. what
     /// `dita2graph-core build --output` pointed at).
@@ -85,6 +103,12 @@ pub struct BundleReader {
     /// hit needs to be a cheap refcount bump, not a fresh deep clone of
     /// every chunk's owned strings each time.
     rag_chunks_cache: RefCell<Option<Rc<Vec<RagChunk>>>>,
+    /// `rag/embeddings.jsonl` (§13.1's node-level embeddings), parsed
+    /// once and `Rc`-shared the same way [`Self::rag_chunks_cache`] is --
+    /// `search_content` looks this up once per scored chunk on every
+    /// call when an embedder is configured, so it gets the identical
+    /// cache-hit-is-a-refcount-bump treatment.
+    embeddings_cache: RefCell<Option<Rc<EmbeddingsMap>>>,
 }
 
 impl BundleReader {
@@ -104,6 +128,7 @@ impl BundleReader {
             edges: graph.edges,
             concept_cache: RefCell::new(HashMap::new()),
             rag_chunks_cache: RefCell::new(None),
+            embeddings_cache: RefCell::new(None),
         })
     }
 
@@ -236,6 +261,38 @@ impl BundleReader {
         Ok(chunks)
     }
 
+    /// Loads `rag/embeddings.jsonl` (§13.1), parsed once and `Rc`-shared
+    /// on every call after that -- see `embeddings_cache` above. Returns
+    /// an empty map, not an error, when the file is missing: a bundle
+    /// built without `--embedding-model`/`--embedding-tokenizer`
+    /// (`dita2graph-core build`) has no embeddings, and `search_content`
+    /// degrades to keyword-only ranking in that case rather than failing,
+    /// the same graceful-degradation the file already gets for
+    /// `rag_chunks()` on a bundle built before `rag/` existed at all.
+    pub fn embeddings(&self) -> Result<Rc<EmbeddingsMap>> {
+        if let Some(cached) = self.embeddings_cache.borrow().as_ref() {
+            return Ok(Rc::clone(cached));
+        }
+        let path = self.root.join("rag").join("embeddings.jsonl");
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(_) => {
+                let empty = Rc::new(HashMap::new());
+                *self.embeddings_cache.borrow_mut() = Some(Rc::clone(&empty));
+                return Ok(empty);
+            }
+        };
+        let mut map = HashMap::new();
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            let record: EmbeddingRecord = serde_json::from_str(line)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            map.insert(record.id, record.vector);
+        }
+        let map = Rc::new(map);
+        *self.embeddings_cache.borrow_mut() = Some(Rc::clone(&map));
+        Ok(map)
+    }
+
     pub fn title(&self, id: &str) -> Result<String> {
         let (frontmatter, _) = self.read_concept(id)?;
         Ok(frontmatter
@@ -305,6 +362,17 @@ pub struct BundleCache {
     /// configuration error when `source_root` is unset rather than
     /// this constructor needing to fail early.
     live: crate::live::LiveValidationConfig,
+    /// The optional query-time embedder for `search_content`'s semantic
+    /// ranking (§13.1's node-level embeddings). `Rc`, not owned outright
+    /// -- loading an ONNX model + tokenizer is real, one-time startup
+    /// work (`main()`'s `resolve_embedding_config`), and `tools::call`
+    /// needs to clone this out before `cache.get()`'s `&mut self` borrow,
+    /// the same reason `live` above is cloned out rather than borrowed in
+    /// place. `None` (the default) means "no embeddings configured" --
+    /// `search_content` degrades to keyword-only ranking, unchanged from
+    /// before this existed, exactly as it already does when a bundle has
+    /// no `rag/embeddings.jsonl` regardless of this config.
+    embedder: Option<Rc<dita2graph_core::Embedder>>,
 }
 
 impl BundleCache {
@@ -313,6 +381,7 @@ impl BundleCache {
             root,
             loaded: None,
             live: crate::live::LiveValidationConfig::default(),
+            embedder: None,
         }
     }
 
@@ -328,6 +397,20 @@ impl BundleCache {
 
     pub fn live_config(&self) -> &crate::live::LiveValidationConfig {
         &self.live
+    }
+
+    /// Builder-style setter for the query-time embedder, mirroring
+    /// `with_live_config` above -- `main()` calls this once at startup
+    /// with whatever `resolve_embedding_config` + a best-effort
+    /// `Embedder::load` produced (`None` on missing config or a load
+    /// failure, logged to stderr, never fatal to starting the server).
+    pub fn with_embedder(mut self, embedder: Option<Rc<dita2graph_core::Embedder>>) -> Self {
+        self.embedder = embedder;
+        self
+    }
+
+    pub fn embedder(&self) -> Option<Rc<dita2graph_core::Embedder>> {
+        self.embedder.clone()
     }
 
     /// The bundle root this cache is bound to -- needed directly (not

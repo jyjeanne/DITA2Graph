@@ -831,13 +831,21 @@ keyword-frequency score — a term appearing in the title counts more
 than the same term appearing in the body (a title match is a stronger
 relevance signal than an incidental mention), and every body occurrence
 adds to the score, so a concept mentioning a term five times outranks
-one mentioning it once. This is word-overlap/term-frequency ranking,
-not embedding-based semantic similarity — deliberately: §13.1's
-node-level-embeddings direction is explicitly *not* a committed design
-yet, while this is a self-contained improvement over the plain
-substring check it replaces, verified against a live bundle with a
+one mentioning it once — verified against a live bundle with a
 two-term query where the correct higher-scoring concept ranks first
-even though it would sort second alphabetically. Each hit also carries
+even though it would sort second alphabetically. When `dita2graph-mcp`
+has a `--embedding-model`/`--embedding-tokenizer` (or `mcp-server.toml`
+`[embeddings]`) configured *and* the bundle has a matching
+`rag/embeddings.jsonl` (§13.1's node-level embeddings, written by
+`dita2graph-core build --embedding-model/--embedding-tokenizer`), a
+concept whose embedding is at or above 0.5 cosine similarity to the
+query's own embedding is added to the score too — scaled so a strong
+semantic match can outrank a single incidental keyword mention without
+always drowning out a real, repeated one — closing the one gap
+word-overlap ranking can't: matching a query and a concept that describe
+the same thing in different words. With no embedder configured on
+either side (the default), this reduces to exactly the keyword-only
+behavior above. Each hit also carries
 a 200-character text excerpt of the matched chunk (newlines flattened)
 — found missing live: a real Claude Code session got titles/scores back
 with no way to see *what actually matched* short of a second round
@@ -859,9 +867,9 @@ does. Each affected concept that has a `rag/chunks.jsonl` entry also
 gets a short text excerpt under it (truncated to 140 characters,
 newlines flattened) — a raw excerpt handed to the calling agent, not a
 server-generated summary (this tool doesn't call an LLM); the agent's
-own read of the excerpts is the actual summarization. Of §13.1's four
-pieces, only node-level embeddings remain design only — query routing,
-its ranking, and impact analysis (both halves) are all implemented.
+own read of the excerpts is the actual summarization. All four of
+§13.1's pieces are implemented: query routing, its combined keyword-and-
+semantic ranking, and impact analysis (both halves).
 
 `explain_task(topicId)` also carries a 300-character excerpt of the
 topic's own body text (from `rag/chunks.jsonl`, the same clean-prose
@@ -2026,13 +2034,15 @@ answering queries in Claude Code, hitting no undocumented step.
 
 Not a single phase but a backlog, picked up item-by-item based on
 adopter feedback after v0.1.0 — see §13 for the current list: a unified
-graph + RAG architecture (§13.1, the largest single item, and nearly
-done — `rag/chunks.jsonl` extraction, `search_content`'s graph-narrowed
-and keyword-ranked query routing, and `analyze_impact` (with content
-excerpts) are all done; only node-level embeddings, the heavier,
-not-yet-committed direction, remain), plus multi-map federation, graph
-diffing, HTTP transport + auth, and a rendered-output annotation
-variant (§13.2). Each item gets its own
+graph + RAG architecture (§13.1, the largest single item, and now
+done, opt-in — `rag/chunks.jsonl` extraction, `search_content`'s
+graph-narrowed query routing, `analyze_impact` (with content excerpts),
+and node-level embeddings for semantic ranking via a local, bring-your-
+own ONNX model are all implemented; only the heavier "fold embeddings
+into the OKF bundle format itself" convergence direction, and a
+real-model accuracy benchmark, remain not-yet-committed), plus multi-map
+federation, graph diffing, HTTP transport + auth, and a rendered-output
+annotation variant (§13.2). Each item gets its own
 scoped follow-up
 spec/issue and its own exit criterion before work starts, rather than
 being bundled into one open-ended phase.
@@ -2128,23 +2138,28 @@ to the first:
   the narrowing is real, not a no-op filter.
 
 The "relevance ranking" half of the original design text below is now
-implemented too, in a keyword-frequency form rather than the
-embedding-based version that text originally implied: `search_content`
-scores each matching concept by how many query terms it contains and
-how often (title matches weighted higher than body mentions), and
-returns results ordered by that score. Verified against a live bundle
-with a two-term query, on a pair of concepts where the correct
-higher-scoring one would sort *second* alphabetically — it ranks
-first, proving the ordering comes from the score, not an accidental
-side effect of iteration order. What remains genuinely unimplemented is
-semantic/embedding-based ranking specifically — word overlap can't
+implemented in both the keyword-frequency form this section originally
+shipped and the embedding-based form it originally implied:
+`search_content` scores each matching concept by how many query terms it
+contains and how often (title matches weighted higher than body
+mentions), returning results ordered by that score. Verified against a
+live bundle with a two-term query, on a pair of concepts where the
+correct higher-scoring one would sort *second* alphabetically — it
+ranks first, proving the ordering comes from the score, not an
+accidental side effect of iteration order. Word overlap alone can't
 match a query and a concept that describe the same thing in different
-words, which only an embedding model can. That gap is real, but it's a
-different (and larger) gap than "results are unranked," which is now
-closed. This is still the mechanism behind §9.2's token-reduction
-argument at scale (illustratively: ten thousand topics narrowed to a
-few dozen by the graph before any content search runs) — narrowing
-doesn't require ranking to already be embedding-based to pay off.
+words — that gap is now closed too, opt-in: when both
+`dita2graph-mcp` and the bundle have an embedding model configured
+(`core/dita2graph-core/src/embeddings.rs`, detailed further down this
+section), a concept whose embedding is at or above 0.5 cosine similarity
+to the query's own embedding is added to the combined score even with
+zero keyword overlap, verified against a real ONNX Runtime with a query
+that finds a chunk sharing its embedding cluster but no literal words.
+With no embedder configured (the default), this reduces to exactly the
+keyword-only behavior above — the mechanism behind §9.2's token-reduction
+argument at scale (illustratively: ten thousand topics narrowed to a few
+dozen by the graph before any content search runs) never required
+embedding-based ranking to already exist to pay off, and still doesn't.
 
 **Impact analysis — implemented, both halves.** "If I change
 `engine.dita`, what breaks?" is a graph query — dependents, containing
@@ -2170,39 +2185,83 @@ map (maps aren't chunked into `rag/`, §13.1 above) without breaking
 the rest of the report, and degrades to no excerpts at all — not an
 error — against a bundle with no `rag/` output.
 
-**Longer-term direction: converge the two artifacts.** The natural end
-state folds `rag/chunks.jsonl` into the OKF nodes themselves instead of
-keeping two correlated files — each OKF concept optionally carrying an
-embedding vector alongside its existing frontmatter and relations
-(§4.2), so the graph is the single source of truth and embedding
-similarity search becomes a ranking step *within* a graph-selected node
-set rather than an independent index. This is a heavier, later step than
-the two-artifact version above: it changes the OKF bundle format itself
-(§4.1), and needs an embedding-model/dimensionality choice that doesn't
-churn the whole bundle on every model upgrade. Listed here as the
-direction under consideration, not a committed design — §10 would need
-its own regression corpus and success criteria for this before it's
-scoped as a phase.
+**Node-level embeddings — implemented, as the two-artifact version, not
+the bundle-format convergence below.** `dita2graph-core build
+--embedding-model <path.onnx> --embedding-tokenizer <path/tokenizer.json>`
+(both optional, and only meaningful together) runs a local ONNX
+sentence-embedding model over each chunk's text — the same
+`shortdesc`+`body` combination `chunks.jsonl` already carries — and
+writes `rag/embeddings.jsonl`, one `{id, model, dim, vector}` record per
+chunk (`core/dita2graph-core/src/embeddings.rs`). Deliberately the `ort`
+crate's `load-dynamic` feature, not `download-binaries`: the build stays
+offline and reproducible (crates.io only), and the actual ONNX Runtime
+shared library is a runtime input the operator points `ORT_DYLIB_PATH`
+at, the same "bring your own" shape this project already uses for
+DITA-OT itself and the vendored DitaCraft LSP bundle
+(`mcp/dita2graph-mcp/vendor/ditacraft-lsp/README.md`) — no specific
+model ships with or is mandated by this tool; a real deployment would
+point it at an ONNX export of a sentence-transformer such as
+`all-MiniLM-L6-v2`. `dita2graph-mcp` loads the same model at serve time
+— an `[embeddings]` table in `mcp-server.toml`, or
+`DITA2GRAPH_EMBEDDING_MODEL`/`DITA2GRAPH_EMBEDDING_TOKENIZER`/
+`--embedding-model`/`--embedding-tokenizer`, same increasing-priority
+resolution `resolve_live_validation_config` already established for
+`source_root` — and `search_content` blends cosine similarity into its
+combined score alongside keyword-frequency: a match at or above 0.5
+cosine similarity counts even with zero literal keyword overlap (closing
+the "can't match a paraphrase" gap described below), scaled so a strong
+semantic match can outrank a single incidental keyword mention without
+always drowning out a real, repeated one. With no embedder configured on
+either side (the default), behavior is byte-identical to before this
+existed — every prior keyword-only test still passes unchanged. Verified
+against a real ONNX Runtime (not just that the surrounding Rust
+compiles) with a small, deterministic test-fixture model
+(`core/dita2graph-core/tests/fixtures/embeddings/README.md`) proving the
+full pipeline — tokenize, ONNX inference, mean-pool with the attention
+mask, L2-normalize, cosine similarity — end to end, plus an MCP-side test
+proving a query finds a chunk sharing its embedding cluster but zero
+literal words, and does *not* find one with no embedder configured.
+Still open: no real-model (e.g. `all-MiniLM-L6-v2`) accuracy benchmark
+against a regression corpus, so the 0.5 threshold and 8.0 semantic
+weight (`mcp/dita2graph-mcp/src/tools.rs`) are a working default, not a
+value §10 has validated against real query/relevance pairs.
 
-**Status:** three of this section's four pieces are implemented and
+**Longer-term direction: converge the two artifacts.** The natural end
+state folds `rag/chunks.jsonl` (embeddings included) into the OKF nodes
+themselves instead of keeping two correlated files — each OKF concept
+carrying its embedding vector alongside its existing frontmatter and
+relations (§4.2), so the graph is the single source of truth and
+embedding similarity search becomes a ranking step *within* a
+graph-selected node set rather than a join against a separate index.
+This is a heavier, later step than the two-artifact version above: it
+changes the OKF bundle format itself (§4.1) and needs a model/
+dimensionality choice that doesn't churn the whole bundle on every model
+upgrade — the two-artifact version sidesteps exactly that by keeping
+`rag/embeddings.jsonl` regeneratable independently of `okf/`. Listed
+here as the direction under consideration, not a committed design —
+§10 would need its own regression corpus and success criteria for this
+before it's scoped as a phase.
+
+**Status:** all four pieces of this section are implemented and
 verified — `rag/`'s extraction and output side
 (`core/dita2graph-core/src/rag.rs`, wired into `build`/`main.rs`),
-query routing with keyword-frequency ranking (`search_content` in
-`mcp/dita2graph-mcp/src/tools.rs`), and impact analysis including its
-content excerpts (`analyze_impact`, same file). All three are covered
-by unit tests and a live DITA-OT 4.4 run including the DITAVAL split;
-`search_content`'s graph-narrowing is specifically verified to *narrow*
-(a scoped query with no matches in scope returns zero results even
-though the same query unscoped finds a match elsewhere), its ranking is
-verified to actually reorder results by score rather than alphabetically,
-and `analyze_impact`'s excerpts are verified to contain the real topic
-text, not placeholder output. Only node-level embeddings remain design
-only — the one honest gap left in `search_content` is that its
-keyword-frequency ranking can't match a query and a concept that
-describe the same thing in different words, which needs semantic
-similarity, not more keyword logic. Each remaining piece is tracked as
-its own Phase 6+ backlog item (§12), to get its own scoped follow-up
-spec and exit criterion before work starts.
+query routing with combined keyword-frequency-and-semantic ranking
+(`search_content` in `mcp/dita2graph-mcp/src/tools.rs`), impact analysis
+including its content excerpts (`analyze_impact`, same file), and
+node-level embeddings (`core/dita2graph-core/src/embeddings.rs`,
+detailed above). All four are covered by unit tests and a live DITA-OT
+4.4 run including the DITAVAL split; `search_content`'s graph-narrowing
+is specifically verified to *narrow* (a scoped query with no matches in
+scope returns zero results even though the same query unscoped finds a
+match elsewhere), its ranking is verified to actually reorder results by
+score rather than alphabetically, `analyze_impact`'s excerpts are
+verified to contain the real topic text, not placeholder output, and its
+semantic ranking is verified against a real ONNX Runtime to surface a
+paraphrase a keyword-only search would miss. Each Phase 6+ backlog item
+still open (§12) — a real-model accuracy benchmark for embeddings, the
+bundle-format convergence direction above, incremental rebuild, SQLite/
+RocksDB storage, and the rest — gets its own scoped follow-up spec and
+exit criterion before work starts.
 
 ### 13.2 Other extended capabilities
 

@@ -111,7 +111,7 @@ pub fn write_rag_index(
 /// keeping both when present rather than picking one -- a topic's
 /// shortdesc is often a one-line abstract that doesn't repeat in its
 /// body (§4.4), so dropping either loses real content.
-fn chunk_text(shortdesc: Option<&str>, body: Option<&str>) -> Option<String> {
+pub(crate) fn chunk_text(shortdesc: Option<&str>, body: Option<&str>) -> Option<String> {
     match (shortdesc, body) {
         (Some(shortdesc), Some(body)) => Some(format!("{shortdesc}\n\n{body}")),
         (Some(shortdesc), None) => Some(shortdesc.to_string()),

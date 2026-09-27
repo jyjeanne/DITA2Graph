@@ -203,6 +203,17 @@ cat gradle-build/build/dita2graph/okf/topics/installing-product.md
 # extraction pass (§13.1) -- search_content/analyze_impact below read this
 cat gradle-build/build/dita2graph/rag/chunks.jsonl
 
+# Optional: add node-level embeddings for semantic ranking in
+# search_content (§13.1) -- point --embedding-model/--embedding-tokenizer
+# at a local ONNX sentence-embedding model + its tokenizer.json (e.g. an
+# export of all-MiniLM-L6-v2). Requires ORT_DYLIB_PATH to point at a real
+# ONNX Runtime shared library; writes rag/embeddings.jsonl alongside
+# chunks.jsonl. Skip this and everything above still works exactly as
+# before -- embeddings are opt-in on both the build and the mcp side.
+./target/release/dita2graph-core build \
+  --input <normalized-model.json> --output gradle-build/build/dita2graph \
+  --embedding-model <path/to/model.onnx> --embedding-tokenizer <path/to/tokenizer.json>
+
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \
   | ./target/release/dita2graph-mcp gradle-build/build/dita2graph
@@ -231,7 +242,7 @@ Once registered, an agent can call:
 | Tool | What it does |
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
-| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
+| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
