@@ -427,8 +427,29 @@ state, most-complete first:
    benchmark against a regression corpus — §10 would need one before
    recommending a specific model/threshold combination as production
    guidance rather than a working default.
-3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
-   storage** for the query index.
+3. **SQLite storage** for the query index — ✅ done, opt-in.
+   `dita2graph-core build --store sqlite` writes `<output>/graph.db`
+   (`core/dita2graph-core/src/store.rs`), a SQLite mirror of the same
+   nodes/edges `graph.json` already carries — same fields, same source
+   (the in-memory normalized model), indexed (`(from_id, relation)`/
+   `(to_id, relation)`) for lookups that don't need a full-file JSON
+   parse on a real, sizeable corpus. `dita2graph-core query --store
+   <path>` accepts either a bundle directory (unchanged `graph.json`
+   behavior, still the default) or a `graph.db` file directly — the
+   exact CLI shape §3.4 already documented — dispatching on whether the
+   given path is itself an existing file. `rusqlite`'s `bundled` feature
+   (compiles SQLite from vendored C source) keeps the build offline, no
+   system `libsqlite3` needed. Verified: a bundle built with `--store
+   sqlite` answers the same unscoped and relation-scoped queries
+   identically from either backend (order aside — neither backend
+   promises row order), and a rebuild from a smaller model doesn't leave
+   stale rows for a removed topic queryable. **Not yet done: incremental
+   rebuild** (diffing against an existing `graph.db` on rebuild, keyed by
+   source-file hash, so an unchanged topic isn't rewritten) — `graph.db`
+   is always a full rewrite today, and RocksDB storage (for very large
+   graphs, per §7) remains unimplemented. The MCP server still reads
+   `graph.json`/`rag/` directly (`BundleReader`), not `graph.db` — a
+   natural following step, not yet wired.
 4. **Full `<navref>` map composition** — would need this plugin to
    independently parse and merge referenced navigation maps outside
    DITA-OT's own pipeline, losing keyref/conref resolution and DITAVAL

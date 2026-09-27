@@ -37,7 +37,8 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split, the nested-map/mapref/anchorref/relation-inference fixtures, and the broken-input negative test) against a live DITA-OT 4.4 |
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
-| Hybrid graph+RAG architecture (§13.1) | Nearly done: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency-ranked content search), and `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept). Still design-only: node-level embeddings (the heavier, not-yet-committed direction) |
+| Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
+| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges; `dita2graph-core query --store <path>` reads either a `graph.db` file directly or a bundle directory's `graph.json` (unchanged default). Still open: incremental rebuild (diffing against an existing store, keyed by source-file hash — `graph.db` is always a full rewrite today), RocksDB storage, and wiring `dita2graph-mcp` itself to read `graph.db` |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions: full `<navref>` map composition (`mapref`/
@@ -213,6 +214,17 @@ cat gradle-build/build/dita2graph/rag/chunks.jsonl
 ./target/release/dita2graph-core build \
   --input <normalized-model.json> --output gradle-build/build/dita2graph \
   --embedding-model <path/to/model.onnx> --embedding-tokenizer <path/to/tokenizer.json>
+
+# Optional: also write a SQLite-backed query index alongside graph.json
+# (§7/§3.3) -- an indexed mirror of the same nodes/edges, for fast
+# `query` lookups on a real, sizeable corpus. Skip this and `query` keeps
+# reading graph.json directly, unchanged from before this existed.
+./target/release/dita2graph-core build \
+  --input <normalized-model.json> --output gradle-build/build/dita2graph \
+  --store sqlite
+./target/release/dita2graph-core query \
+  --store gradle-build/build/dita2graph/graph.db \
+  --topic installing-product --relation requires
 
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \

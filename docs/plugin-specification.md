@@ -288,32 +288,39 @@ output/
  │       ├── installing-product.md # One concept per DITA topic
  │       └── configuration.md
  ├── graph.json              # Flattened nodes+edges view of the bundle, for tooling/debug
- ├── graph.db                  # SQLite/RocksDB index built from okf/ (fast MCP queries)
+ ├── graph.db                  # SQLite index of the same nodes+edges (opt-in, §7/§3.3)
  ├── rag/                     # Content-search artifact (§13.1), same extraction pass as okf/
  │   ├── chunks.jsonl           # One enriched, plain-text record per topic
  │   └── metadata.json
  └── mcp/
-     ├── mcp-server.toml    # MCP server configuration bound to graph.db + okf/
+     ├── mcp-server.toml    # MCP server configuration bound to okf/ (+ graph.db when built)
      └── manifest.json      # Declared resources & tools (see section 5)
 ```
 
 The **bundle** (`okf/`) is the portable, human-readable, git-diffable
-artifact — plain markdown, per the OKF v0.2 spec. `graph.db` is a derived,
-disposable index the MCP server queries for speed; it can always be
-rebuilt from `okf/` alone, the same relationship `okf-rs` itself uses
-between its bundle and its `okf-search`/`okf-graph` indices. `rag/` is
-likewise derived and rebuildable from the same normalized model as
-`okf/` (§13.1) — no MCP tool reads it yet, but `dita2graph-core build`
-writes it today.
+artifact — plain markdown, per the OKF v0.2 spec. `graph.db`, when built
+(`dita2graph-core build --store sqlite`), is a derived, disposable index
+mirroring `graph.json`'s own nodes/edges, indexed for lookups that don't
+need a full-file JSON parse on a real corpus; it can always be rebuilt
+from the same input the rest of the bundle comes from, the same
+relationship `okf-rs` itself uses between its bundle and its
+`okf-search`/`okf-graph` indices. `rag/` is likewise derived and
+rebuildable from the same normalized model as `okf/` (§13.1), and unlike
+`graph.db` is read by MCP tools already (`search_content`,
+`analyze_impact`, `explain_task`).
 
 **Implementation status of the tree above:** `okf/`, `graph.json`, and
-`rag/` are all written today by `dita2graph-core build`. `mcp/` is
-written only when `args.dita2graph.mcp=true` (§2.3), and only as
-`mcp-server.toml` (§5.4) — `graph.db` and `mcp/manifest.json` are not
-written by anything; `graph.db` is planned query-index storage (§7),
-and a `manifest.json` would describe declared resources/tools the way
-§5.1 describes them, but `dita2graph-mcp` answers `tools/list` directly
-at runtime instead (§5.2) and doesn't implement resources at all.
+`rag/` are all written today by `dita2graph-core build`, unconditionally.
+`graph.db` is written only when `--store sqlite` is given (§7/§3.3) —
+`dita2graph-mcp` itself doesn't read `graph.db` yet, only
+`dita2graph-core query` does; wiring the MCP server to prefer it when
+present is a natural following step, not yet done. `mcp/` is written
+only when `args.dita2graph.mcp=true` (§2.3), and only as
+`mcp-server.toml` (§5.4) — `mcp/manifest.json` is not written by
+anything; a `manifest.json` would describe declared resources/tools the
+way §5.1 describes them, but `dita2graph-mcp` answers `tools/list`
+directly at runtime instead (§5.2) and doesn't implement resources at
+all.
 
 ### 2.5 Error handling, logging, and exit codes
 
@@ -513,13 +520,22 @@ versioned on its own.
 - **Incremental updates**: on re-run, diff against the existing
   `graph.db` and only recompute changed subgraphs (keyed by source file
   hash), so large doc sets don't require a full rebuild on every publish.
+  **Not yet implemented** — `store.rs` (below) always rewrites `graph.db`
+  from scratch on every `build`; there is no diffing yet, only the
+  persistent store a future diff would run against.
 - **OKF serialization**: emit one conformant OKF v0.2 concept document
   (markdown + YAML frontmatter) per topic/map into the `okf/` bundle,
   via `okf-generator` (see section 4).
 - **Storage**: persist the derived query index to SQLite (default,
   zero-ops, good for most doc sets) or RocksDB (for very large graphs /
   high write throughput). The bundle itself needs no database — it's
-  markdown on disk.
+  markdown on disk. **SQLite implemented**, opt-in via `build --store
+  sqlite`: `core/dita2graph-core/src/store.rs` writes `<output>/graph.db`
+  as an indexed mirror of `graph.json`'s own nodes/edges, from the same
+  in-memory normalized model — not a second parse, not a divergent
+  source of truth. `rusqlite`'s `bundled` feature compiles SQLite from
+  vendored C source, so this stays offline at build time too, same as
+  the rest of this crate's dependencies. RocksDB remains unimplemented.
 
 ### 3.4 CLI (Rust, Clap-based)
 
@@ -1220,7 +1236,7 @@ DITA-OT/OKF baseline in §1.1.
 | Graph engine | Rust (latest stable, currently 1.97.1, edition 2024) — own OKF bundle writer; reuses `okf-core` (config) and `okf-validator` (validation) from `okf-rs` as-is, not `okf-dita`/`okf-generator` (§3) |
 | Knowledge format | OKF v0.2 |
 | Agent interface | MCP (JSON-RPC 2.0, protocol rev. 2024-11-05), pattern from `okf-mcp` |
-| Storage | SQLite / RocksDB (derived index only — the bundle itself is markdown; not yet implemented, §12 Phase 2 status) |
+| Storage | SQLite (derived index only — the bundle itself is markdown; implemented, opt-in via `build --store sqlite`, §12 Phase 6+ status) / RocksDB (not yet implemented) |
 | CLI | Rust (Clap) |
 | Serialization | Markdown + YAML frontmatter (bundle) / JSON (derived `graph.json`) |
 | MCP transport | stdio (local, default) / HTTP (remote, planned — requires auth, §6.3) |
@@ -1883,9 +1899,11 @@ deterministically from DITA-OT's own `xtrf` source-trace attributes
 topic-level dedup for `conref`/`conkeyref`-reused content is done (see
 §3.3's "Deduplication & reuse tracking" and
 `docs/dev/canonical-node-dedup-spec.md`), but a standalone node per
-reused fragment, independent of its containing topic, is not; nor are
-incremental rebuild or SQLite/RocksDB storage (`query` currently reads
-`graph.json` directly, not a database). No golden-fixture byte-for-byte
+reused fragment, independent of its containing topic, is not; nor is
+incremental rebuild, or RocksDB storage (SQLite storage is implemented,
+opt-in via `build --store sqlite`, §13.1 has detail — `query` still
+defaults to reading `graph.json` directly when no `graph.db` is given).
+No golden-fixture byte-for-byte
 test yet either. This phase got ahead of Phase 1 because it could be
 developed and tested against a hand-authored fixture without needing a
 live DITA-OT install — closing Phase 1's gap may still change
@@ -2259,8 +2277,9 @@ verified to contain the real topic text, not placeholder output, and its
 semantic ranking is verified against a real ONNX Runtime to surface a
 paraphrase a keyword-only search would miss. Each Phase 6+ backlog item
 still open (§12) — a real-model accuracy benchmark for embeddings, the
-bundle-format convergence direction above, incremental rebuild, SQLite/
-RocksDB storage, and the rest — gets its own scoped follow-up spec and
+bundle-format convergence direction above, incremental rebuild, RocksDB
+storage (SQLite storage itself is done, §7/§3.3), and the rest — gets
+its own scoped follow-up spec and
 exit criterion before work starts.
 
 ### 13.2 Other extended capabilities

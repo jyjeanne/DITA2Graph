@@ -27,3 +27,7 @@ okf-validator = { git = "https://github.com/jyjeanne/okf-rs" }
 # `ORT_DYLIB_PATH` -- see `core/dita2graph-core/src/embeddings.rs`.
 ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+# `bundled`: compiles SQLite from vendored C source (via `cc`), so this
+# stays offline at build time too and needs no system libsqlite3 --
+# see `core/dita2graph-core/src/store.rs`.
+rusqlite = { version = "0.40", features = ["bundled"] }
