@@ -13,11 +13,17 @@
 //! query-index (`store.rs`, opt-in via `build --store sqlite`) mirrors
 //! `graph.json`'s nodes/edges for fast indexed lookups on a real corpus;
 //! `graph.json` itself (a flattened, derived view, always written) stays
-//! the default the `query` CLI subcommand reads. Incremental rebuild and
-//! RocksDB storage remain later Phase 6+ work.
+//! the default the `query` CLI subcommand reads. Incremental rebuild
+//! (`incremental.rs`) skips rewriting an unchanged topic's concept file
+//! and, when embeddings are configured, recomputing its embedding --
+//! `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten
+//! in full every build, since their content must always reflect the
+//! complete current node set regardless. RocksDB storage remains later
+//! Phase 6+ work.
 
 pub mod diagnostics;
 pub mod embeddings;
+pub(crate) mod incremental;
 pub mod mcp_config;
 pub mod model;
 pub mod okf;
@@ -26,7 +32,9 @@ pub mod relations;
 pub mod secrets;
 pub mod store;
 
-pub use embeddings::{Embedder, EmbeddingSummary, cosine_similarity, write_embeddings_index};
+pub use embeddings::{
+    Embedder, EmbeddingSummary, PreviousEmbeddings, cosine_similarity, write_embeddings_index,
+};
 pub use mcp_config::write_mcp_config;
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
 pub use okf::{BundleSummary, write_bundle};

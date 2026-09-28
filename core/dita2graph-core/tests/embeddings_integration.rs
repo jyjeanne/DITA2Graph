@@ -7,7 +7,11 @@
 //! fail the suite" pattern `mcp/dita2graph-mcp/src/live.rs`'s vendored-
 //! bundle tests already use for their own optional runtime dependency.
 
-use dita2graph_core::{Embedder, cosine_similarity};
+use dita2graph_core::{
+    Embedder, NormalizedNode, NormalizedTopic, PreviousEmbeddings, TopicType, cosine_similarity,
+    write_bundle, write_embeddings_index, write_rag_index,
+};
+use std::fs;
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> PathBuf {
@@ -88,4 +92,122 @@ fn embed_errors_on_empty_text() {
     .expect("loading toy embedding model + tokenizer");
 
     assert!(embedder.embed("").is_err());
+}
+
+fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
+    vec![NormalizedNode::Topic(NormalizedTopic {
+        id: id.into(),
+        topic_type: TopicType::Concept,
+        title: id.into(),
+        shortdesc: None,
+        body: Some(body.into()),
+        audience: vec![],
+        product: vec![],
+        keys: vec![],
+        uicontrols: vec![],
+        cmd_uicontrols: vec![],
+        source_file: format!("topics/{id}.dita"),
+        links: vec![],
+    })]
+}
+
+/// Phase 6+'s "Incremental rebuild": a second `write_embeddings_index`
+/// call for a topic whose chunk text hasn't changed must reuse the
+/// stored vector instead of paying for another ONNX inference call --
+/// proven against a real ONNX Runtime, not a mock, via the same
+/// `embeddings_reused`/`embeddings_written` counters `dita2graph-core
+/// build` reports on the CLI.
+#[test]
+fn write_embeddings_index_reuses_a_cached_vector_when_the_chunk_text_is_unchanged() {
+    if !have_ort_dylib() {
+        eprintln!("skipping: ORT_DYLIB_PATH not set (no ONNX Runtime available)");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let embedder = Embedder::load(
+        &fixture("tiny-embedding-model.onnx"),
+        &fixture("tokenizer.json"),
+    )
+    .expect("loading toy embedding model + tokenizer");
+
+    let nodes = one_topic("install-notes", "install product installing");
+    write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+    write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+
+    // First build: nothing to reuse yet.
+    let first = write_embeddings_index(
+        &nodes,
+        dir.path(),
+        &embedder,
+        "toy-fixture",
+        &PreviousEmbeddings::default(),
+    )
+    .unwrap();
+    assert_eq!(first.embeddings_written, 1);
+    assert_eq!(first.embeddings_reused, 0);
+    let first_vector = fs::read_to_string(dir.path().join("rag/embeddings.jsonl")).unwrap();
+
+    // Second build, identical text: PreviousEmbeddings::load reads what
+    // the first build just wrote (chunks.jsonl's text is unchanged,
+    // write_rag_index wasn't re-run, so it's still the same file).
+    let previous = PreviousEmbeddings::load(dir.path());
+    let second =
+        write_embeddings_index(&nodes, dir.path(), &embedder, "toy-fixture", &previous).unwrap();
+    assert_eq!(second.embeddings_written, 0, "should reuse, not recompute");
+    assert_eq!(second.embeddings_reused, 1);
+    let second_vector = fs::read_to_string(dir.path().join("rag/embeddings.jsonl")).unwrap();
+    assert_eq!(
+        first_vector, second_vector,
+        "the reused vector must be byte-identical to what was actually computed"
+    );
+}
+
+/// The inverse: once a topic's body text actually changes, its stored
+/// vector must not be reused -- a changed input demands a fresh
+/// embedding, not a stale cached one silently reused because the id and
+/// model name still match.
+#[test]
+fn write_embeddings_index_recomputes_once_the_chunk_text_changes() {
+    if !have_ort_dylib() {
+        eprintln!("skipping: ORT_DYLIB_PATH not set (no ONNX Runtime available)");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let embedder = Embedder::load(
+        &fixture("tiny-embedding-model.onnx"),
+        &fixture("tokenizer.json"),
+    )
+    .expect("loading toy embedding model + tokenizer");
+
+    let nodes = one_topic("install-notes", "install product installing");
+    write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+    write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+    write_embeddings_index(
+        &nodes,
+        dir.path(),
+        &embedder,
+        "toy-fixture",
+        &PreviousEmbeddings::default(),
+    )
+    .unwrap();
+
+    let previous = PreviousEmbeddings::load(dir.path());
+    let changed_nodes = one_topic("install-notes", "weather forecast rain cloud sunny");
+    // A real rebuild rewrites chunks.jsonl to match; skipped here since
+    // this test only needs write_embeddings_index's own decision, which
+    // reads `previous` (captured before this point), not chunks.jsonl
+    // again.
+    let summary = write_embeddings_index(
+        &changed_nodes,
+        dir.path(),
+        &embedder,
+        "toy-fixture",
+        &previous,
+    )
+    .unwrap();
+    assert_eq!(
+        summary.embeddings_written, 1,
+        "changed text must be re-embedded"
+    );
+    assert_eq!(summary.embeddings_reused, 0);
 }

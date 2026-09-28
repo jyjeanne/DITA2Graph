@@ -29,8 +29,9 @@ use crate::rag::chunk_text;
 use anyhow::{Context, Result, anyhow};
 use ort::session::Session;
 use ort::value::Tensor;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -191,7 +192,90 @@ struct EmbeddingRecord<'a> {
 #[derive(Debug, Default)]
 pub struct EmbeddingSummary {
     pub embeddings_written: usize,
+    /// Topics whose cached vector was reused instead of re-embedded --
+    /// see [`PreviousEmbeddings`]. Disjoint from `embeddings_written`:
+    /// every embedded topic is counted in exactly one of the two.
+    pub embeddings_reused: usize,
     pub dim: usize,
+}
+
+#[derive(Deserialize)]
+struct PreviousChunkRecord {
+    id: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviousEmbeddingRecord {
+    id: String,
+    model: String,
+    vector: Vec<f32>,
+}
+
+/// The previous build's `rag/chunks.jsonl` + `rag/embeddings.jsonl`,
+/// joined by id -- read *before* either file gets overwritten this
+/// build, so [`write_embeddings_index`] can tell whether a topic's exact
+/// embedding input (its chunk text) and the model used to embed it are
+/// both unchanged, and if so reuse the stored vector instead of paying
+/// for another ONNX inference call (§13.1's node-level embeddings,
+/// Phase 6+'s "Incremental rebuild" backlog item, `Roadmap.md`).
+///
+/// Deliberately not keyed off `incremental.rs`'s whole-node content
+/// hash: that hash changes on *any* field (title, links, audience...),
+/// most of which don't affect what gets embedded at all, so reusing it
+/// here would invalidate far more aggressively than the actual input to
+/// `embedder.embed()` ever changes. Comparing chunk text directly is
+/// exact by construction and needs no hash function of its own.
+#[derive(Default)]
+pub struct PreviousEmbeddings {
+    // id -> (chunk text that produced the stored vector, model name, vector)
+    entries: HashMap<String, (String, String, Vec<f32>)>,
+}
+
+impl PreviousEmbeddings {
+    /// Reads `<output_dir>/rag/chunks.jsonl` and
+    /// `<output_dir>/rag/embeddings.jsonl` as they stand *right now* --
+    /// callers must load this before calling `write_rag_index`, which
+    /// overwrites `chunks.jsonl`. Missing or unparseable files degrade to
+    /// an empty result (no reuse, full recompute), the same
+    /// graceful-degradation `rag_chunks()`/`embeddings()` themselves
+    /// apply on the read side (`mcp/dita2graph-mcp/src/bundle.rs`) --
+    /// there is nothing to reuse on a first build, and nothing should
+    /// break because the previous build predates this feature.
+    pub fn load(output_dir: &Path) -> Self {
+        let rag_dir = output_dir.join("rag");
+        let mut texts: HashMap<String, String> = HashMap::new();
+        if let Ok(raw) = fs::read_to_string(rag_dir.join("chunks.jsonl")) {
+            for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(chunk) = serde_json::from_str::<PreviousChunkRecord>(line)
+                    && let Some(text) = chunk.text
+                {
+                    texts.insert(chunk.id, text);
+                }
+            }
+        }
+
+        let mut entries = HashMap::new();
+        if let Ok(raw) = fs::read_to_string(rag_dir.join("embeddings.jsonl")) {
+            for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(record) = serde_json::from_str::<PreviousEmbeddingRecord>(line) else {
+                    continue;
+                };
+                if let Some(text) = texts.remove(&record.id) {
+                    entries.insert(record.id, (text, record.model, record.vector));
+                }
+            }
+        }
+        PreviousEmbeddings { entries }
+    }
+
+    /// The cached vector for `id`, if its stored chunk text matches
+    /// `text` exactly and it was embedded with `model_name`.
+    fn reuse(&self, id: &str, text: &str, model_name: &str) -> Option<&[f32]> {
+        let (stored_text, stored_model, vector) = self.entries.get(id)?;
+        (stored_text == text && stored_model == model_name).then_some(vector.as_slice())
+    }
 }
 
 /// Writes `<output_dir>/rag/embeddings.jsonl`: one record per topic that
@@ -208,11 +292,19 @@ pub struct EmbeddingSummary {
 /// identifiable as such, even though the actual mismatch guard
 /// ([`cosine_similarity`] returning `0.0` on a dimension mismatch) is
 /// enforced structurally, not by checking this string.
+///
+/// `previous` (the last build's chunk text + embeddings, [`PreviousEmbeddings::load`])
+/// lets a topic whose exact chunk text and embedding model are both
+/// unchanged since then reuse its stored vector instead of calling
+/// `embedder.embed()` again -- the expensive step this optimization
+/// exists for. Pass `&PreviousEmbeddings::default()` for a plain,
+/// always-recompute build (a first build has nothing to reuse anyway).
 pub fn write_embeddings_index(
     nodes: &[NormalizedNode],
     output_dir: &Path,
     embedder: &Embedder,
     model_name: &str,
+    previous: &PreviousEmbeddings,
 ) -> Result<EmbeddingSummary> {
     let rag_dir = output_dir.join("rag");
     fs::create_dir_all(&rag_dir).context("creating rag/")?;
@@ -226,9 +318,19 @@ pub fn write_embeddings_index(
         let Some(text) = chunk_text(topic.shortdesc.as_deref(), topic.body.as_deref()) else {
             continue;
         };
-        let vector = embedder
-            .embed(&text)
-            .with_context(|| format!("embedding topic `{}`", topic.id))?;
+        let vector = match previous.reuse(&topic.id, &text, model_name) {
+            Some(cached) => {
+                summary.embeddings_reused += 1;
+                cached.to_vec()
+            }
+            None => {
+                let vector = embedder
+                    .embed(&text)
+                    .with_context(|| format!("embedding topic `{}`", topic.id))?;
+                summary.embeddings_written += 1;
+                vector
+            }
+        };
         summary.dim = vector.len();
         let record = EmbeddingRecord {
             id: &topic.id,
@@ -238,7 +340,6 @@ pub fn write_embeddings_index(
         };
         lines.push_str(&serde_json::to_string(&record).context("serializing embedding record")?);
         lines.push('\n');
-        summary.embeddings_written += 1;
     }
     fs::write(rag_dir.join("embeddings.jsonl"), lines).context("writing rag/embeddings.jsonl")?;
     Ok(summary)

@@ -11,8 +11,9 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
 use dita2graph_core::{
-    Embedder, NormalizedNode, infer_applies_to, infer_related_to, query_sqlite_store, scan_bundle,
-    write_bundle, write_embeddings_index, write_mcp_config, write_rag_index, write_sqlite_store,
+    Embedder, NormalizedNode, PreviousEmbeddings, infer_applies_to, infer_related_to,
+    query_sqlite_store, scan_bundle, write_bundle, write_embeddings_index, write_mcp_config,
+    write_rag_index, write_sqlite_store,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -174,12 +175,20 @@ fn run_build(
 
     let summary = write_bundle(&nodes, &output, generated_at, emit_graph_json)?;
     println!(
-        "wrote {} topics, {} maps, {} edges to {}",
+        "wrote {} topics, {} maps, {} edges to {} ({} unchanged, skipped)",
         summary.topics_written,
         summary.maps_written,
         summary.edges_written,
-        output.join("okf").display()
+        output.join("okf").display(),
+        summary.concepts_unchanged
     );
+
+    // Captured *before* write_rag_index overwrites rag/chunks.jsonl --
+    // this is the only chance to see what the previous build's chunk
+    // text/embeddings were, for write_embeddings_index's own incremental
+    // skip decision further down (§13.1, Phase 6+'s "Incremental
+    // rebuild").
+    let previous_embeddings = PreviousEmbeddings::load(&output);
 
     let rag_summary = write_rag_index(&nodes, &output, generated_at)?;
     println!(
@@ -232,10 +241,17 @@ fn run_build(
                 tokenizer_path.display()
             )
         })?;
-        let embedding_summary = write_embeddings_index(&nodes, &output, &embedder, &model_name)?;
+        let embedding_summary = write_embeddings_index(
+            &nodes,
+            &output,
+            &embedder,
+            &model_name,
+            &previous_embeddings,
+        )?;
         println!(
-            "wrote {} embedding(s) (dim {}) to {}",
+            "wrote {} embedding(s) ({} reused, dim {}) to {}",
             embedding_summary.embeddings_written,
+            embedding_summary.embeddings_reused,
             embedding_summary.dim,
             output.join("rag/embeddings.jsonl").display()
         );
@@ -515,6 +531,55 @@ mod tests {
         assert!(
             !output.join("graph.db").exists(),
             "a rebuild without --store sqlite must remove the earlier build's graph.db"
+        );
+    }
+
+    /// End-to-end proof that incremental rebuild is actually wired
+    /// through the real `build` CLI path, not just the lower-level
+    /// `write_bundle`/`write_embeddings_index` functions it's built
+    /// from: two consecutive `run_build` calls against identical input
+    /// leave every concept file untouched (by mtime) on the second run,
+    /// and `build-state.json` exists for the next build to read.
+    #[test]
+    fn run_build_leaves_concept_files_untouched_on_an_identical_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+
+        let code = run_build(
+            input_path.clone(),
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.join("build-state.json").exists());
+
+        let concept_path = output.join("okf/topics/installing-product.md");
+        let mtime_before = fs::metadata(&concept_path).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let code = run_build(
+            input_path,
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let mtime_after = fs::metadata(&concept_path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "an identical rebuild through the real CLI path must not rewrite unchanged concept files"
         );
     }
 

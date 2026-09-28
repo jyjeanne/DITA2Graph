@@ -289,8 +289,11 @@ output/
  │       └── configuration.md
  ├── graph.json              # Flattened nodes+edges view of the bundle, for tooling/debug
  ├── graph.db                  # SQLite index of the same nodes+edges (opt-in, §7/§3.3)
+ ├── build-state.json         # Per-id fingerprints for incremental rebuild (§3.3) -- hashes only,
+ │                              # no topic content, so it needs no secret scan of its own (§6.4)
  ├── rag/                     # Content-search artifact (§13.1), same extraction pass as okf/
  │   ├── chunks.jsonl           # One enriched, plain-text record per topic
+ │   ├── embeddings.jsonl       # Node-level embeddings (§13.1, opt-in)
  │   └── metadata.json
  └── mcp/
      ├── mcp-server.toml    # MCP server configuration bound to okf/ (+ graph.db when built)
@@ -307,9 +310,12 @@ relationship `okf-rs` itself uses between its bundle and its
 `okf-search`/`okf-graph` indices. `rag/` is likewise derived and
 rebuildable from the same normalized model as `okf/` (§13.1).
 
-**Implementation status of the tree above:** `okf/`, `graph.json`, and
-`rag/` are all written today by `dita2graph-core build`, unconditionally.
-`graph.db` is written only when `--store sqlite` is given (§7/§3.3), and
+**Implementation status of the tree above:** `okf/`, `graph.json`,
+`build-state.json`, and `rag/` are all written today by `dita2graph-core
+build`, unconditionally (`build-state.json` is `okf::write_bundle`'s own
+internal incremental-rebuild fingerprint, §3.3 -- nothing outside that
+function reads it directly). `graph.db` is written only when `--store
+sqlite` is given (§7/§3.3), and
 both readers use it when present: `dita2graph-core query` (§3.4) and
 `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over
 `graph.json` whenever it exists — skipping the JSON parse entirely and
@@ -520,13 +526,30 @@ versioned on its own.
   `xtrf` only resolves to a source *file*, not a specific element
   within it, so getting finer than topic-level granularity needs a
   separate extraction path and its own spec, not a natural extension
-  of this one. Incremental rebuild remains future work too, below.
-- **Incremental updates**: on re-run, diff against the existing
-  `graph.db` and only recompute changed subgraphs (keyed by source file
-  hash), so large doc sets don't require a full rebuild on every publish.
-  **Not yet implemented** — `store.rs` (below) always rewrites `graph.db`
-  from scratch on every `build`; there is no diffing yet, only the
-  persistent store a future diff would run against.
+  of this one.
+- **Incremental updates**: on re-run, diff against the previous build and
+  only recompute changed subgraphs, so large doc sets don't require a
+  full rebuild on every publish. **Implemented**, scoped to the two parts
+  where a full rewrite is actually expensive or noisy rather than every
+  derived artifact: `okf::write_bundle` records a per-id fingerprint
+  (content hash of the node's own fields, plus its title/bundle
+  subdirectory) in `<output>/build-state.json` at the end of every build,
+  and on the next one skips re-rendering a concept file whose node *and
+  every node it links to* are unchanged since then, instead of rewriting
+  every `okf/*.md` file with a fresh `generated.at` timestamp regardless
+  of content. Separately, `embeddings::write_embeddings_index` reuses a
+  topic's previously computed vector instead of an ONNX inference call
+  when its exact chunk text and embedding model are both unchanged
+  (`PreviousEmbeddings`, `core/dita2graph-core/src/embeddings.rs`).
+  `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten
+  from scratch every build regardless — keyed not by source-file hash
+  (this crate never sees the raw DITA source, only the already-extracted
+  normalized model) but by a hash of that normalized content itself,
+  which is the equivalent signal available at this layer. See
+  `core/dita2graph-core/src/incremental.rs` for the full design,
+  including why a node's own fields aren't enough on their own
+  (`render_concept` inlines a link target's title into the *referencing*
+  node's file too, so a rename has to invalidate both).
 - **OKF serialization**: emit one conformant OKF v0.2 concept document
   (markdown + YAML frontmatter) per topic/map into the `okf/` bundle,
   via `okf-generator` (see section 4).
@@ -1883,12 +1906,11 @@ relation inference and `conref`/`conkeyref` dedup (§3.3), and writes a
 conformant OKF v0.2 bundle.
 
 **Deliverables:** `okf/` bundle output for the sample map (§4.4); derived
-`graph.json`; incremental rebuild (source-hash keyed, §3.3) working on a
-second run.
+`graph.json`; incremental rebuild (§3.3) working on a second run.
 
 **Exit criteria:** generated bundle matches a checked-in golden fixture
 byte-for-byte (modulo timestamps); 100% `okf-validator` pass; a no-op
-re-run touches zero unchanged concept files.
+re-run touches zero unchanged concept files -- ✅ met, see Status below.
 
 **Status:** mostly done, ahead of Phase 1. `core/dita2graph-core`
 implements the normalized model (`src/model.rs`), the bundle writer
@@ -1901,15 +1923,22 @@ including a test that builds a bundle and round-trips it through
 needs no Rust-side inference at all — `DitaModelExtractor` derives it
 deterministically from DITA-OT's own `xtrf` source-trace attributes
 (finding 15), so all four relations beyond `contains` are now covered.
-**Not done:** sub-topic/element-level canonical-node deduplication —
-topic-level dedup for `conref`/`conkeyref`-reused content is done (see
-§3.3's "Deduplication & reuse tracking" and
+**Incremental rebuild — ✅ done** (`src/incremental.rs`): a no-op
+second `build` (identical input) touches zero unchanged `okf/*.md`
+files, verified by mtime through the real CLI path, not just the lower-
+level writer functions — see §13.1 for the embeddings half (reusing a
+cached vector instead of a fresh ONNX call) and the fingerprint design
+(a content hash isn't quite enough on its own, since a topic's rendered
+file also depends on any link target's title). **Not done:**
+sub-topic/element-level canonical-node deduplication — topic-level dedup
+for `conref`/`conkeyref`-reused content is done (see §3.3's
+"Deduplication & reuse tracking" and
 `docs/dev/canonical-node-dedup-spec.md`), but a standalone node per
 reused fragment, independent of its containing topic, is not; nor is
-incremental rebuild, or RocksDB storage (SQLite storage is implemented,
-opt-in via `build --store sqlite`, §13.1 has detail — `query` still
-defaults to reading `graph.json` directly when no `graph.db` is given).
-No golden-fixture byte-for-byte
+RocksDB storage (SQLite storage is implemented, opt-in via `build
+--store sqlite`, §13.1 has detail — `query` still defaults to reading
+`graph.json` directly when no `graph.db` is given). No golden-fixture
+byte-for-byte
 test yet either. This phase got ahead of Phase 1 because it could be
 developed and tested against a hand-authored fixture without needing a
 live DITA-OT install — closing Phase 1's gap may still change
@@ -2283,9 +2312,9 @@ verified to contain the real topic text, not placeholder output, and its
 semantic ranking is verified against a real ONNX Runtime to surface a
 paraphrase a keyword-only search would miss. Each Phase 6+ backlog item
 still open (§12) — a real-model accuracy benchmark for embeddings, the
-bundle-format convergence direction above, incremental rebuild, RocksDB
-storage (SQLite storage itself is done, §7/§3.3), and the rest — gets
-its own scoped follow-up spec and
+bundle-format convergence direction above, RocksDB storage (SQLite
+storage and incremental rebuild are both done, §7/§3.3), and the rest —
+gets its own scoped follow-up spec and
 exit criterion before work starts.
 
 ### 13.2 Other extended capabilities

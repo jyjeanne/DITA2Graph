@@ -160,10 +160,10 @@ DITA-OT's own `xtrf` source-trace attributes, no inference needed
 reference topic, with an ambiguous match dropped and logged rather than
 guessed, finding 15) are both inferred, downstream, in Rust.
 
-**Deferred to Phase 6+:** incremental rebuild (source-hash keyed) and
-SQLite/RocksDB-backed storage (`query` currently reads `graph.json`
-directly). Canonical-node deduplication for `conref`/`conkeyref`-reused
-content is done, see Phase 6+ below.
+**Deferred to Phase 6+, since done there:** incremental rebuild and
+SQLite-backed storage (RocksDB remains unimplemented) — both ✅ done,
+see Phase 6+ below. Canonical-node deduplication for `conref`/
+`conkeyref`-reused content is done too, same section.
 
 **Found and fixed for real-dataset usability (post-`v0.1.0`):**
 `infer_related_to` (`relations.rs`) was an unconditional O(n²) sweep
@@ -455,11 +455,35 @@ state, most-complete first:
    `BundleCache`'s fingerprint watches its mtime too, alongside
    `graph.json`/`rag/chunks.jsonl`, so a `graph.db` that appears,
    changes, or disappears mid-session is picked up the same way those
-   two already were. **Not yet done: incremental rebuild** (diffing
-   against an existing `graph.db` on rebuild, keyed by source-file hash,
-   so an unchanged topic isn't rewritten) — `graph.db` is always a full
-   rewrite today, and RocksDB storage (for very large graphs, per §7)
-   remains unimplemented.
+   two already were. **Incremental rebuild — ✅ done**, for the two
+   genuinely expensive/noisy parts of a rebuild:
+   `okf::write_bundle` records a per-id fingerprint in
+   `<output>/build-state.json` at the end of every build (content hash of
+   the node's own fields, plus its title/bundle-subdirectory, since
+   `render_concept` inlines a link target's title into every
+   *referencing* node's file too — `core/dita2graph-core/src/
+   incremental.rs` has the detail) and, on the next build, skips
+   re-rendering a concept file whose node *and every node it links to*
+   are unchanged since then, rather than rewriting every `okf/*.md` file
+   with a new `generated.at` timestamp on every single build regardless
+   of content. Separately, when embeddings are configured,
+   `embeddings::write_embeddings_index` reuses a topic's previously
+   computed vector instead of paying for another ONNX inference call,
+   whenever its exact chunk text and embedding model are both unchanged
+   since the last build (`PreviousEmbeddings`, reading the previous
+   `rag/chunks.jsonl`/`rag/embeddings.jsonl` before either gets
+   overwritten). `graph.json`/`rag/chunks.jsonl`/`graph.db` are still
+   always rewritten from scratch every build regardless — their content
+   must always reflect the complete current node set, and doing so is
+   cheap. Verified end to end through the real `build` CLI: a second,
+   identical build reports `(N unchanged, skipped)`/`(N reused, ...)` and
+   leaves every affected file's mtime untouched; a topic whose *own*
+   content is unchanged but that links to a since-renamed topic is
+   correctly re-rendered anyway (a self-review catch, now covered by a
+   dedicated test), and a topic with a dangling/unresolved link target
+   is correctly still skippable rather than permanently excluded from
+   the optimization (a second self-review catch). RocksDB storage (for
+   very large graphs, per §7) remains unimplemented.
 4. **Full `<navref>` map composition** — would need this plugin to
    independently parse and merge referenced navigation maps outside
    DITA-OT's own pipeline, losing keyref/conref resolution and DITAVAL

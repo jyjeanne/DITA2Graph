@@ -1044,8 +1044,14 @@ mod tests {
             &embeddings_fixture("tokenizer.json"),
         )
         .expect("loading toy embedding model + tokenizer");
-        dita2graph_core::write_embeddings_index(&nodes, dir.path(), &embedder, "toy-fixture")
-            .expect("writing rag/embeddings.jsonl");
+        dita2graph_core::write_embeddings_index(
+            &nodes,
+            dir.path(),
+            &embedder,
+            "toy-fixture",
+            &dita2graph_core::PreviousEmbeddings::default(),
+        )
+        .expect("writing rag/embeddings.jsonl");
 
         dir
     }

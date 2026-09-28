@@ -38,7 +38,8 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
 | Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
-| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: incremental rebuild (diffing against an existing store, keyed by source-file hash — `graph.db` is always a full rewrite today) and RocksDB storage |
+| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: RocksDB storage |
+| Incremental rebuild (§3.3) | Done: a second `build` against unchanged input rewrites nothing unnecessary. `build-state.json` records a per-id fingerprint (content hash + the title/subdirectory a linking topic's rendered file also depends on) so an unchanged topic's `okf/*.md` file keeps its old content and timestamp instead of being rewritten every single build; when embeddings are configured, a topic whose exact chunk text and model are unchanged reuses its cached vector instead of another ONNX inference call. `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten in full — cheap, and must always reflect the complete current set. Verified end to end through the real CLI (reported as `(N unchanged, skipped)`/`(N reused, ...)`), including the correctness case where a topic's own content is untouched but a topic it links to was renamed |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions: full `<navref>` map composition (`mapref`/
@@ -227,6 +228,12 @@ cat gradle-build/build/dita2graph/rag/chunks.jsonl
 ./target/release/dita2graph-core query \
   --store gradle-build/build/dita2graph/graph.db \
   --topic installing-product --relation requires
+
+# Incremental rebuild needs no flag -- run the same build again with
+# unchanged input and the CLI output reports what got skipped:
+#   wrote 0 topics, 0 maps, 5 edges to .../okf (3 unchanged, skipped)
+#   wrote 0 embedding(s) (3 reused, dim 384) to .../rag/embeddings.jsonl
+# (the embeddings line only appears when --embedding-model/--embedding-tokenizer are given)
 
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \

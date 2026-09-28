@@ -55,12 +55,29 @@ pub struct BundleSummary {
     pub topics_written: usize,
     pub maps_written: usize,
     pub edges_written: usize,
+    /// Concept files left untouched because the node (and every node it
+    /// links to, title/subdirectory-wise) was unchanged since the last
+    /// build (`crate::incremental`, Phase 6+'s "Incremental rebuild").
+    /// Disjoint from `topics_written`/`maps_written` -- every node is
+    /// counted in exactly one of the three.
+    pub concepts_unchanged: usize,
 }
 
 /// Writes `nodes` to `<output_dir>/okf/` as an OKF v0.2 bundle, plus
 /// (when `emit_graph_json` is true) the derived
 /// `<output_dir>/graph.json` flattened view (§2.3's
 /// `args.dita2graph.emit-graph-json`, default `true`; §2.4, §4.4).
+///
+/// Self-contained incremental rebuild: loads `<output_dir>/build-state.json`
+/// (the previous build's fingerprints) at the start and writes a fresh
+/// one at the end, entirely internally -- callers never see this and the
+/// signature never changed, so every existing call site behaves exactly
+/// as before (a first build in a fresh directory has nothing to skip
+/// against anyway). A node whose fingerprint is unchanged and whose
+/// concept file already exists keeps that file untouched rather than
+/// re-rendering it with a new `generated.at` timestamp for no other
+/// reason than "a build ran" -- see `crate::incremental`'s docs for why
+/// this needs more than just the node's own fields.
 pub fn write_bundle(
     nodes: &[NormalizedNode],
     output_dir: &Path,
@@ -78,18 +95,26 @@ pub fn write_bundle(
         .map(|n| (n.id(), (n.bundle_dir(), n.title())))
         .collect();
 
+    let previous_state = crate::incremental::load_state(output_dir);
+
     let mut summary = BundleSummary::default();
     for node in nodes {
         let subdir = node.bundle_dir();
         let path = bundle_dir.join(subdir).join(format!("{}.md", node.id()));
-        let content = render_concept(node, &index, generated_at)?;
-        fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
-        match node {
-            NormalizedNode::Topic(_) => summary.topics_written += 1,
-            NormalizedNode::Map(_) => summary.maps_written += 1,
+        if crate::incremental::can_skip(&previous_state, node, &index, &path)? {
+            summary.concepts_unchanged += 1;
+        } else {
+            let content = render_concept(node, &index, generated_at)?;
+            fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+            match node {
+                NormalizedNode::Topic(_) => summary.topics_written += 1,
+                NormalizedNode::Map(_) => summary.maps_written += 1,
+            }
         }
         summary.edges_written += node.links().len();
     }
+
+    crate::incremental::write_state(nodes, output_dir)?;
 
     write_okf_toml(&bundle_dir)?;
     write_index(&bundle_dir, nodes, generated_at)?;
@@ -481,5 +506,141 @@ mod tests {
         // The okf/ bundle itself is unaffected -- emit_graph_json only
         // controls the derived, disposable graph.json (§2.3, §2.4).
         assert!(dir.path().join("okf/topics/configuration.md").exists());
+    }
+
+    /// Phase 6+'s "Incremental rebuild": a second `write_bundle` call
+    /// with byte-for-byte identical nodes must not rewrite any concept
+    /// file (proven by mtime, not just content -- content alone can't
+    /// tell a skip from "rewrote it with the same bytes") and must
+    /// report every one of them as `concepts_unchanged`, not
+    /// `topics_written`/`maps_written`.
+    #[test]
+    fn rebuilding_with_identical_nodes_touches_no_concept_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        let first_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        let first = write_bundle(&nodes, dir.path(), first_at, true).unwrap();
+        assert_eq!(
+            first.concepts_unchanged, 0,
+            "nothing to skip on a first build"
+        );
+
+        let installing_path = dir.path().join("okf/topics/installing-product.md");
+        let mtime_before = fs::metadata(&installing_path).unwrap().modified().unwrap();
+
+        // A later generated_at, same nodes -- if the skip logic didn't
+        // work, this alone would still change every file's `generated.at`.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let second_at: DateTime<Utc> = "2026-08-03T01:00:00Z".parse().unwrap();
+        let second = write_bundle(&nodes, dir.path(), second_at, true).unwrap();
+
+        assert_eq!(second.topics_written, 0);
+        assert_eq!(second.maps_written, 0);
+        assert_eq!(
+            second.concepts_unchanged, 4,
+            "all 4 nodes should be skipped"
+        );
+
+        let mtime_after = fs::metadata(&installing_path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "an unchanged topic's concept file must not be rewritten"
+        );
+        let content = fs::read_to_string(&installing_path).unwrap();
+        assert!(
+            content.contains("2026-08-03T00:00:00"),
+            "the file should still carry the *first* build's timestamp, not the second's: {content}"
+        );
+    }
+
+    /// A node that *did* change must still be rewritten (with a fresh
+    /// timestamp), while a node that neither changed nor links to
+    /// anything that did stays untouched -- proves the skip is per-node,
+    /// not all-or-nothing. `installing-product-prereqs` links to nothing
+    /// that changes here and nothing links to *it*, so it's the control:
+    /// `installing-product` (own title changed) and `user-guide` (links
+    /// to it, so it must pick up the new title, per the cascading case
+    /// covered separately below) are the two expected to be rewritten.
+    #[test]
+    fn rebuilding_after_one_node_changes_rewrites_only_that_node_and_its_referrers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        let first_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), first_at, true).unwrap();
+
+        let prereqs_path = dir.path().join("okf/topics/installing-product-prereqs.md");
+        let prereqs_mtime_before = fs::metadata(&prereqs_path).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        for node in &mut nodes {
+            if let NormalizedNode::Topic(t) = node
+                && t.id == "installing-product"
+            {
+                t.title = "Installing Product (Updated)".into();
+            }
+        }
+        let second_at: DateTime<Utc> = "2026-08-03T01:00:00Z".parse().unwrap();
+        let second = write_bundle(&nodes, dir.path(), second_at, true).unwrap();
+
+        assert_eq!(
+            second.topics_written, 1,
+            "only installing-product's own fields changed"
+        );
+        assert_eq!(
+            second.maps_written, 1,
+            "user-guide contains installing-product, so it must pick up the new title"
+        );
+        assert_eq!(second.concepts_unchanged, 2);
+
+        let prereqs_mtime_after = fs::metadata(&prereqs_path).unwrap().modified().unwrap();
+        assert_eq!(
+            prereqs_mtime_before, prereqs_mtime_after,
+            "a topic unrelated to the change must not be rewritten"
+        );
+
+        let installing =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(installing.contains("Installing Product (Updated)"));
+        assert!(installing.contains("2026-08-03T01:00:00"));
+
+        let user_guide = fs::read_to_string(dir.path().join("okf/maps/user-guide.md")).unwrap();
+        assert!(
+            user_guide.contains("Installing Product (Updated)"),
+            "user-guide's own rendered link text must reflect installing-product's new title: {user_guide}"
+        );
+    }
+
+    /// The correctness case `incremental.rs`'s own docs call out:
+    /// `render_concept` inlines a link target's *title*, so a topic that
+    /// links to a renamed one must be re-rendered even though its own
+    /// fields never changed -- otherwise it would keep showing the old
+    /// title forever, since nothing about the linking topic itself ever
+    /// changes again to trigger a fresh render.
+    #[test]
+    fn rebuilding_after_a_link_targets_title_changes_rewrites_the_referencing_topic_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        let first_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), first_at, true).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        for node in &mut nodes {
+            if let NormalizedNode::Topic(t) = node
+                && t.id == "configuration"
+            {
+                t.title = "Configuration Overview (Renamed)".into();
+            }
+        }
+        let second_at: DateTime<Utc> = "2026-08-03T01:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), second_at, true).unwrap();
+
+        // installing-product requires configuration (sample_nodes), so
+        // its rendered "# Requires" section must now show the new title.
+        let installing =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(
+            installing.contains("Configuration Overview (Renamed)"),
+            "installing-product must be re-rendered to pick up configuration's new title: {installing}"
+        );
     }
 }
