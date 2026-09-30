@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": {
+    "type": "Lowercase"
+  },
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "install": 1,
+      "installing": 2,
+      "product": 3,
+      "download": 4,
+      "run": 5,
+      "configure": 6,
+      "configuration": 7,
+      "settings": 8,
+      "overview": 9,
+      "weather": 10,
+      "forecast": 11,
+      "rain": 12,
+      "cloud": 13,
+      "sunny": 14,
+      "temperature": 15
+    },
+    "unk_token": "[UNK]"
+  }
+}

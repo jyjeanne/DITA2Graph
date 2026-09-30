@@ -5,8 +5,10 @@
 //! resource list (`dita://topics`, etc.) isn't implemented by
 //! `dita2graph-mcp` -- only `tools/list`/`tools/call` are (§5.2) -- so
 //! declaring resources there would describe a capability that doesn't
-//! exist. `store`/`graph.db` are left out for the same reason (§7: not
-//! implemented).
+//! exist. `graph.db` (`store.rs`, opt-in via `build --store sqlite`) is
+//! left out too -- not because it's unimplemented, but because
+//! `dita2graph-mcp` doesn't read it yet, only `dita2graph-core query`
+//! does; wiring the MCP server to prefer it when present is a later step.
 
 use anyhow::{Context, Result};
 use std::fs;

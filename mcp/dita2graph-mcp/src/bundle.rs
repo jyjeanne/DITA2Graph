@@ -56,6 +56,24 @@ pub struct RagChunk {
     pub topic_type: String,
 }
 
+/// One record from `rag/embeddings.jsonl` (§13.1's node-level
+/// embeddings, written by `dita2graph-core build
+/// --embedding-model/--embedding-tokenizer`,
+/// `core/dita2graph-core/src/embeddings.rs::write_embeddings_index`).
+/// `model`/`dim` are written for provenance but not read back here --
+/// a dimension mismatch against a query embedding from a *different*
+/// model is already handled structurally, by
+/// `dita2graph_core::cosine_similarity` returning `0.0` rather than
+/// panicking, so there's nothing this reader needs to check up front.
+#[derive(Deserialize)]
+struct EmbeddingRecord {
+    id: String,
+    vector: Vec<f32>,
+}
+
+/// id -> embedding vector, parsed from `rag/embeddings.jsonl`.
+type EmbeddingsMap = HashMap<String, Vec<f32>>;
+
 pub struct BundleReader {
     /// The directory containing `okf/` and `graph.json` (i.e. what
     /// `dita2graph-core build --output` pointed at).
@@ -85,10 +103,80 @@ pub struct BundleReader {
     /// hit needs to be a cheap refcount bump, not a fresh deep clone of
     /// every chunk's owned strings each time.
     rag_chunks_cache: RefCell<Option<Rc<Vec<RagChunk>>>>,
+    /// `rag/embeddings.jsonl` (§13.1's node-level embeddings), parsed
+    /// once and `Rc`-shared the same way [`Self::rag_chunks_cache`] is --
+    /// `search_content` looks this up once per scored chunk on every
+    /// call when an embedder is configured, so it gets the identical
+    /// cache-hit-is-a-refcount-bump treatment.
+    embeddings_cache: RefCell<Option<Rc<EmbeddingsMap>>>,
 }
 
 impl BundleReader {
+    /// Loads nodes/edges from `graph.db` when it exists (skipping the
+    /// `graph.json` parse entirely), falling back to `graph.json`
+    /// otherwise -- the "fast MCP queries" motivation
+    /// `docs/plugin-specification.md` §2.4/§7 documents for `graph.db`
+    /// (`core/dita2graph-core/src/store.rs`), finally wired up on the
+    /// read side. `graph.db`'s existence is a reliable signal for "the
+    /// most recent `dita2graph-core build` used `--store sqlite`" --
+    /// `main.rs::run_build` removes any stale leftover file when a later
+    /// build omits `--store sqlite`, so there's no risk of silently
+    /// preferring an out-of-date index here.
+    ///
+    /// Every downstream method (`all_nodes`, `edges_from`, `edges_to`,
+    /// `title` via `read_concept`) operates on the same `nodes`/`edges`
+    /// fields regardless of which source populated them -- this is the
+    /// only place the two backends differ.
+    ///
+    /// A `graph.db` that exists but fails to read (e.g. an interrupted
+    /// `--store sqlite` build: `write_sqlite_store` removes the old file,
+    /// *then* creates its schema, *then* populates it, so a crash in that
+    /// window leaves a `graph.db` with no usable tables) falls back to
+    /// `graph.json` rather than failing `open` outright -- `graph.json`
+    /// is written earlier in the same `build` run, before
+    /// `write_sqlite_store` even starts, so it's unaffected and safe to
+    /// use. Without this, a broken `graph.db` would take down every MCP
+    /// tool call for a bundle whose `graph.json` is perfectly fine.
     pub fn open(root: &Path) -> Result<Self> {
+        let db_path = root.join("graph.db");
+        let (nodes, edges) = if db_path.exists() {
+            match dita2graph_core::read_sqlite_store(&db_path) {
+                Ok((raw_nodes, raw_edges)) => {
+                    let nodes = raw_nodes
+                        .into_iter()
+                        .map(|(id, type_)| (id.clone(), GraphNode { id, type_ }))
+                        .collect();
+                    let edges = raw_edges
+                        .into_iter()
+                        .map(|(from, to, relation)| GraphEdge { from, to, relation })
+                        .collect();
+                    (nodes, edges)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "dita2graph-mcp: {} exists but couldn't be read ({e:#}); falling back to graph.json",
+                        db_path.display()
+                    );
+                    Self::load_from_graph_json(root)?
+                }
+            }
+        } else {
+            Self::load_from_graph_json(root)?
+        };
+        Ok(BundleReader {
+            root: root.to_path_buf(),
+            nodes,
+            edges,
+            concept_cache: RefCell::new(HashMap::new()),
+            rag_chunks_cache: RefCell::new(None),
+            embeddings_cache: RefCell::new(None),
+        })
+    }
+
+    /// The original, `graph.json`-only load path -- still the sole
+    /// source when `graph.db` doesn't exist, and the fallback when it
+    /// exists but can't be read (see [`Self::open`]).
+    fn load_from_graph_json(root: &Path) -> Result<(HashMap<String, GraphNode>, Vec<GraphEdge>)> {
         let graph_path = root.join("graph.json");
         let raw = fs::read_to_string(&graph_path).with_context(|| {
             format!(
@@ -98,13 +186,10 @@ impl BundleReader {
         })?;
         let graph: GraphJson = serde_json::from_str(&raw)
             .with_context(|| format!("parsing {}", graph_path.display()))?;
-        Ok(BundleReader {
-            root: root.to_path_buf(),
-            nodes: graph.nodes.into_iter().map(|n| (n.id.clone(), n)).collect(),
-            edges: graph.edges,
-            concept_cache: RefCell::new(HashMap::new()),
-            rag_chunks_cache: RefCell::new(None),
-        })
+        Ok((
+            graph.nodes.into_iter().map(|n| (n.id.clone(), n)).collect(),
+            graph.edges,
+        ))
     }
 
     pub fn all_nodes(&self) -> impl Iterator<Item = &GraphNode> {
@@ -236,6 +321,38 @@ impl BundleReader {
         Ok(chunks)
     }
 
+    /// Loads `rag/embeddings.jsonl` (§13.1), parsed once and `Rc`-shared
+    /// on every call after that -- see `embeddings_cache` above. Returns
+    /// an empty map, not an error, when the file is missing: a bundle
+    /// built without `--embedding-model`/`--embedding-tokenizer`
+    /// (`dita2graph-core build`) has no embeddings, and `search_content`
+    /// degrades to keyword-only ranking in that case rather than failing,
+    /// the same graceful-degradation the file already gets for
+    /// `rag_chunks()` on a bundle built before `rag/` existed at all.
+    pub fn embeddings(&self) -> Result<Rc<EmbeddingsMap>> {
+        if let Some(cached) = self.embeddings_cache.borrow().as_ref() {
+            return Ok(Rc::clone(cached));
+        }
+        let path = self.root.join("rag").join("embeddings.jsonl");
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(_) => {
+                let empty = Rc::new(HashMap::new());
+                *self.embeddings_cache.borrow_mut() = Some(Rc::clone(&empty));
+                return Ok(empty);
+            }
+        };
+        let mut map = HashMap::new();
+        for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+            let record: EmbeddingRecord = serde_json::from_str(line)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            map.insert(record.id, record.vector);
+        }
+        let map = Rc::new(map);
+        *self.embeddings_cache.borrow_mut() = Some(Rc::clone(&map));
+        Ok(map)
+    }
+
     pub fn title(&self, id: &str) -> Result<String> {
         let (frontmatter, _) = self.read_concept(id)?;
         Ok(frontmatter
@@ -246,9 +363,9 @@ impl BundleReader {
     }
 }
 
-/// The mtimes `BundleCache` fingerprints a bundle by. Both files, not
-/// just `graph.json` -- `dita2graph-core build` (`main.rs::run_build`)
-/// writes them in two separate steps, `write_bundle` (which writes
+/// The mtimes `BundleCache` fingerprints a bundle by. Not just
+/// `graph.json` -- `dita2graph-core build` (`main.rs::run_build`)
+/// writes its outputs in separate steps, `write_bundle` (which writes
 /// `graph.json` last, after every concept file) finishing before
 /// `write_rag_index` even starts. Fingerprinting `graph.json` alone
 /// would mean a `get()` landing in that window reopens the reader (safe
@@ -259,7 +376,14 @@ impl BundleReader {
 /// the *next* rebuild -- meanwhile `search_content`/`analyze_impact`
 /// silently serve outdated excerpts against an otherwise fully
 /// up-to-date bundle for the entire rest of the session.
-type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>);
+///
+/// The third component is `graph.db`'s mtime, for the same reason:
+/// `write_sqlite_store` (or its removal, when a later build omits
+/// `--store sqlite`) runs after both of the above, so a fingerprint that
+/// only watched `graph.json`/`rag/chunks.jsonl` could miss a `graph.db`
+/// rewrite (or removal) entirely and keep `BundleReader::open`'s choice
+/// of source frozen at whatever it was on the previous load.
+type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>, Option<SystemTime>);
 
 /// The process-lifetime handle `main.rs` holds across every JSON-RPC
 /// request, instead of calling `BundleReader::open` fresh per
@@ -305,6 +429,17 @@ pub struct BundleCache {
     /// configuration error when `source_root` is unset rather than
     /// this constructor needing to fail early.
     live: crate::live::LiveValidationConfig,
+    /// The optional query-time embedder for `search_content`'s semantic
+    /// ranking (§13.1's node-level embeddings). `Rc`, not owned outright
+    /// -- loading an ONNX model + tokenizer is real, one-time startup
+    /// work (`main()`'s `resolve_embedding_config`), and `tools::call`
+    /// needs to clone this out before `cache.get()`'s `&mut self` borrow,
+    /// the same reason `live` above is cloned out rather than borrowed in
+    /// place. `None` (the default) means "no embeddings configured" --
+    /// `search_content` degrades to keyword-only ranking, unchanged from
+    /// before this existed, exactly as it already does when a bundle has
+    /// no `rag/embeddings.jsonl` regardless of this config.
+    embedder: Option<Rc<dita2graph_core::Embedder>>,
 }
 
 impl BundleCache {
@@ -313,6 +448,7 @@ impl BundleCache {
             root,
             loaded: None,
             live: crate::live::LiveValidationConfig::default(),
+            embedder: None,
         }
     }
 
@@ -330,6 +466,20 @@ impl BundleCache {
         &self.live
     }
 
+    /// Builder-style setter for the query-time embedder, mirroring
+    /// `with_live_config` above -- `main()` calls this once at startup
+    /// with whatever `resolve_embedding_config` + a best-effort
+    /// `Embedder::load` produced (`None` on missing config or a load
+    /// failure, logged to stderr, never fatal to starting the server).
+    pub fn with_embedder(mut self, embedder: Option<Rc<dita2graph_core::Embedder>>) -> Self {
+        self.embedder = embedder;
+        self
+    }
+
+    pub fn embedder(&self) -> Option<Rc<dita2graph_core::Embedder>> {
+        self.embedder.clone()
+    }
+
     /// The bundle root this cache is bound to -- needed directly (not
     /// through the cached `BundleReader`) by `validate_bundle`, which is
     /// meant to check the bundle's *current* on-disk state, not a cached
@@ -344,7 +494,11 @@ impl BundleCache {
                 .and_then(|m| m.modified())
                 .ok()
         };
-        (mtime_of("graph.json"), mtime_of("rag/chunks.jsonl"))
+        (
+            mtime_of("graph.json"),
+            mtime_of("rag/chunks.jsonl"),
+            mtime_of("graph.db"),
+        )
     }
 
     pub fn get(&mut self) -> Result<&BundleReader> {
@@ -391,7 +545,7 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
-        write_rag_index,
+        write_rag_index, write_sqlite_store,
     };
     use std::{fs, thread, time::Duration};
 
@@ -449,6 +603,64 @@ mod tests {
             "Original Title",
             "second call on the same BundleReader should serve the cached read, not the edit"
         );
+    }
+
+    /// `BundleReader::open` has two independent read paths for the same
+    /// nodes/edges data (`graph.db` when present, `graph.json`
+    /// otherwise) -- the real risk is those paths silently drifting and
+    /// producing different results for the same underlying bundle. Opens
+    /// a `graph.json`-only bundle, records what it sees, then adds
+    /// `graph.db` from the identical model (exactly what `--store
+    /// sqlite` does) and asserts a fresh `open` sees the same nodes and
+    /// edges, order aside.
+    #[test]
+    fn open_sees_the_same_nodes_and_edges_from_graph_db_as_from_graph_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = one_topic_nodes("topic-a", "Title A");
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+
+        let from_json = BundleReader::open(dir.path()).unwrap();
+        let mut json_node_ids: Vec<&str> = from_json.all_nodes().map(|n| n.id.as_str()).collect();
+        json_node_ids.sort();
+        let mut json_edges: Vec<(String, String, String)> = from_json
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone(), e.relation.clone()))
+            .collect();
+        json_edges.sort();
+
+        write_sqlite_store(&nodes, dir.path()).unwrap();
+        assert!(dir.path().join("graph.db").exists());
+
+        let from_db = BundleReader::open(dir.path()).unwrap();
+        let mut db_node_ids: Vec<&str> = from_db.all_nodes().map(|n| n.id.as_str()).collect();
+        db_node_ids.sort();
+        let mut db_edges: Vec<(String, String, String)> = from_db
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone(), e.relation.clone()))
+            .collect();
+        db_edges.sort();
+
+        assert_eq!(json_node_ids, db_node_ids);
+        assert_eq!(json_edges, db_edges);
+    }
+
+    /// A `graph.db` that exists but has no usable schema -- exactly what
+    /// an interrupted `--store sqlite` build leaves (`write_sqlite_store`
+    /// removes the old file, then creates its schema, then populates it;
+    /// a crash in that window leaves an unreadable file) -- must not take
+    /// `open` down when `graph.json`, written earlier in the same build,
+    /// is still perfectly valid right next to it.
+    #[test]
+    fn open_falls_back_to_graph_json_when_graph_db_exists_but_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        fs::write(dir.path().join("graph.db"), b"not a real sqlite file").unwrap();
+
+        let reader = BundleReader::open(dir.path())
+            .expect("a corrupt graph.db must not fail open() when graph.json is valid");
+        assert!(reader.all_nodes().any(|n| n.id == "topic-a"));
     }
 
     /// Same proof as above, for `rag_chunks()`.
@@ -568,6 +780,34 @@ mod tests {
             chunks.iter().any(|c| c.id == "topic-b"),
             "cache should reload once rag/chunks.jsonl changes even when graph.json didn't change again: {:?}",
             chunks.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// Mirrors the `rag/chunks.jsonl`-only-changes test above, for the
+    /// fingerprint's third component: `graph.db` appearing after
+    /// `graph.json`/`rag/chunks.jsonl` have already settled (exactly
+    /// what a `dita2graph-core build --store sqlite` looks like from the
+    /// cache's point of view, since `write_sqlite_store` runs after both)
+    /// must still trigger a reopen -- and once it does, `BundleReader`
+    /// should now be reading from `graph.db`, not `graph.json`.
+    #[test]
+    fn bundle_cache_reloads_when_only_graph_db_appears_after_graph_json_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        one_topic_bundle(dir.path(), "topic-a", "Title A");
+        let mut cache = BundleCache::new(dir.path().to_path_buf());
+        assert!(cache.get().unwrap().all_nodes().any(|n| n.id == "topic-a"));
+
+        thread::sleep(Duration::from_millis(1100));
+        // A `--store sqlite` build of a *different* model -- graph.json
+        // and rag/chunks.jsonl are untouched, only graph.db is new.
+        // BundleReader::open prefers graph.db once it exists, so seeing
+        // topic-b here proves both that the fingerprint noticed and that
+        // the reopened reader actually switched sources.
+        write_sqlite_store(&one_topic_nodes("topic-b", "Title B"), dir.path()).unwrap();
+
+        assert!(
+            cache.get().unwrap().all_nodes().any(|n| n.id == "topic-b"),
+            "cache should reload once graph.db appears, even though graph.json didn't change"
         );
     }
 

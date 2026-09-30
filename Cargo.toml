@@ -21,3 +21,13 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 okf-validator = { git = "https://github.com/jyjeanne/okf-rs" }
+# `load-dynamic`, not `download-binaries`: build time stays offline and
+# reproducible (crates.io only), and the actual onnxruntime shared
+# library is a runtime dependency the operator points at via
+# `ORT_DYLIB_PATH` -- see `core/dita2graph-core/src/embeddings.rs`.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "ndarray"] }
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+# `bundled`: compiles SQLite from vendored C source (via `cc`), so this
+# stays offline at build time too and needs no system libsqlite3 --
+# see `core/dita2graph-core/src/store.rs`.
+rusqlite = { version = "0.40", features = ["bundled"] }

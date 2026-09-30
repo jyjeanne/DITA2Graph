@@ -11,8 +11,9 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
 use dita2graph_core::{
-    NormalizedNode, infer_applies_to, infer_related_to, scan_bundle, write_bundle,
-    write_mcp_config, write_rag_index,
+    Embedder, NormalizedNode, PreviousEmbeddings, infer_applies_to, infer_related_to,
+    query_sqlite_store, scan_bundle, write_bundle, write_embeddings_index, write_mcp_config,
+    write_rag_index, write_sqlite_store,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,10 +38,12 @@ enum Command {
         /// written under it (§2.4).
         #[arg(long)]
         output: PathBuf,
-        /// Backing store for the query index. `sqlite`/`rocksdb` are
-        /// planned (§7 implementation stack) and not yet implemented in
-        /// this scaffold; `none` is the only value that does anything
-        /// today.
+        /// Backing store for the query index (§7 implementation stack).
+        /// `sqlite` writes `<output>/graph.db`, a SQLite mirror of
+        /// `graph.json`'s nodes/edges for fast indexed `query` lookups
+        /// on a real corpus (`src/store.rs`); `rocksdb` is still planned,
+        /// not implemented; `none` (default) writes no index -- `query`
+        /// falls back to reading `graph.json` directly either way.
         #[arg(long, default_value = "none")]
         store: String,
         /// Whether to also write graph.json alongside the OKF bundle
@@ -54,6 +57,17 @@ enum Command {
         /// --config` can read. Accepts "true"/"false".
         #[arg(long, default_value = "false")]
         mcp: String,
+        /// Path to an ONNX sentence-embedding model (§13.1's node-level
+        /// embeddings). Optional -- when given, must be paired with
+        /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
+        /// is written and `search_content` stays keyword-only, unchanged
+        /// from today. Requires `ORT_DYLIB_PATH` to point at a real ONNX
+        /// Runtime shared library at run time (`src/embeddings.rs`).
+        #[arg(long, requires = "embedding_tokenizer")]
+        embedding_model: Option<PathBuf>,
+        /// Path to the tokenizer.json matching `--embedding-model`.
+        #[arg(long, requires = "embedding_model")]
+        embedding_tokenizer: Option<PathBuf>,
     },
     /// Validate an existing OKF bundle with `okf-validator` (§2.5, §6.4, §10).
     Validate {
@@ -61,14 +75,16 @@ enum Command {
         #[arg(long)]
         bundle: PathBuf,
     },
-    /// Query the derived `graph.json` for a topic's relations (§3.4).
-    /// A stand-in for the real SQLite/RocksDB-backed query index (§7),
-    /// which is later Phase 2 work.
+    /// Query a topic's relations (§3.4), from either `graph.json` or a
+    /// `graph.db` written by `build --store sqlite` -- RocksDB-backed
+    /// storage remains later Phase 6+ work (§7).
     Query {
-        /// Output directory containing `graph.json` (i.e. what `--output`
-        /// pointed at for `build`).
+        /// Either a bundle output directory containing `graph.json`
+        /// (i.e. what `--output` pointed at for `build`) or a direct
+        /// path to a `graph.db` written by `build --store sqlite` --
+        /// distinguished by whether the path is itself an existing file.
         #[arg(long = "store")]
-        output_dir: PathBuf,
+        store: PathBuf,
         #[arg(long)]
         topic: String,
         #[arg(long)]
@@ -85,13 +101,23 @@ fn main() -> ExitCode {
             store,
             emit_graph_json,
             mcp,
-        } => run_build(input, output, store, emit_graph_json, mcp),
+            embedding_model,
+            embedding_tokenizer,
+        } => run_build(
+            input,
+            output,
+            store,
+            emit_graph_json,
+            mcp,
+            embedding_model,
+            embedding_tokenizer,
+        ),
         Command::Validate { bundle } => run_validate(bundle),
         Command::Query {
-            output_dir,
+            store,
             topic,
             relation,
-        } => run_query(output_dir, topic, relation),
+        } => run_query(store, topic, relation),
     };
     match result {
         Ok(code) => code,
@@ -108,12 +134,17 @@ fn run_build(
     store: String,
     emit_graph_json: String,
     mcp: String,
+    embedding_model: Option<PathBuf>,
+    embedding_tokenizer: Option<PathBuf>,
 ) -> Result<ExitCode> {
-    if store != "none" {
-        eprintln!(
-            "dita2graph-core: note: --store={store} is not implemented yet (see spec section 7); \
-             no {store} index will be written."
-        );
+    match store.as_str() {
+        "none" | "sqlite" => {}
+        other => {
+            eprintln!(
+                "dita2graph-core: note: --store={other} is not implemented yet (see spec \
+                 section 7); no {other} index will be written."
+            );
+        }
     }
     let emit_graph_json = parse_bool_arg(&emit_graph_json, "--emit-graph-json")?;
     let mcp = parse_bool_arg(&mcp, "--mcp")?;
@@ -144,12 +175,20 @@ fn run_build(
 
     let summary = write_bundle(&nodes, &output, generated_at, emit_graph_json)?;
     println!(
-        "wrote {} topics, {} maps, {} edges to {}",
+        "wrote {} topics, {} maps, {} edges to {} ({} unchanged, skipped)",
         summary.topics_written,
         summary.maps_written,
         summary.edges_written,
-        output.join("okf").display()
+        output.join("okf").display(),
+        summary.concepts_unchanged
     );
+
+    // Captured *before* write_rag_index overwrites rag/chunks.jsonl --
+    // this is the only chance to see what the previous build's chunk
+    // text/embeddings were, for write_embeddings_index's own incremental
+    // skip decision further down (§13.1, Phase 6+'s "Incremental
+    // rebuild").
+    let previous_embeddings = PreviousEmbeddings::load(&output);
 
     let rag_summary = write_rag_index(&nodes, &output, generated_at)?;
     println!(
@@ -157,6 +196,66 @@ fn run_build(
         rag_summary.chunks_written,
         output.join("rag").display()
     );
+
+    if store == "sqlite" {
+        let store_summary = write_sqlite_store(&nodes, &output)?;
+        println!(
+            "wrote {} node(s), {} edge(s) to {}",
+            store_summary.nodes_written,
+            store_summary.edges_written,
+            output.join("graph.db").display()
+        );
+    } else {
+        // `dita2graph-mcp`'s `BundleReader` prefers `graph.db` over
+        // `graph.json` whenever the file exists (`bundle.rs::open`), on
+        // the assumption that its presence means the most recent build
+        // asked for it. A leftover `graph.db` from an *earlier* build
+        // that used `--store sqlite`, followed by a later rebuild that
+        // didn't, would otherwise silently violate that assumption --
+        // the MCP server would keep serving a stale graph index forever,
+        // never touching the freshly rewritten graph.json. Removing it
+        // here keeps "graph.db exists" a reliable signal for "this
+        // build's own --store sqlite", the same discipline
+        // `write_sqlite_store` already applies *within* a single sqlite
+        // build (always starting from a clean file).
+        let stale_db = output.join("graph.db");
+        if stale_db.exists() {
+            fs::remove_file(&stale_db)
+                .with_context(|| format!("removing stale {}", stale_db.display()))?;
+            println!(
+                "removed stale {} (this build didn't request --store sqlite)",
+                stale_db.display()
+            );
+        }
+    }
+
+    if let (Some(model_path), Some(tokenizer_path)) = (&embedding_model, &embedding_tokenizer) {
+        let model_name = model_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| model_path.display().to_string());
+        let embedder = Embedder::load(model_path, tokenizer_path).with_context(|| {
+            format!(
+                "loading embedding model {} / tokenizer {}",
+                model_path.display(),
+                tokenizer_path.display()
+            )
+        })?;
+        let embedding_summary = write_embeddings_index(
+            &nodes,
+            &output,
+            &embedder,
+            &model_name,
+            &previous_embeddings,
+        )?;
+        println!(
+            "wrote {} embedding(s) ({} reused, dim {}) to {}",
+            embedding_summary.embeddings_written,
+            embedding_summary.embeddings_reused,
+            embedding_summary.dim,
+            output.join("rag/embeddings.jsonl").display()
+        );
+    }
 
     if mcp {
         write_mcp_config(&output)?;
@@ -262,7 +361,35 @@ fn scan_rag_and_report(rag_dir: &Path) -> Result<bool> {
     Ok(ok)
 }
 
-fn run_query(output_dir: PathBuf, topic: String, relation: Option<String>) -> Result<ExitCode> {
+/// `--store` accepts either a `graph.db` file directly (the spec's §3.4
+/// example: `query --store output/graph.db ...`), read via
+/// [`query_sqlite_store`], or a bundle output directory containing
+/// `graph.json` (the original, still-default behavior, unchanged) --
+/// distinguished by whether the given path is itself an existing file,
+/// not by extension, so an existing invocation passing a directory
+/// behaves exactly as before.
+fn run_query(store: PathBuf, topic: String, relation: Option<String>) -> Result<ExitCode> {
+    let edges = if store.is_file() {
+        query_sqlite_store(&store, &topic, relation.as_deref())?
+    } else {
+        query_graph_json(&store, &topic, relation.as_deref())?
+    };
+
+    if edges.is_empty() {
+        eprintln!("dita2graph-core: no matching edges for topic `{topic}`");
+        return Ok(ExitCode::FAILURE);
+    }
+    for (edge_relation, to) in &edges {
+        println!("{topic} --{edge_relation}--> {to}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn query_graph_json(
+    output_dir: &Path,
+    topic: &str,
+    relation: Option<&str>,
+) -> Result<Vec<(String, String)>> {
     let graph_path = output_dir.join("graph.json");
     let raw = fs::read_to_string(&graph_path).with_context(|| {
         format!(
@@ -273,28 +400,273 @@ fn run_query(output_dir: PathBuf, topic: String, relation: Option<String>) -> Re
     let graph: serde_json::Value = serde_json::from_str(&raw)?;
 
     let edges = graph["edges"].as_array().cloned().unwrap_or_default();
-    let mut found = false;
+    let mut matched = Vec::new();
     for edge in &edges {
         let from = edge["from"].as_str().unwrap_or_default();
         let edge_relation = edge["relation"].as_str().unwrap_or_default();
         if from != topic {
             continue;
         }
-        if let Some(want) = &relation
+        if let Some(want) = relation
             && edge_relation != want
         {
             continue;
         }
-        found = true;
-        println!(
-            "{topic} --{edge_relation}--> {}",
-            edge["to"].as_str().unwrap_or_default()
+        matched.push((
+            edge_relation.to_string(),
+            edge["to"].as_str().unwrap_or_default().to_string(),
+        ));
+    }
+    Ok(matched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dita2graph_core::{Link, NormalizedMap, NormalizedTopic, Relation, TopicType};
+
+    fn sample_nodes() -> Vec<NormalizedNode> {
+        vec![
+            NormalizedNode::Map(NormalizedMap {
+                id: "user-guide".into(),
+                title: "User Guide".into(),
+                source_file: "user-guide.ditamap".into(),
+                links: vec![Link {
+                    relation: Relation::Contains,
+                    target: "installing-product".into(),
+                }],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "installing-product".into(),
+                topic_type: TopicType::Task,
+                title: "Installing Product".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/installing-product.dita".into(),
+                links: vec![
+                    Link {
+                        relation: Relation::Requires,
+                        target: "configuration".into(),
+                    },
+                    Link {
+                        relation: Relation::References,
+                        target: "installing-product-prereqs".into(),
+                    },
+                ],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "configuration".into(),
+                topic_type: TopicType::Concept,
+                title: "Configuration Overview".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/configuration.dita".into(),
+                links: vec![],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "installing-product-prereqs".into(),
+                topic_type: TopicType::Concept,
+                title: "Prerequisites".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/installing-product-prereqs.dita".into(),
+                links: vec![],
+            }),
+        ]
+    }
+
+    /// `dita2graph-mcp`'s `BundleReader` treats `graph.db`'s mere
+    /// existence as "the most recent build asked for --store sqlite"
+    /// (`mcp/dita2graph-mcp/src/bundle.rs::open`) -- a `graph.db` left
+    /// over from an *earlier* sqlite build, still sitting next to a
+    /// freshly rewritten `graph.json` from a later non-sqlite build,
+    /// would violate that and serve a silently stale index forever.
+    /// `run_build` must remove it when `--store` isn't `sqlite`.
+    #[test]
+    fn run_build_removes_a_stale_graph_db_when_store_reverts_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+
+        let code = run_build(
+            input_path.clone(),
+            output.clone(),
+            "sqlite".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.join("graph.db").exists());
+
+        let code = run_build(
+            input_path,
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            !output.join("graph.db").exists(),
+            "a rebuild without --store sqlite must remove the earlier build's graph.db"
         );
     }
 
-    if !found {
-        eprintln!("dita2graph-core: no matching edges for topic `{topic}`");
-        return Ok(ExitCode::FAILURE);
+    /// End-to-end proof that incremental rebuild is actually wired
+    /// through the real `build` CLI path, not just the lower-level
+    /// `write_bundle`/`write_embeddings_index` functions it's built
+    /// from: two consecutive `run_build` calls against identical input
+    /// leave every concept file untouched (by mtime) on the second run,
+    /// and `build-state.json` exists for the next build to read.
+    #[test]
+    fn run_build_leaves_concept_files_untouched_on_an_identical_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+
+        let code = run_build(
+            input_path.clone(),
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(output.join("build-state.json").exists());
+
+        let concept_path = output.join("okf/topics/installing-product.md");
+        let mtime_before = fs::metadata(&concept_path).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let code = run_build(
+            input_path,
+            output.clone(),
+            "none".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let mtime_after = fs::metadata(&concept_path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "an identical rebuild through the real CLI path must not rewrite unchanged concept files"
+        );
     }
-    Ok(ExitCode::SUCCESS)
+
+    /// The real bug risk in having two independent read paths
+    /// (`query_graph_json`, `query_sqlite_store`) for the same
+    /// `--store` flag: they silently drift and answer differently for
+    /// the same bundle. Builds both a `graph.json` and a `graph.db` from
+    /// the identical in-memory model (exactly what `run_build` does when
+    /// `--store sqlite` is given -- both are always written together,
+    /// never just one) and asserts unscoped and relation-scoped queries
+    /// return the same edge set from either, order aside (SQL has no
+    /// row-order guarantee without `ORDER BY`, and neither backend ever
+    /// promised one).
+    #[test]
+    fn graph_json_and_sqlite_store_answer_the_same_query_identically() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        dita2graph_core::write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        dita2graph_core::write_sqlite_store(&nodes, dir.path()).unwrap();
+
+        let mut from_json = query_graph_json(dir.path(), "installing-product", None).unwrap();
+        let mut from_sqlite =
+            query_sqlite_store(&dir.path().join("graph.db"), "installing-product", None).unwrap();
+        from_json.sort();
+        from_sqlite.sort();
+        assert_eq!(from_json, from_sqlite);
+        assert_eq!(
+            from_json,
+            vec![
+                (
+                    "references".to_string(),
+                    "installing-product-prereqs".to_string()
+                ),
+                ("requires".to_string(), "configuration".to_string()),
+            ]
+        );
+
+        let mut from_json_scoped =
+            query_graph_json(dir.path(), "installing-product", Some("requires")).unwrap();
+        let mut from_sqlite_scoped = query_sqlite_store(
+            &dir.path().join("graph.db"),
+            "installing-product",
+            Some("requires"),
+        )
+        .unwrap();
+        from_json_scoped.sort();
+        from_sqlite_scoped.sort();
+        assert_eq!(from_json_scoped, from_sqlite_scoped);
+        assert_eq!(
+            from_json_scoped,
+            vec![("requires".to_string(), "configuration".to_string())]
+        );
+    }
+
+    /// `run_query`'s `store.is_file()` dispatch is the only thing
+    /// deciding which backend answers a query -- regression coverage for
+    /// that specific branch, independent of the two backends' own
+    /// correctness (covered above and in `store.rs`).
+    #[test]
+    fn run_query_dispatches_to_sqlite_only_when_store_is_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        dita2graph_core::write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        dita2graph_core::write_sqlite_store(&nodes, dir.path()).unwrap();
+
+        // A directory: graph.json path, unchanged from before --store
+        // sqlite existed.
+        let code = run_query(
+            dir.path().to_path_buf(),
+            "installing-product".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        // The graph.db file directly: sqlite path.
+        let code = run_query(
+            dir.path().join("graph.db"),
+            "installing-product".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        // Neither exists at all: still a clean "no matches" failure
+        // exit, not a panic or an internal error.
+        let code = run_query(dir.path().to_path_buf(), "no-such-topic".to_string(), None).unwrap();
+        assert_eq!(code, ExitCode::FAILURE);
+    }
 }

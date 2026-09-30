@@ -37,7 +37,9 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | CI | Real: `rust.yml`/`java.yml` unit-test each side, `integration.yml` runs the full pipeline (including the DITAVAL split, the nested-map/mapref/anchorref/relation-inference fixtures, and the broken-input negative test) against a live DITA-OT 4.4 |
 | Security (§6) | Secret-leakage detection shipped (`core/dita2graph-core/src/secrets.rs`, build-breaking, §6.4, covers `okf/` and `rag/`); public/internal DITAVAL split demonstrated (§6.1); HTTP transport auth (§6.3) not yet implemented — stdio only |
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
-| Hybrid graph+RAG architecture (§13.1) | Nearly done: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency-ranked content search), and `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept). Still design-only: node-level embeddings (the heavier, not-yet-committed direction) |
+| Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
+| SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: RocksDB storage |
+| Incremental rebuild (§3.3) | Done: a second `build` against unchanged input rewrites nothing unnecessary. `build-state.json` records a per-id fingerprint (content hash + the title/subdirectory a linking topic's rendered file also depends on) so an unchanged topic's `okf/*.md` file keeps its old content and timestamp instead of being rewritten every single build; when embeddings are configured, a topic whose exact chunk text and model are unchanged reuses its cached vector instead of another ONNX inference call. `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten in full — cheap, and must always reflect the complete current set. Verified end to end through the real CLI (reported as `(N unchanged, skipped)`/`(N reused, ...)`), including the correctness case where a topic's own content is untouched but a topic it links to was renamed |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
 full spec envisions: full `<navref>` map composition (`mapref`/
@@ -203,6 +205,36 @@ cat gradle-build/build/dita2graph/okf/topics/installing-product.md
 # extraction pass (§13.1) -- search_content/analyze_impact below read this
 cat gradle-build/build/dita2graph/rag/chunks.jsonl
 
+# Optional: add node-level embeddings for semantic ranking in
+# search_content (§13.1) -- point --embedding-model/--embedding-tokenizer
+# at a local ONNX sentence-embedding model + its tokenizer.json (e.g. an
+# export of all-MiniLM-L6-v2). Requires ORT_DYLIB_PATH to point at a real
+# ONNX Runtime shared library; writes rag/embeddings.jsonl alongside
+# chunks.jsonl. Skip this and everything above still works exactly as
+# before -- embeddings are opt-in on both the build and the mcp side.
+./target/release/dita2graph-core build \
+  --input <normalized-model.json> --output gradle-build/build/dita2graph \
+  --embedding-model <path/to/model.onnx> --embedding-tokenizer <path/to/tokenizer.json>
+
+# Optional: also write a SQLite-backed query index alongside graph.json
+# (§7/§3.3) -- an indexed mirror of the same nodes/edges, for fast
+# lookups on a real, sizeable corpus. Both `query` and `dita2graph-mcp`
+# itself prefer graph.db over graph.json whenever it exists. Skip this
+# and both keep reading graph.json directly, unchanged from before this
+# existed.
+./target/release/dita2graph-core build \
+  --input <normalized-model.json> --output gradle-build/build/dita2graph \
+  --store sqlite
+./target/release/dita2graph-core query \
+  --store gradle-build/build/dita2graph/graph.db \
+  --topic installing-product --relation requires
+
+# Incremental rebuild needs no flag -- run the same build again with
+# unchanged input and the CLI output reports what got skipped:
+#   wrote 0 topics, 0 maps, 5 edges to .../okf (3 unchanged, skipped)
+#   wrote 0 embedding(s) (3 reused, dim 384) to .../rag/embeddings.jsonl
+# (the embeddings line only appears when --embedding-model/--embedding-tokenizer are given)
+
 # Talk to the MCP server directly over stdio (one JSON-RPC message per line)
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_topics","arguments":{"query":"install"}}}' \
   | ./target/release/dita2graph-mcp gradle-build/build/dita2graph
@@ -231,7 +263,7 @@ Once registered, an agent can call:
 | Tool | What it does |
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
-| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1) |
+| `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |

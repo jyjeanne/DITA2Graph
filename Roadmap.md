@@ -160,10 +160,10 @@ DITA-OT's own `xtrf` source-trace attributes, no inference needed
 reference topic, with an ambiguous match dropped and logged rather than
 guessed, finding 15) are both inferred, downstream, in Rust.
 
-**Deferred to Phase 6+:** incremental rebuild (source-hash keyed) and
-SQLite/RocksDB-backed storage (`query` currently reads `graph.json`
-directly). Canonical-node deduplication for `conref`/`conkeyref`-reused
-content is done, see Phase 6+ below.
+**Deferred to Phase 6+, since done there:** incremental rebuild and
+SQLite-backed storage (RocksDB remains unimplemented) — both ✅ done,
+see Phase 6+ below. Canonical-node deduplication for `conref`/
+`conkeyref`-reused content is done too, same section.
 
 **Found and fixed for real-dataset usability (post-`v0.1.0`):**
 `infer_related_to` (`relations.rs`) was an unconditional O(n²) sweep
@@ -392,16 +392,98 @@ state, most-complete first:
    existing `generated-from` edge as the pointer. See
    [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)
    for the design, edge cases, and exit-criteria evidence.
-2. **Hybrid graph + RAG architecture** — nearly done. `rag/chunks.jsonl`
-   extraction (same single pass as `okf/`), `search_content`'s
-   graph-narrowed and keyword-frequency-ranked query routing, and
-   `analyze_impact`'s reverse traversal with text excerpts are all
-   implemented and verified. Only node-level embeddings (semantic
-   similarity ranking, as opposed to keyword overlap) remain — a
-   heavier change to the OKF bundle format itself, listed as a
-   direction under consideration, not a committed design.
-3. **Incremental rebuild** (source-hash keyed) and **SQLite/RocksDB
-   storage** for the query index.
+2. **Hybrid graph + RAG architecture** — all four pieces implemented and
+   verified: `rag/chunks.jsonl` extraction (same single pass as `okf/`),
+   `search_content`'s graph-narrowed query routing, `analyze_impact`'s
+   reverse traversal with text excerpts, and now node-level embeddings
+   for semantic ranking, opt-in and additive rather than the heavier
+   "fold embeddings into the OKF bundle format itself" direction §13.1
+   floats for later. `dita2graph-core build --embedding-model
+   <path.onnx> --embedding-tokenizer <path/tokenizer.json>` runs a local
+   ONNX sentence-embedding model (`core/dita2graph-core/src/
+   embeddings.rs`, the `ort` crate with `load-dynamic`, not
+   `download-binaries` — the actual ONNX Runtime shared library is a
+   runtime dependency the operator points at via `ORT_DYLIB_PATH`, no
+   network at build time) over each chunk's text, writing
+   `rag/embeddings.jsonl` alongside `chunks.jsonl`. `dita2graph-mcp`
+   picks up the same model at serve time via an `[embeddings]` table in
+   `mcp-server.toml` (or `DITA2GRAPH_EMBEDDING_MODEL`/
+   `DITA2GRAPH_EMBEDDING_TOKENIZER`/`--embedding-model`/
+   `--embedding-tokenizer`, same priority order as the existing
+   live-validation config) and blends cosine similarity into
+   `search_content`'s ranking — a strong semantic match (≥0.5 cosine
+   similarity) now surfaces even with zero literal keyword overlap,
+   closing the "can't match a paraphrase" gap keyword-frequency ranking
+   always had. No specific model is bundled or mandated: this is a
+   "bring your own" shape, same as DITA-OT itself and the vendored
+   DitaCraft LSP. Verified with a real ONNX Runtime and a small,
+   deterministic test-fixture model (`core/dita2graph-core/tests/
+   fixtures/embeddings/README.md`) proving the full pipeline
+   (tokenize → inference → mean-pool → L2-normalize → cosine
+   similarity) end to end, not just that the surrounding Rust compiles;
+   every existing keyword-only test still passes unchanged, since no
+   embedder configured means byte-identical behavior to before this
+   existed. Still open: no real-model (e.g. `all-MiniLM-L6-v2`) accuracy
+   benchmark against a regression corpus — §10 would need one before
+   recommending a specific model/threshold combination as production
+   guidance rather than a working default.
+3. **SQLite storage** for the query index — ✅ done, opt-in.
+   `dita2graph-core build --store sqlite` writes `<output>/graph.db`
+   (`core/dita2graph-core/src/store.rs`), a SQLite mirror of the same
+   nodes/edges `graph.json` already carries — same fields, same source
+   (the in-memory normalized model), indexed (`(from_id, relation)`/
+   `(to_id, relation)`) for lookups that don't need a full-file JSON
+   parse on a real, sizeable corpus. `dita2graph-core query --store
+   <path>` accepts either a bundle directory (unchanged `graph.json`
+   behavior, still the default) or a `graph.db` file directly — the
+   exact CLI shape §3.4 already documented — dispatching on whether the
+   given path is itself an existing file. `rusqlite`'s `bundled` feature
+   (compiles SQLite from vendored C source) keeps the build offline, no
+   system `libsqlite3` needed. Verified: a bundle built with `--store
+   sqlite` answers the same unscoped and relation-scoped queries
+   identically from either backend (order aside — neither backend
+   promises row order), and a rebuild from a smaller model doesn't leave
+   stale rows for a removed topic queryable. **`dita2graph-mcp` reads it
+   too**, now wired: `BundleReader::open` prefers `graph.db` over
+   `graph.json` whenever it exists, skipping the JSON parse entirely and
+   loading the identical nodes/edges via indexed SQL instead — verified
+   against a real server with `graph.json` deleted afterward, answering
+   `find_related_topics` from `graph.db` alone. `run_build` deletes any
+   leftover `graph.db` from an earlier `--store sqlite` build when a
+   later rebuild omits it, so its mere presence stays a reliable,
+   race-free signal for "the most recent build asked for this" —
+   `BundleCache`'s fingerprint watches its mtime too, alongside
+   `graph.json`/`rag/chunks.jsonl`, so a `graph.db` that appears,
+   changes, or disappears mid-session is picked up the same way those
+   two already were. **Incremental rebuild — ✅ done**, for the two
+   genuinely expensive/noisy parts of a rebuild:
+   `okf::write_bundle` records a per-id fingerprint in
+   `<output>/build-state.json` at the end of every build (content hash of
+   the node's own fields, plus its title/bundle-subdirectory, since
+   `render_concept` inlines a link target's title into every
+   *referencing* node's file too — `core/dita2graph-core/src/
+   incremental.rs` has the detail) and, on the next build, skips
+   re-rendering a concept file whose node *and every node it links to*
+   are unchanged since then, rather than rewriting every `okf/*.md` file
+   with a new `generated.at` timestamp on every single build regardless
+   of content. Separately, when embeddings are configured,
+   `embeddings::write_embeddings_index` reuses a topic's previously
+   computed vector instead of paying for another ONNX inference call,
+   whenever its exact chunk text and embedding model are both unchanged
+   since the last build (`PreviousEmbeddings`, reading the previous
+   `rag/chunks.jsonl`/`rag/embeddings.jsonl` before either gets
+   overwritten). `graph.json`/`rag/chunks.jsonl`/`graph.db` are still
+   always rewritten from scratch every build regardless — their content
+   must always reflect the complete current node set, and doing so is
+   cheap. Verified end to end through the real `build` CLI: a second,
+   identical build reports `(N unchanged, skipped)`/`(N reused, ...)` and
+   leaves every affected file's mtime untouched; a topic whose *own*
+   content is unchanged but that links to a since-renamed topic is
+   correctly re-rendered anyway (a self-review catch, now covered by a
+   dedicated test), and a topic with a dangling/unresolved link target
+   is correctly still skippable rather than permanently excluded from
+   the optimization (a second self-review catch). RocksDB storage (for
+   very large graphs, per §7) remains unimplemented.
 4. **Full `<navref>` map composition** — would need this plugin to
    independently parse and merge referenced navigation maps outside
    DITA-OT's own pipeline, losing keyref/conref resolution and DITAVAL
