@@ -532,7 +532,19 @@ state, most-complete first:
    `jyjeanne/ditacraft#125`, and **fixed upstream in v0.9.1** — the
    vendored bundle has been updated to that release and the fix
    reconfirmed against the same real fixture and the full corpus. See
-   `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`.
+   `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`. **Since
+   updated to v0.10.2** (root map discovery, and fewer false key/reference
+   warnings: external-URL keydefs, keyword markup, `href="#./element"`,
+   references quoted inside `<codeph>`). **Windows fixed alongside it:**
+   on Windows, `canonicalize()` returns `\\?\C:\...` verbatim paths, and
+   `live.rs` percent-encoded them into `file://%5C%5C%3F%5CC%3A...` URIs
+   the LSP couldn't map back to any file — so every href/keyref came back
+   "not found" (a false `DITA-KEY-001` on every `conkeyref` in
+   `dita-ot/docs`), and the three end-to-end `live` tests failed there
+   with v0.9.1 and v0.10.2 alike. Found running the demo on a real
+   Windows machine; `file_uri_from_path_str` now strips the verbatim
+   prefix and builds `file:///C:/...` URIs (unit-tested with Windows
+   inputs on every platform).
 7. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
