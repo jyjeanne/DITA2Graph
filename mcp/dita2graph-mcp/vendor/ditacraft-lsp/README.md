@@ -1,10 +1,15 @@
 # Vendored: DitaCraft standalone LSP server
 
 **Source:** [`jyjeanne/ditacraft`](https://github.com/jyjeanne/ditacraft)
-**Version vendored:** v0.9.1 (commit `4036354f4b4ea35231712ff9e1f90b728d87b8d3`,
-2026-08-19 release; downloaded from that release's
-`lsp-server-0.9.1.zip` GitHub Release asset rather than rebuilt from
-source, to vendor exactly what upstream shipped)
+**Version vendored:** v0.10.2 (commit `1b5f889e77202c0ce0cb56075b757b1b72b1750f`,
+2026-10-12 release; `dist/lsp-server.js` downloaded from that release's
+`lsp-server-0.10.2.zip` GitHub Release asset rather than rebuilt from
+source, to vendor exactly what upstream shipped — SHA-256
+`d9b1130b412643782b8132b33cef5ab883fb0811a666992161d4e283b84a38a0`)
+**DTDs:** `dtds/` matches the same tag; v0.10.2 only changed
+`dtds/base/catalog.xml` since v0.9.1 (adds the missing DITA 1.3
+`topicDefn.ent` mapping, which otherwise suffix-matched the DITA 1.2
+copy, whose common elements lack `<div>`)
 **License:** MIT (`jyjeanne/ditacraft`'s `LICENSE`) — compatible with
 DITA2Graph's own dual MIT OR Apache-2.0. See root `NOTICE`.
 **Known issues in this specific vendored build:** see `KNOWN-ISSUES.md`
@@ -78,8 +83,9 @@ exactly what `jyjeanne/ditacraft`'s own release workflow produces
 either way:
 
 **Preferred — download the release asset directly** (what the v0.9.1
-update did), so what's vendored here is byte-identical to what upstream
-actually shipped, not a local rebuild that merely *should* match:
+and v0.10.2 updates did), so what's vendored here is byte-identical to
+what upstream actually shipped, not a local rebuild that merely
+*should* match:
 
 ```bash
 curl -sSLO https://github.com/jyjeanne/ditacraft/releases/download/vX.Y.Z/lsp-server-X.Y.Z.zip
