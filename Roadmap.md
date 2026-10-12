@@ -105,6 +105,21 @@ own hand-built fixtures, and both are common enough in real,
 multi-contributor DITA corpora that a tool claiming real-dataset
 readiness needs to handle them without losing data or crying wolf.
 
+**Found and fixed on Windows** (the same corpus, built with DITA-OT
+4.4.1 on a real Windows machine for the first time): DITA-OT writes
+`.job.xml`'s `path` attribute with the platform separator
+(`topics\foo.dita`), while every link target `DitaModelExtractor`
+resolves uses `/`. No lookup matched — 456 false `DITA2GRAPH010W`
+warnings, including topics "failing" to resolve links to themselves —
+and a duplicate-id disambiguation kept its backslashes
+(`ID--topics\foo.dita`), which `dita2graph-core` then tried to write as
+a nested `okf/topics/ID--topics\foo.dita.md` path and failed with exit
+code 2. Normalized to `/` where `job.xml` is read; the same build now
+produces the expected 226 nodes and 536 edges, and the 48 remaining
+warnings are real (links to files the docs' own Gradle build generates,
+such as `parameters/*.dita`). Covered by two tests feeding the extractor
+a Windows-style `job.xml`.
+
 **A fourth round of live MCP testing** (four more `claude -p` sessions
 against a bundle rebuilt from `dita-ot/docs`, four different questions
 — PDF prerequisites, impact analysis on the logging topic,
