@@ -349,6 +349,57 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void windowsSeparatorsInJobXmlPathsAreNormalized(@TempDir Path tempDir) throws Exception {
+        // A real DITA-OT 4.4.1 run on Windows writes job.xml paths with
+        // backslashes ("topics\configuration.dita"). Before normalization,
+        // none of them matched resolve()'s '/'-separated link targets (456
+        // false DITA2GRAPH010W warnings against dita-ot/docs) and a
+        // disambiguated id kept its backslashes.
+        write(tempDir, ".job.xml", JOB_XML.replace("path=\"topics/", "path=\"topics\\"));
+        write(tempDir, "user-guide.ditamap", MAP_XML);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML);
+        write(tempDir, "topics/installing-product-prereqs.dita", PREREQS_XML);
+        write(tempDir, "topics/installing-product.dita", INSTALLING_PRODUCT_XML);
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertTrue(warnings.isEmpty(), "no unresolved links expected: " + warnings);
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(2, map.links.size(), "map contains configuration and installing-product");
+        TopicNode installingProduct = findTopic(nodes, "installing-product");
+        assertEquals("topics/installing-product.dita", installingProduct.sourceFile);
+        assertEquals(List.of("install-task"), installingProduct.keys);
+        assertTrue(installingProduct.links.stream()
+                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("configuration")));
+    }
+
+    @Test
+    void duplicateTopicIdFromWindowsPathIsDisambiguatedWithoutBackslashes(@TempDir Path tempDir)
+            throws Exception {
+        String jobXml = "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/first.dita\" uri=\"topics/first.dita\" "
+                + "path=\"topics\\first.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/topics/second.dita\" uri=\"topics/second.dita\" "
+                + "path=\"topics\\second.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>";
+        write(tempDir, ".job.xml", jobXml);
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/first.dita\"/><topicref href=\"topics/second.dita\"/></map>");
+        write(tempDir, "topics/first.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>First Topic</title><conbody><p>First.</p></conbody></concept>");
+        write(tempDir, "topics/second.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"ID\"><title>Second Topic</title><conbody><p>Second.</p></conbody></concept>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        assertEquals("Second Topic", findTopic(nodes, "ID--topics-second.dita").title);
+    }
+
+    @Test
     void generatedFromIsExtractedFromXtrfMismatches(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
         write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);

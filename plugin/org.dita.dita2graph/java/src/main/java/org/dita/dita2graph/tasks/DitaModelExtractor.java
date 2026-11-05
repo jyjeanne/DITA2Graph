@@ -472,7 +472,14 @@ final class DitaModelExtractor {
         for (int i = 0; i < fileNodes.getLength(); i++) {
             Element el = (Element) fileNodes.item(i);
             JobFile f = new JobFile();
-            f.path = el.getAttribute("path");
+            // DITA-OT writes job.xml's path attribute with the platform
+            // separator -- "topics\foo.dita" on Windows (confirmed against
+            // a real DITA-OT 4.4.1 run there). Everything downstream
+            // (resolve(), the topicsByPath/keysByPath lookups, duplicate-id
+            // disambiguation) assumes '/', so without this every link
+            // lookup missed on Windows, and a disambiguated id kept its
+            // backslashes and broke the core's okf/topics/{id}.md write.
+            f.path = el.getAttribute("path").replace('\\', '/');
             f.format = el.getAttribute("format");
             f.src = el.getAttribute("src");
             f.input = "true".equals(el.getAttribute("input"));

@@ -105,6 +105,21 @@ own hand-built fixtures, and both are common enough in real,
 multi-contributor DITA corpora that a tool claiming real-dataset
 readiness needs to handle them without losing data or crying wolf.
 
+**Found and fixed on Windows** (the same corpus, built with DITA-OT
+4.4.1 on a real Windows machine for the first time): DITA-OT writes
+`.job.xml`'s `path` attribute with the platform separator
+(`topics\foo.dita`), while every link target `DitaModelExtractor`
+resolves uses `/`. No lookup matched — 456 false `DITA2GRAPH010W`
+warnings, including topics "failing" to resolve links to themselves —
+and a duplicate-id disambiguation kept its backslashes
+(`ID--topics\foo.dita`), which `dita2graph-core` then tried to write as
+a nested `okf/topics/ID--topics\foo.dita.md` path and failed with exit
+code 2. Normalized to `/` where `job.xml` is read; the same build now
+produces the expected 226 nodes and 536 edges, and the 48 remaining
+warnings are real (links to files the docs' own Gradle build generates,
+such as `parameters/*.dita`). Covered by two tests feeding the extractor
+a Windows-style `job.xml`.
+
 **A fourth round of live MCP testing** (four more `claude -p` sessions
 against a bundle rebuilt from `dita-ot/docs`, four different questions
 — PDF prerequisites, impact analysis on the logging topic,
@@ -517,7 +532,19 @@ state, most-complete first:
    `jyjeanne/ditacraft#125`, and **fixed upstream in v0.9.1** — the
    vendored bundle has been updated to that release and the fix
    reconfirmed against the same real fixture and the full corpus. See
-   `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`.
+   `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`. **Since
+   updated to v0.10.2** (root map discovery, and fewer false key/reference
+   warnings: external-URL keydefs, keyword markup, `href="#./element"`,
+   references quoted inside `<codeph>`). **Windows fixed alongside it:**
+   on Windows, `canonicalize()` returns `\\?\C:\...` verbatim paths, and
+   `live.rs` percent-encoded them into `file://%5C%5C%3F%5CC%3A...` URIs
+   the LSP couldn't map back to any file — so every href/keyref came back
+   "not found" (a false `DITA-KEY-001` on every `conkeyref` in
+   `dita-ot/docs`), and the three end-to-end `live` tests failed there
+   with v0.9.1 and v0.10.2 alike. Found running the demo on a real
+   Windows machine; `file_uri_from_path_str` now strips the verbatim
+   prefix and builds `file:///C:/...` URIs (unit-tested with Windows
+   inputs on every platform).
 7. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates

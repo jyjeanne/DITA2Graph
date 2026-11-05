@@ -420,16 +420,58 @@ fn path_to_file_uri(path: &Path) -> Result<String> {
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow!("{} is not valid UTF-8", path.display()))?;
-    let mut uri = String::from("file://");
-    for byte in path_str.bytes() {
+    Ok(file_uri_from_path_str(path_str, cfg!(windows)))
+}
+
+/// The string half of [`path_to_file_uri`], with the platform passed in
+/// so the Windows forms are unit-testable on any OS. On Windows,
+/// `canonicalize()` (see `validate_file`) returns verbatim paths --
+/// `\\?\C:\docs` or `\\?\UNC\server\share\docs` -- which, percent-encoded
+/// as-is, gave the LSP `file://%5C%5C%3F%5CC%3A...`: a URI it can't map
+/// back to any file, so every href/keyref came back "not found"
+/// (confirmed against `dita-ot/docs` on a real Windows machine). The
+/// verbatim prefix is stripped, `\` becomes `/`, and a drive path gets
+/// the leading `/` RFC 8089 expects: `file:///C:/docs`. Backslashes are
+/// separators only on Windows -- elsewhere they're legal filename bytes
+/// and stay percent-encoded.
+fn file_uri_from_path_str(path_str: &str, windows: bool) -> String {
+    let (authority, path) = if windows {
+        let unverbatim = match path_str.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => path_str
+                .strip_prefix(r"\\?\")
+                .unwrap_or(path_str)
+                .to_string(),
+        };
+        let slashed = unverbatim.replace('\\', "/");
+        if let Some(unc) = slashed.strip_prefix("//") {
+            // \\server\share\dir -> file://server/share/dir
+            match unc.split_once('/') {
+                Some((server, rest)) => (server.to_string(), format!("/{rest}")),
+                None => (unc.to_string(), String::new()),
+            }
+        } else if slashed.as_bytes().get(1) == Some(&b':') {
+            (String::new(), format!("/{slashed}"))
+        } else {
+            (String::new(), slashed)
+        }
+    } else {
+        (String::new(), path_str.to_string())
+    };
+    let mut uri = format!("file://{authority}");
+    for byte in path.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 uri.push(byte as char);
             }
+            // A drive letter's colon stays literal, as in RFC 8089's own
+            // examples (`file:///C:/...`); it can't appear elsewhere in a
+            // Windows path.
+            b':' if windows => uri.push(':'),
             _ => uri.push_str(&format!("%{byte:02X}")),
         }
     }
-    Ok(uri)
+    uri
 }
 
 fn write_message<W: Write>(w: &mut W, value: &Value) -> Result<()> {
@@ -612,6 +654,34 @@ mod tests {
         let uri = path_to_file_uri(Path::new("/docs/café.dita")).unwrap();
         // "é" is the two UTF-8 bytes 0xC3 0xA9.
         assert_eq!(uri, "file:///docs/caf%C3%A9.dita");
+    }
+
+    #[test]
+    fn file_uri_strips_the_windows_verbatim_prefix_canonicalize_returns() {
+        // What canonicalize() actually returns on Windows. Encoded as-is,
+        // it became file://%5C%5C%3F%5CC%3A... and the LSP resolved no
+        // href/keyref at all.
+        let uri = file_uri_from_path_str(r"\\?\C:\Users\me\My Docs\topic.dita", true);
+        assert_eq!(uri, "file:///C:/Users/me/My%20Docs/topic.dita");
+    }
+
+    #[test]
+    fn file_uri_handles_a_plain_windows_drive_path() {
+        let uri = file_uri_from_path_str(r"C:\docs\topics\install.dita", true);
+        assert_eq!(uri, "file:///C:/docs/topics/install.dita");
+    }
+
+    #[test]
+    fn file_uri_puts_a_windows_unc_server_in_the_authority() {
+        let uri = file_uri_from_path_str(r"\\?\UNC\server\share\docs\t.dita", true);
+        assert_eq!(uri, "file://server/share/docs/t.dita");
+    }
+
+    #[test]
+    fn file_uri_keeps_a_backslash_encoded_outside_windows() {
+        // A legal filename byte on Unix, not a separator.
+        let uri = file_uri_from_path_str(r"/docs/a\b.dita", false);
+        assert_eq!(uri, "file:///docs/a%5Cb.dita");
     }
 
     /// Real end-to-end smoke test against the vendored bundle. Skips
