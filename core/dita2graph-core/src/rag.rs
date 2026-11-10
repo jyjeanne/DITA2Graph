@@ -140,6 +140,7 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -150,6 +151,9 @@ mod tests {
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -167,6 +171,9 @@ mod tests {
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),

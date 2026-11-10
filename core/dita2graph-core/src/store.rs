@@ -39,6 +39,15 @@ pub struct StoreSummary {
 /// build must not survive, and starting from a clean file is the
 /// simplest way to guarantee that until real incremental rebuild exists.
 pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result<StoreSummary> {
+    write_sqlite_view(&crate::graph_view::graph_view(nodes), output_dir)
+}
+
+/// [`write_sqlite_store`] from a node/edge view the caller already built
+/// (the one `graph.json` is written from).
+pub fn write_sqlite_view(
+    graph: &crate::graph_view::GraphView,
+    output_dir: &Path,
+) -> Result<StoreSummary> {
     let db_path = output_dir.join("graph.db");
     if db_path.exists() {
         std::fs::remove_file(&db_path)
@@ -47,7 +56,7 @@ pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result
     let mut conn =
         Connection::open(&db_path).with_context(|| format!("creating {}", db_path.display()))?;
     conn.execute_batch(
-        "CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT NOT NULL);
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, source_file TEXT, processing_role TEXT);
          CREATE TABLE edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL, fragments TEXT);
          CREATE INDEX idx_edges_from ON edges(from_id, relation);
          CREATE INDEX idx_edges_to ON edges(to_id, relation);",
@@ -62,48 +71,46 @@ pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result
         .transaction()
         .context("starting graph.db write transaction")?;
     {
-        // `OR REPLACE`, not a plain `INSERT`: a normalized-model input
-        // with two nodes sharing an id is exactly as valid here as it is
-        // for `graph.json`/`okf/` (`okf.rs::write_bundle` just has the
-        // second node's `.md` file overwrite the first's at the same
-        // path -- last node wins, no error). A bare `INSERT` would hit
-        // `id`'s `PRIMARY KEY` and turn that into a hard `build` failure
-        // that only happens when `--store sqlite` is given, diverging
-        // from the default path for the same input.
+        // A normalized-model input with two nodes sharing an id is as
+        // valid here as for `graph.json`/`okf/`: `okf.rs::write_bundle`
+        // has the second node's `.md` file overwrite the first's, and
+        // `graph_view` keeps that last node too, so the view holds each
+        // id once. `OR REPLACE` stays as the same rule for a view built
+        // any other way: a bare `INSERT` would hit `id`'s `PRIMARY KEY`
+        // and fail the build only when `--store sqlite` is given.
         let mut insert_node = tx
-            .prepare("INSERT OR REPLACE INTO nodes (id, type) VALUES (?1, ?2)")
+            .prepare(
+                "INSERT OR REPLACE INTO nodes (id, type, title, source_file, processing_role) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
             .context("preparing node insert")?;
         let mut insert_edge = tx
             .prepare(
                 "INSERT INTO edges (from_id, to_id, relation, fragments) VALUES (?1, ?2, ?3, ?4)",
             )
             .context("preparing edge insert")?;
-        for node in nodes {
+        // The same nodes and edges as graph.json, keys/URLs/files included.
+        for node in &graph.nodes {
             insert_node
-                .execute(params![node.id(), node.okf_type()])
-                .with_context(|| format!("inserting node `{}`", node.id()))?;
+                .execute(params![
+                    node.id,
+                    node.type_,
+                    node.title,
+                    node.source_file,
+                    node.processing_role
+                ])
+                .with_context(|| format!("inserting node `{}`", node.id))?;
             summary.nodes_written += 1;
-            for link in node.links() {
-                // A JSON array, as in graph.json; NULL for the many edges
-                // that carry no fragments.
-                let fragments = if link.fragments.is_empty() {
-                    None
-                } else {
-                    Some(
-                        serde_json::to_string(&link.fragments)
-                            .context("serializing edge fragments")?,
-                    )
-                };
-                insert_edge
-                    .execute(params![
-                        node.id(),
-                        link.target,
-                        link.relation.as_str(),
-                        fragments
-                    ])
-                    .with_context(|| format!("inserting edge from `{}`", node.id()))?;
-                summary.edges_written += 1;
-            }
+        }
+        for edge in &graph.edges {
+            let fragments = if edge.fragments.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&edge.fragments).context("serializing edge fragments")?)
+            };
+            insert_edge
+                .execute(params![edge.from, edge.to, edge.relation, fragments])
+                .with_context(|| format!("inserting edge from `{}`", edge.from))?;
+            summary.edges_written += 1;
         }
     }
     tx.commit().context("committing graph.db")?;
@@ -145,7 +152,7 @@ fn row_to_pair(row: &rusqlite::Row) -> rusqlite::Result<(String, String)> {
 }
 
 /// `(id, type)`, as dumped by [`read_sqlite_store`].
-pub type StoreNode = (String, String);
+pub type StoreNode = crate::graph_view::ViewNode;
 /// `(from, to, relation, fragments)`, as dumped by [`read_sqlite_store`].
 pub type StoreEdge = (String, String, String, Vec<String>);
 
@@ -164,11 +171,31 @@ pub fn read_sqlite_store(db_path: &Path) -> Result<(Vec<StoreNode>, Vec<StoreEdg
     let conn =
         Connection::open(db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
-    let mut node_stmt = conn
-        .prepare("SELECT id, type FROM nodes")
-        .context("preparing node dump")?;
+    // A graph.db written before keys, URLs and files were nodes has no
+    // title/source_file columns, and one written before processing roles
+    // has no processing_role: read it as it is.
+    let has = |columns: &str| {
+        conn.prepare(&format!("SELECT {columns} FROM nodes LIMIT 0"))
+            .is_ok()
+    };
+    let query = if has("processing_role") {
+        "SELECT id, type, title, source_file, processing_role FROM nodes"
+    } else if has("title, source_file") {
+        "SELECT id, type, title, source_file, NULL FROM nodes"
+    } else {
+        "SELECT id, type, NULL, NULL, NULL FROM nodes"
+    };
+    let mut node_stmt = conn.prepare(query).context("preparing node dump")?;
     let nodes = node_stmt
-        .query_map([], row_to_pair)
+        .query_map([], |row| {
+            Ok(crate::graph_view::ViewNode {
+                id: row.get(0)?,
+                type_: row.get(1)?,
+                title: row.get(2)?,
+                source_file: row.get(3)?,
+                processing_role: row.get(4)?,
+            })
+        })
         .context("reading graph.db nodes")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("collecting graph.db nodes")?;
@@ -212,6 +239,7 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -222,6 +250,9 @@ mod tests {
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -250,6 +281,9 @@ mod tests {
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -328,6 +362,9 @@ mod tests {
         // Rebuild from a model where installing-product no longer exists
         // at all -- a real "topic deleted since the last build" case.
         let smaller = vec![NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: "configuration".into(),
             topic_type: TopicType::Concept,
             title: "Configuration Overview".into(),
@@ -366,20 +403,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "dup".into(),
                 title: "First".into(),
                 source_file: "a.ditamap".into(),
                 links: vec![],
             }),
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "dup".into(),
                 title: "Second".into(),
                 source_file: "b.ditamap".into(),
                 links: vec![],
             }),
         ];
+        // The view graph.json and graph.db share keeps the first of two
+        // nodes with one id, so only one row is ever written.
         let summary = write_sqlite_store(&nodes, dir.path()).unwrap();
-        assert_eq!(summary.nodes_written, 2);
+        assert_eq!(summary.nodes_written, 1);
 
         let conn = Connection::open(dir.path().join("graph.db")).unwrap();
         let count: i64 = conn
@@ -422,7 +463,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_sqlite_store(&sample_nodes(), dir.path()).unwrap();
 
-        let (mut nodes, edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        let (nodes, edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        let mut nodes: Vec<(String, String)> = nodes.into_iter().map(|n| (n.id, n.type_)).collect();
         nodes.sort();
         assert!(
             edges

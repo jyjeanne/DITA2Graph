@@ -99,6 +99,8 @@ d2g:PublishedTopicShape
     sh:or (
         [ sh:path d2g:processingRole ; sh:hasValue "resource-only" ]
         [ sh:path [ sh:inversePath d2g:contains ] ; sh:minCount 1 ]
+        # A copy-to source published only through its copies.
+        [ sh:path [ sh:inversePath d2g:copyOf ] ; sh:minCount 1 ]
     ) .
 
 # references: the target exists and is not the source.
@@ -203,20 +205,56 @@ d2g:FragmentShape
         sh:minLength 1
     ] .
 
-# A key has a name, a map that defines it and a target.
+# A key has one name, at most one defining map and at most one target. A
+# text key (a variable) names nothing: it has text instead. A key no map
+# defines is reported once, by UsedKeyShape.
 d2g:KeyShape
     a sh:NodeShape ;
     sh:targetClass d2g:Key ;
-    sh:property [ sh:path d2g:keyName ; sh:minCount 1 ; sh:maxCount 1 ] ;
-    sh:property [ sh:path d2g:definedIn ; sh:minCount 1 ; sh:maxCount 1 ; sh:class d2g:Map ] ;
-    sh:property [ sh:path d2g:keyTarget ; sh:minCount 1 ; sh:maxCount 1 ] .
+    sh:property [ sh:path d2g:keyName ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path d2g:definedIn ; sh:maxCount 1 ; sh:class d2g:Map ] ;
+    sh:property [ sh:path d2g:keyTarget ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] .
 
 # Every key used is defined.
 d2g:UsedKeyShape
     a sh:NodeShape ;
     sh:targetObjectsOf d2g:usesKey ;
     sh:class d2g:Key ;
-    sh:property [ sh:path d2g:definedIn ; sh:minCount 1 ] .
+    sh:property [
+        sh:path d2g:definedIn ;
+        sh:minCount 1 ;
+        sh:message "A topic uses a key that no map defines"
+    ] .
+
+# copyOf: a copy-to copy and its source are topics; a copy has one source.
+d2g:CopyOfShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:copyOf ;
+    sh:class d2g:Topic ;
+    sh:property [
+        sh:path d2g:copyOf ;
+        sh:maxCount 1 ;
+        sh:class d2g:Topic ;
+        sh:message "A copy-to copy has one source topic"
+    ] .
+
+# linksTo: from a topic, to an external resource.
+d2g:LinksToShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:linksTo ;
+    sh:class d2g:Topic ;
+    sh:property [ sh:path d2g:linksTo ; sh:class d2g:ExternalResource ] .
+
+# includesCode: from a topic, to a file of the corpus.
+d2g:IncludesCodeShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:includesCode ;
+    sh:class d2g:Topic ;
+    sh:property [
+        sh:path d2g:includesCode ;
+        sh:class d2g:SourceFile ;
+        sh:message "An included sample file is a file of the corpus"
+    ] .
 
 # relatedTo holds both ways.
 d2g:RelatedToShape

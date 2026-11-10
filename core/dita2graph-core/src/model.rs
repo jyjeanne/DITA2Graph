@@ -123,10 +123,35 @@ pub struct NormalizedTopic {
     /// task step "invokes".
     #[serde(default, rename = "cmdUicontrols")]
     pub cmd_uicontrols: Vec<String>,
+    /// Distinct names of the keys the topic uses: `@keyref` on any
+    /// element, and `@conkeyref` when the topic really reuses the key's
+    /// target. A name may be scope-qualified (`scope.key`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyrefs: Vec<String>,
+    /// The `http(s)` URLs the topic links to, each once.
+    #[serde(
+        default,
+        rename = "externalLinks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub external_links: Vec<ExternalLink>,
+    /// Paths of the sample files the topic includes with `<coderef>`,
+    /// as DITA-OT's job lists them (relative to the source root).
+    #[serde(default, rename = "codeRefs", skip_serializing_if = "Vec::is_empty")]
+    pub code_refs: Vec<String>,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// A link from a topic to a URL outside the corpus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalLink {
+    pub url: String,
+    /// The key the link went through, when it used one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -135,8 +160,49 @@ pub struct NormalizedMap {
     pub title: String,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
+    /// The effective key definitions of the map and its submaps, in map
+    /// order (the first definition of a key in its scope wins).
+    #[serde(default, rename = "keyDefs", skip_serializing_if = "Vec::is_empty")]
+    pub key_defs: Vec<KeyDef>,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// One key definition. At most one of `target`, `url` and `file` is set;
+/// a key with none of them is a text key (a variable) whose value is
+/// `text`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyDef {
+    pub name: String,
+    /// Dotted key scope; `None` for the root scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Id of the topic the key names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// URL of the external resource the key names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Path of the local non-topic file the key names (an image, a PDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The key's text (keyword, link text or navtitle) when it names no topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The map file that declares the key: the submap, when it is one.
+    #[serde(rename = "sourceFile")]
+    pub source_file: String,
+}
+
+impl KeyDef {
+    /// The name a topic's `@keyref` uses for this key: `scope.name`, or
+    /// the bare name in the root scope.
+    pub fn qualified_name(&self) -> String {
+        match &self.scope {
+            Some(scope) => format!("{scope}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// DITA topic type (§1.3 glossary). `Topic` is the fallback for a plain
@@ -150,6 +216,7 @@ pub enum TopicType {
     Task,
     Reference,
     Glossentry,
+    Troubleshooting,
     Topic,
     /// A table-of-contents heading with no topic of its own (a
     /// `topichead`, a navtitle-only bookmap `chapter`): a node so the
@@ -165,6 +232,7 @@ impl TopicType {
             TopicType::Task => "Task",
             TopicType::Reference => "Reference",
             TopicType::Glossentry => "Glossary Entry",
+            TopicType::Troubleshooting => "Troubleshooting",
             TopicType::Topic => "Topic",
             TopicType::Topichead => "Topic Head",
         }
@@ -192,6 +260,8 @@ pub enum Relation {
     AppliesTo,
     Requires,
     GeneratedFrom,
+    /// From a `copy-to` copy to the topic it copies.
+    CopyOf,
 }
 
 impl Relation {
@@ -206,6 +276,7 @@ impl Relation {
             Relation::AppliesTo => "applies-to",
             Relation::Requires => "requires",
             Relation::GeneratedFrom => "generated-from",
+            Relation::CopyOf => "copy-of",
         }
     }
 
@@ -219,6 +290,7 @@ impl Relation {
             Relation::AppliesTo => "Applies To",
             Relation::Requires => "Requires",
             Relation::GeneratedFrom => "Generated From",
+            Relation::CopyOf => "Copy Of",
         }
     }
 

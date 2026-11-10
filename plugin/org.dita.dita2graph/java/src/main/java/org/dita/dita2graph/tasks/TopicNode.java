@@ -1,7 +1,11 @@
 package org.dita.dita2graph.tasks;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * One topic node of the normalized DITA model (docs/plugin-specification.md
@@ -12,7 +16,7 @@ import java.util.List;
  */
 final class TopicNode {
     String id;
-    /** concept | task | reference | glossentry | topic (§4.1's OKF type mapping). */
+    /** concept | task | reference | glossentry | troubleshooting | topic | topichead (§4.1's OKF type mapping), read from {@code @class}. */
     String topicType = "topic";
     String title = "";
     /** Nullable: omitted from JSON entirely when absent, matching the Rust side's Option&lt;String&gt;. */
@@ -55,6 +59,12 @@ final class TopicNode {
      * {@code applies-to} inference source side).
      */
     final List<String> cmdUicontrols = new ArrayList<>();
+    /** Distinct names of the keys the topic uses (keyref, and conkeyref when the reuse is confirmed). */
+    final Set<String> keyrefs = new LinkedHashSet<>();
+    /** Distinct http(s) URLs the topic links to, each with the key the link went through (null when none). */
+    final Map<String, String> externalLinks = new LinkedHashMap<>();
+    /** Temp-relative paths of the sample files the topic includes with coderef. */
+    final Set<String> codeRefs = new LinkedHashSet<>();
     String sourceFile;
     final List<Link> links = new ArrayList<>();
     /** DITA {@code status} attribute, e.g. "draft" -- used for include-drafts filtering, not serialized. */
@@ -86,6 +96,25 @@ final class TopicNode {
         sb.append(",\"keys\":").append(Json.stringArray(keys));
         sb.append(",\"uicontrols\":").append(Json.stringArray(uicontrols));
         sb.append(",\"cmdUicontrols\":").append(Json.stringArray(cmdUicontrols));
+        if (!keyrefs.isEmpty()) {
+            sb.append(",\"keyrefs\":").append(Json.stringArray(new ArrayList<>(keyrefs)));
+        }
+        if (!externalLinks.isEmpty()) {
+            sb.append(",\"externalLinks\":[");
+            boolean first = true;
+            for (Map.Entry<String, String> link : externalLinks.entrySet()) {
+                sb.append(first ? "" : ",").append("{\"url\":").append(Json.string(link.getKey()));
+                if (link.getValue() != null) {
+                    sb.append(",\"key\":").append(Json.string(link.getValue()));
+                }
+                sb.append('}');
+                first = false;
+            }
+            sb.append(']');
+        }
+        if (!codeRefs.isEmpty()) {
+            sb.append(",\"codeRefs\":").append(Json.stringArray(new ArrayList<>(codeRefs)));
+        }
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {

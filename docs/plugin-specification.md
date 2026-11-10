@@ -363,6 +363,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
   | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
   | `DITA2GRAPH071I` | Info | A `copy-to` copy carries its source topic's id — expected, not a warning. The source keeps its id, the copy's node gets the suffixed one, is the node its topicref contains, and derives from the source through `generated-from` (finding 19). |
+  | `DITA2GRAPH072I` | Info | A topic's source file could not be parsed on its own (typically an entity its DTD defines) while looking for the `coderef` and `conkeyref` elements DITA-OT's preprocessing removes: that topic's `includes-code` edges and conkeyref key uses are missing, nothing else ([semantic-model.md](semantic-model.md)). |
   | `DITA2GRAPH083W` | Warning | `args.dita2graph.rdf=true` without `args.dita2graph.rdf.base`: the RDF export's IRIs sit under the reserved `https://dita2graph.invalid/<map id>/` and are not meant to be published or merged with other graphs ([semantic-model.md](semantic-model.md)). |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
@@ -461,15 +462,16 @@ versioned on its own.
   "audience": ["admin"],
   "product": ["enterprise"],
   "keys": ["install-task"],
+  "keyrefs": ["config-concept"],
   "sourceFile": "topics/installing-product.dita",
   "links": [
     {
       "relation": "requires",
-      "target": "configuration"
+      "target": "installing-product-prereqs"
     },
     {
-      "relation": "contains",
-      "target": "installing-product-prereqs"
+      "relation": "references",
+      "target": "configuration"
     }
   ]
 }
@@ -483,6 +485,34 @@ naming the topic is resource-only (a reuse warehouse, a key target), so
 the map never publishes it in the table of contents. Both reach the RDF
 export (`d2g:ditaClass`, `d2g:processingRole`); the OKF bundle does not
 use them yet. An older model without them reads the same as before.
+
+`topicType` is read from the root element's `@class`, so a specialization
+takes the type it specializes; `troubleshooting` is a type of its own.
+What a topic declares besides its links to other topics is in optional
+fields too, omitted when empty: `keyrefs`, the keys it uses (`@keyref` on
+any element, `@conkeyref` when the topic really reuses the key's target,
+and the key of a relationship-table link, found back through the link's
+`xtrf`/`xtrc`; not the keys in the title and shortdesc DITA-OT copies
+from a linked topic into a generated link); `externalLinks`, the `http(s)` URLs it links to, each once, as
+`{"url": ..., "key": ...}` with the key the link went through; and
+`codeRefs`, the paths of the sample files it shows with `coderef`. The
+map node carries the effective key definitions of the map and its
+submaps, the first definition of a key in its scope winning:
+
+```json
+"keyDefs": [
+  { "name": "config-concept", "target": "configuration", "sourceFile": "user-guide.ditamap" },
+  { "name": "homebrew", "url": "https://brew.sh", "text": "Homebrew", "sourceFile": "resources/external-links.ditamap" },
+  { "name": "release", "scope": "legacy", "text": "4.4.1", "sourceFile": "resources/keys.ditamap" }
+]
+```
+
+A key names a topic (`target`, its id), a URL (`url`), a local file
+(`file`), or nothing: a text key, whose value is `text`. `sourceFile` is
+the map file that writes the definition, a submap when it is one. How
+each field is read from DITA-OT's output, including `coderef` and
+`@conkeyref`, which preprocessing removes and the extractor reads from
+the topic's source file: [semantic-model.md](semantic-model.md#keys-external-links-and-sample-files).
 
 ### 3.3 Core engine responsibilities
 
@@ -556,7 +586,9 @@ use them yet. An older model without them reads the same as before.
   (content hash of the node's own fields, plus its title/bundle
   subdirectory) in `<output>/build-state.json` at the end of every build,
   and on the next one skips re-rendering a concept file whose node *and
-  every node it links to* are unchanged since then, instead of rewriting
+  every node it links to* are unchanged since then (the hash also covers
+  `RENDER_VERSION`, bumped whenever the concept layout changes, so a new
+  renderer rewrites every file once), instead of rewriting
   every `okf/*.md` file with a fresh `generated.at` timestamp regardless
   of content. Separately, `embeddings::write_embeddings_index` reuses a
   topic's previously computed vector instead of an ONNX inference call
@@ -701,10 +733,26 @@ topic
  |
  +-- applies-to          (task/step -> UI element, config option, product)
  |
- +-- requires              (prerequisite relationship, e.g. task -> concept)
+ +-- requires              (prerequisite: a task's prereq link, or its link marked importance="required")
  |
  +-- generated-from          (topic -> conref/conkeyref source fragment)
+ |
+ +-- copy-of                   (copy-to copy -> the topic it copies)
 ```
+
+`requires` is a narrower `references`: a link inside a task's `<prereq>`,
+or a task's link with `importance="required"`. Any other link, keyref or
+not, is a `references` (before phase 4 of the semantic model, a link through
+a key gave `requires`;
+[semantic-model.md](semantic-model.md#relations)). One edge is kept per
+pair of topics, `requires` when any of their links says so.
+
+Keys, external URLs and sample files are not topics, so they are not
+relations between concepts: they are declared on the nodes (§3.2),
+rendered as their own sections of the OKF concepts, and become nodes of
+`graph.json`/`graph.db` with the edges `defines-key` (map -> key),
+`key-target` (key -> topic, URL or file), `uses-key` (topic -> key),
+`links-to` (topic -> URL) and `includes-code` (topic -> file).
 
 ### 4.4 OKF concept examples
 
@@ -727,7 +775,7 @@ generated:
   at: 2026-08-03T00:00:00Z
 relations:
   requires:
-    - configuration
+    - installing-product-prereqs
 ---
 
 # Summary
@@ -741,16 +789,35 @@ Overview to be completed first. Download the installer package for
 your platform. Run the installer and follow the on-screen prompts.
 Verify the installation by checking the product version.
 
-# References
+# Requires
 
 - [Installing Product: Prerequisites](installing-product-prereqs.md)
 
-# Requires
+# References
 
 - [Configuration Overview](configuration.md)
+
+# Keys Used
+
+- `config-concept`
 ````
 
-`# Content` is the topic's whitespace-normalized body text (`body` in
+`# Requires` lists the prerequisite named in the task's `<prereq>`; the
+link to Configuration Overview goes through the key `config-concept`, so
+it is a reference and the key is listed under `# Keys Used`. A topic
+that links outside the corpus or shows a sample file also gets `# External
+Links` (markdown links to the URLs) and `# Code Files`; a `copy-to` copy
+gets `# Copy Of`. Keys and files are plain text, not links: they have no
+concept file. Each target is linked once per concept: a target under two
+headings (a child the topic also references, a copy's source it also
+reuses) is a markdown link under the first and named under the next
+(``- Title (`id`, linked above)``), so okf_validator's "redundant link"
+warning no longer fires (107 on `dita-ot/docs`, 435 on the Oxygen guide
+before).
+
+`# Content` is the topic's whitespace-normalized body text, nested
+topics of a composite file included, with `](` escaped as `]\(` so that
+text quoting markdown links stays text (`body` in
 §3.2's wire format) — note DITA-OT's own preprocessing fills the empty
 `<xref href="installing-product-prereqs.dita" type="topic"/>` in
 `<prereq>` with the target's title before extraction ever sees it,
@@ -798,10 +865,15 @@ relations:
   contains: [installing-product, configuration]
 ---
 
-# Topics
+# Contains
 
 - [Installing Product](../topics/installing-product.md)
 - [Configuration Overview](../topics/configuration.md)
+
+# Key Definitions
+
+- `config-concept` -> topic `configuration` (defined in `user-guide.ditamap`)
+- `install-task` -> topic `installing-product` (defined in `user-guide.ditamap`)
 ````
 
 `graph.json` (derived, not authoritative) still gives tooling a flattened
@@ -811,13 +883,26 @@ nodes/edges view for debugging without walking the bundle:
 {
   "nodes": [
     { "id": "installing-product", "type": "Task" },
-    { "id": "configuration", "type": "Concept" }
+    { "id": "configuration", "type": "Concept" },
+    { "id": "key:config-concept", "type": "Key", "title": "config-concept", "sourceFile": "user-guide.ditamap" }
   ],
   "edges": [
-    { "from": "installing-product", "to": "configuration", "relation": "requires" }
+    { "from": "installing-product", "to": "installing-product-prereqs", "relation": "requires" },
+    { "from": "installing-product", "to": "configuration", "relation": "references" },
+    { "from": "user-guide", "to": "key:config-concept", "relation": "defines-key" },
+    { "from": "key:config-concept", "to": "configuration", "relation": "key-target" },
+    { "from": "installing-product", "to": "key:config-concept", "relation": "uses-key" }
   ]
 }
 ```
+
+A key (`key:<name>`, `key:<scope>.<name>` when scoped), an external URL
+(its id is the URL) and a sample file (`file:<path>`) have no concept
+file: their node carries a `title` (for a text key, `name = "text"`) and,
+for a key, the `sourceFile` that defines it. A topic the map uses only as
+a resource carries `"processingRole": "resource-only"`. `graph.db` has the
+same nodes and edges, with `title`, `source_file` and `processing_role`
+columns.
 
 ### 4.5 What is preserved that a text/RAG pipeline loses
 
@@ -879,7 +964,16 @@ analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?
 generate_summary(topicId)
 validate_bundle()
 validate_live(topicId)
+query_graph(query, limit?, offset?)     # only with dita2graph-mcp --sparql
 ```
+
+`query_graph(query, limit?, offset?)` is phase 5 of the semantic model
+([semantic-model.md](semantic-model.md#from-the-mcp-server)): read-only
+SPARQL 1.1 over the bundle's RDF export, offered only when the server
+starts with `--sparql`: the specification adopted it only if a benchmark
+campaign showed agents gain from writing SPARQL rather than calling the
+typed tools, and the campaign showed no gain (same correctness, 8 to 30 %
+more tokens). Without `rdf/graph.ttl` it answers with how to produce one.
 
 This is the current, implemented tool contract — real tool names and
 argument shapes from `mcp/dita2graph-mcp/src/tools.rs`, not an
@@ -982,6 +1076,29 @@ reaching the answer that one read of the source file gave. A
 plugin-integrate-all]` in `find_related_topics` and `analyze_impact`),
 so "which part of this topic is reused, and from where" has a direct
 answer.
+
+Keys, external URLs and sample files are graph nodes (§4.4), so the
+same tools reach them without a dedicated one: `search_topics` finds
+`key:homebrew`, `https://brew.sh` or `file:samples/Brewfile` by title or
+id; `find_related_topics` on one of them also lists what points at it
+(the topics that use the key, link to the URL, include the file) and,
+for a key, the file that defines it; `analyze_impact` on a URL lists the
+pages that link to it directly or through a key, each key with its
+defining file (`[defined in resources/external-links.ditamap]`), the
+answer to "which file do I edit to change this URL"; and `read_topic`
+ends with the topic's external links, the keys it uses (what each names,
+or a text key's value, and where it is defined) and its sample files.
+`analyze_impact` follows a key to the topics that use it (a glossary
+term shown through `abbreviated-form` depends on its entry without
+linking to it), but not a map to the keys it defines; its totals count
+concepts only, and the keys, URLs and files met on the way are listed
+apart. Every tool marks a resource-only topic (a reuse
+warehouse, a key target) with `[resource-only: not a published page]`:
+without it, an agent counted the warehouse that holds a reused link as
+one more page linking to the URL. These questions were the ones on which the MCP
+server alone answered 31 to 70 % right in the benchmark's fourth
+campaign, against 90 to 100 % with the sources
+([semantic-model.md](semantic-model.md#keys-external-links-and-sample-files)).
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -1854,8 +1971,11 @@ ZIP rather than a raw directory.
 
 Extraction itself was initially narrow by design, not a shortcut taken
 silently: `contains` (map `<topicref>`), `requires` and `references`
-(`<xref>`/`<link>`, gated on `keyref`) are the relations the Java
-extraction layer derives directly from authored markup. `generated-from`
+(`<xref>`/`<link>`; `requires` was gated on `keyref` until phase 4 of the semantic model,
+and is now
+a task's `<prereq>` link or a link marked `importance="required"`, §4.3)
+are the relations the Java extraction layer derives directly from
+authored markup. `generated-from`
 joined them later (finding 15), also derived directly and
 deterministically by the Java layer, but from DITA-OT's own `xtrf`
 source-trace attributes rather than markup structure. `related-to` and

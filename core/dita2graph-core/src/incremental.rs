@@ -44,10 +44,18 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
+/// The version of `okf::render_concept`'s output, part of every hash:
+/// a node whose data is unchanged still needs re-rendering when the way
+/// it is rendered changes. Bump it with any change to a concept file's
+/// layout (2: declaration sections, one markdown link per target; 3:
+/// link syntax escaped in the topic text; 4: and in titles and key text).
+const RENDER_VERSION: u32 = 4;
+
 /// A hex-encoded content hash of `node`'s own fields (via its
 /// `Serialize` impl) -- covers everything that affects its *own*
 /// rendered concept file (title, body, links, audience/product, etc.),
-/// so any change relevant to that file's content changes this hash.
+/// so any change relevant to that file's content changes this hash,
+/// and so does [`RENDER_VERSION`].
 /// Built on `DefaultHasher` (SipHash) rather than a dedicated hash
 /// crate: this value is never compared across a Rust toolchain upgrade
 /// in a way that would be *unsafe* if it changed -- `DefaultHasher`'s
@@ -61,6 +69,7 @@ use std::path::Path;
 fn content_hash(node: &NormalizedNode) -> Result<String> {
     let bytes = serde_json::to_vec(node).context("serializing node for content hash")?;
     let mut hasher = DefaultHasher::new();
+    RENDER_VERSION.hash(&mut hasher);
     bytes.hash(&mut hasher);
     Ok(format!("{:016x}", hasher.finish()))
 }
@@ -191,6 +200,9 @@ mod tests {
 
     fn topic(id: &str, title: &str) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: id.into(),
             topic_type: TopicType::Concept,
             title: title.into(),

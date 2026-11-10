@@ -6,6 +6,9 @@
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
+<https://brew.sh>
+    a d2g:ExternalResource .
+
 <https://example.org/user-guide/build/2026-01-01T00-00-00Z>
     a prov:Activity ;
     d2g:generator "dita2graph-core/test" ;
@@ -15,9 +18,37 @@
     a d2g:SourceFile ;
     d2g:path "glossary/anchor.dita" .
 
+<https://example.org/user-guide/file/images/logo.png>
+    a d2g:SourceFile ;
+    d2g:path "images/logo.png" .
+
+<https://example.org/user-guide/file/keys/external.ditamap>
+    a d2g:SourceFile ;
+    d2g:path "keys/external.ditamap" .
+
+<https://example.org/user-guide/file/keys/legacy.ditamap>
+    a d2g:SourceFile ;
+    d2g:path "keys/legacy.ditamap" .
+
+<https://example.org/user-guide/file/keys/variables.ditamap>
+    a d2g:SourceFile ;
+    d2g:path "keys/variables.ditamap" .
+
+<https://example.org/user-guide/file/samples/install.sh>
+    a d2g:SourceFile ;
+    d2g:path "samples/install.sh" .
+
+<https://example.org/user-guide/file/topics/configuration-copy.dita>
+    a d2g:SourceFile ;
+    d2g:path "topics/configuration-copy.dita" .
+
 <https://example.org/user-guide/file/topics/configuration.dita>
     a d2g:SourceFile ;
     d2g:path "topics/configuration.dita" .
+
+<https://example.org/user-guide/file/topics/fixing-errors.dita>
+    a d2g:SourceFile ;
+    d2g:path "topics/fixing-errors.dita" .
 
 <https://example.org/user-guide/file/topics/installing-product-prereqs.dita>
     a d2g:SourceFile ;
@@ -43,14 +74,81 @@
     a d2g:SourceFile ;
     d2g:path "user-guide.ditamap" .
 
+<https://example.org/user-guide/key/_/config-concept>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "config-concept" ;
+    d2g:keyTarget <https://example.org/user-guide/node/configuration> ;
+    d2g:sourceFile <https://example.org/user-guide/file/user-guide.ditamap> .
+
+<https://example.org/user-guide/key/_/homebrew>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "homebrew" ;
+    d2g:keyTarget <https://brew.sh> ;
+    d2g:keyText "Homebrew" ;
+    d2g:sourceFile <https://example.org/user-guide/file/keys/external.ditamap> .
+
+<https://example.org/user-guide/key/_/install-task>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "install-task" ;
+    d2g:keyTarget <https://example.org/user-guide/node/installing-product> ;
+    d2g:sourceFile <https://example.org/user-guide/file/user-guide.ditamap> .
+
+<https://example.org/user-guide/key/_/logo>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "logo" ;
+    d2g:keyTarget <https://example.org/user-guide/file/images/logo.png> ;
+    d2g:sourceFile <https://example.org/user-guide/file/keys/variables.ditamap> .
+
+<https://example.org/user-guide/key/_/product-name>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "product-name" ;
+    d2g:keyText "Acme Suite" ;
+    d2g:sourceFile <https://example.org/user-guide/file/keys/variables.ditamap> .
+
+<https://example.org/user-guide/key/legacy/product-name>
+    a d2g:Key ;
+    d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:keyName "product-name" ;
+    d2g:keyText "Acme Classic" ;
+    d2g:sourceFile <https://example.org/user-guide/file/keys/legacy.ditamap> .
+
 <https://example.org/user-guide/map/user-guide>
     a d2g:Map , d2g:Node ;
-    d2g:contains <https://example.org/user-guide/node/configuration> , <https://example.org/user-guide/node/installing-product> , <https://example.org/user-guide/node/internal-notes> , <https://example.org/user-guide/node/topichead--setup> , <https://example.org/user-guide/node/ui-reference> ;
+    d2g:contains <https://example.org/user-guide/node/configuration> , <https://example.org/user-guide/node/fixing-errors> , <https://example.org/user-guide/node/installing-product> , <https://example.org/user-guide/node/internal-notes> , <https://example.org/user-guide/node/topichead--setup> , <https://example.org/user-guide/node/ui-reference> ;
+    d2g:definesKey <https://example.org/user-guide/key/_/config-concept> , <https://example.org/user-guide/key/_/homebrew> , <https://example.org/user-guide/key/_/install-task> , <https://example.org/user-guide/key/_/logo> , <https://example.org/user-guide/key/_/product-name> , <https://example.org/user-guide/key/legacy/product-name> ;
     d2g:okfConcept "okf/maps/user-guide.md" ;
     d2g:sourceFile <https://example.org/user-guide/file/user-guide.ditamap> ;
     dcterms:identifier "user-guide" ;
     dcterms:title "User Guide" ;
     prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
+
+<https://example.org/user-guide/node/configuration--topics-configuration-copy.dita/reuse/configuration>
+    a d2g:Reuse ;
+    d2g:reuseSource <https://example.org/user-guide/node/configuration> ;
+    d2g:reusedFragment <https://example.org/user-guide/node/configuration/fragment/config-body> .
+
+<https://example.org/user-guide/node/configuration--topics-configuration-copy.dita>
+    a d2g:Concept , d2g:Node , d2g:Topic ;
+    d2g:containedIn <https://example.org/user-guide/node/topichead--setup> ;
+    d2g:copyOf <https://example.org/user-guide/node/configuration> ;
+    d2g:ditaClass "- topic/topic concept/concept" ;
+    d2g:generatedFrom <https://example.org/user-guide/node/configuration> ;
+    d2g:okfConcept "okf/topics/configuration--topics-configuration-copy.dita.md" ;
+    d2g:qualifiedReuse <https://example.org/user-guide/node/configuration--topics-configuration-copy.dita/reuse/configuration> ;
+    d2g:sourceFile <https://example.org/user-guide/file/topics/configuration-copy.dita> ;
+    dcterms:identifier "configuration--topics-configuration-copy.dita" ;
+    dcterms:title "Configuration \"overview\" — café" ;
+    prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
+
+<https://example.org/user-guide/node/configuration/fragment/config-body>
+    a d2g:Fragment ;
+    d2g:fragmentOf <https://example.org/user-guide/node/configuration> ;
+    dcterms:identifier "config-body" .
 
 <https://example.org/user-guide/node/configuration>
     a d2g:Concept , d2g:Node , d2g:Topic ;
@@ -58,9 +156,21 @@
     d2g:contains <https://example.org/user-guide/node/installing-product-prereqs> ;
     d2g:ditaClass "- topic/topic concept/concept" ;
     d2g:okfConcept "okf/topics/configuration.md" ;
+    d2g:prerequisiteFor <https://example.org/user-guide/node/installing-product> ;
     d2g:sourceFile <https://example.org/user-guide/file/topics/configuration.dita> ;
     dcterms:identifier "configuration" ;
     dcterms:title "Configuration \"overview\" — café" ;
+    prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
+
+<https://example.org/user-guide/node/fixing-errors>
+    a d2g:Node , d2g:Topic , d2g:Troubleshooting ;
+    d2g:containedIn <https://example.org/user-guide/map/user-guide> ;
+    d2g:ditaClass "- topic/topic troubleshooting/troubleshooting" ;
+    d2g:okfConcept "okf/topics/fixing-errors.md" ;
+    d2g:references <https://example.org/user-guide/node/installing-product> ;
+    d2g:sourceFile <https://example.org/user-guide/file/topics/fixing-errors.dita> ;
+    dcterms:identifier "fixing-errors" ;
+    dcterms:title "Fixing install errors" ;
     prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
 
 <https://example.org/user-guide/node/glossary-anchor>
@@ -96,12 +206,16 @@
     d2g:containedIn <https://example.org/user-guide/map/user-guide> ;
     d2g:ditaClass "- topic/topic task/task" ;
     d2g:generatedFrom <https://example.org/user-guide/node/warehouse> ;
+    d2g:includesCode <https://example.org/user-guide/file/samples/install.sh> ;
+    d2g:linksTo <https://brew.sh> ;
     d2g:okfConcept "okf/topics/installing-product.md" ;
     d2g:product "enterprise" ;
     d2g:qualifiedReuse <https://example.org/user-guide/node/installing-product/reuse/warehouse> ;
     d2g:references <https://example.org/user-guide/node/configuration> , <https://example.org/user-guide/node/installing-product-prereqs> ;
     d2g:relatedTo <https://example.org/user-guide/node/internal-notes> ;
+    d2g:requires <https://example.org/user-guide/node/configuration> ;
     d2g:sourceFile <https://example.org/user-guide/file/topics/installing-product.dita> ;
+    d2g:usesKey <https://example.org/user-guide/key/_/config-concept> , <https://example.org/user-guide/key/_/homebrew> , <https://example.org/user-guide/key/_/product-name> , <https://example.org/user-guide/key/legacy/product-name> ;
     dcterms:description "Steps to install the product in a production environment." ;
     dcterms:identifier "installing-product" ;
     dcterms:title "Installing Product" ;
@@ -121,7 +235,7 @@
 <https://example.org/user-guide/node/topichead--setup>
     a d2g:Node , d2g:TopicHead ;
     d2g:containedIn <https://example.org/user-guide/map/user-guide> ;
-    d2g:contains <https://example.org/user-guide/node/glossary-anchor> ;
+    d2g:contains <https://example.org/user-guide/node/configuration--topics-configuration-copy.dita> , <https://example.org/user-guide/node/glossary-anchor> ;
     d2g:okfConcept "okf/topics/topichead--setup.md" ;
     d2g:sourceFile <https://example.org/user-guide/file/user-guide.ditamap> ;
     dcterms:identifier "topichead--setup" ;

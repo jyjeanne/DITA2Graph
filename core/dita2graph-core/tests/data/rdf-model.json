@@ -5,11 +5,64 @@
     "title": "User Guide",
     "sourceFile": "user-guide.ditamap",
     "links": [
-      {"relation": "contains", "target": "installing-product"},
-      {"relation": "contains", "target": "configuration"},
-      {"relation": "contains", "target": "ui-reference"},
-      {"relation": "contains", "target": "internal-notes"},
-      {"relation": "contains", "target": "topichead--setup"}
+      {
+        "relation": "contains",
+        "target": "installing-product"
+      },
+      {
+        "relation": "contains",
+        "target": "configuration"
+      },
+      {
+        "relation": "contains",
+        "target": "ui-reference"
+      },
+      {
+        "relation": "contains",
+        "target": "internal-notes"
+      },
+      {
+        "relation": "contains",
+        "target": "topichead--setup"
+      },
+      {
+        "relation": "contains",
+        "target": "fixing-errors"
+      }
+    ],
+    "keyDefs": [
+      {
+        "name": "install-task",
+        "target": "installing-product",
+        "sourceFile": "user-guide.ditamap"
+      },
+      {
+        "name": "config-concept",
+        "target": "configuration",
+        "sourceFile": "user-guide.ditamap"
+      },
+      {
+        "name": "homebrew",
+        "url": "https://brew.sh",
+        "text": "Homebrew",
+        "sourceFile": "keys/external.ditamap"
+      },
+      {
+        "name": "product-name",
+        "text": "Acme Suite",
+        "sourceFile": "keys/variables.ditamap"
+      },
+      {
+        "name": "logo",
+        "file": "images/logo.png",
+        "sourceFile": "keys/variables.ditamap"
+      },
+      {
+        "name": "product-name",
+        "scope": "legacy",
+        "text": "Acme Classic",
+        "sourceFile": "keys/legacy.ditamap"
+      }
     ]
   },
   {
@@ -19,16 +72,56 @@
     "title": "Installing Product",
     "shortdesc": "Steps to install the product in a production environment.",
     "ditaClass": "- topic/topic task/task",
-    "audience": ["admin"],
-    "product": ["enterprise"],
-    "keys": ["install-task"],
+    "audience": [
+      "admin"
+    ],
+    "product": [
+      "enterprise"
+    ],
+    "keys": [
+      "install-task"
+    ],
     "sourceFile": "topics/installing-product.dita",
     "links": [
-      {"relation": "requires", "target": "configuration"},
-      {"relation": "references", "target": "installing-product-prereqs"},
-      {"relation": "applies-to", "target": "ui-reference"},
-      {"relation": "related-to", "target": "internal-notes"},
-      {"relation": "generated-from", "target": "warehouse", "fragments": ["plug-in", "li@37"]}
+      {
+        "relation": "requires",
+        "target": "configuration"
+      },
+      {
+        "relation": "references",
+        "target": "installing-product-prereqs"
+      },
+      {
+        "relation": "applies-to",
+        "target": "ui-reference"
+      },
+      {
+        "relation": "related-to",
+        "target": "internal-notes"
+      },
+      {
+        "relation": "generated-from",
+        "target": "warehouse",
+        "fragments": [
+          "plug-in",
+          "li@37"
+        ]
+      }
+    ],
+    "keyrefs": [
+      "config-concept",
+      "homebrew",
+      "product-name",
+      "legacy.product-name"
+    ],
+    "externalLinks": [
+      {
+        "url": "https://brew.sh",
+        "key": "homebrew"
+      }
+    ],
+    "codeRefs": [
+      "samples/install.sh"
     ]
   },
   {
@@ -39,7 +132,10 @@
     "ditaClass": "- topic/topic concept/concept",
     "sourceFile": "topics/configuration.dita",
     "links": [
-      {"relation": "contains", "target": "installing-product-prereqs"}
+      {
+        "relation": "contains",
+        "target": "installing-product-prereqs"
+      }
     ]
   },
   {
@@ -57,7 +153,9 @@
     "topicType": "reference",
     "title": "Toolbar reference",
     "ditaClass": "- topic/topic reference/reference",
-    "uicontrols": ["Save"],
+    "uicontrols": [
+      "Save"
+    ],
     "sourceFile": "topics/ui reference.dita",
     "links": []
   },
@@ -66,10 +164,15 @@
     "id": "internal-notes",
     "topicType": "topic",
     "title": "Internal notes",
-    "product": ["enterprise"],
+    "product": [
+      "enterprise"
+    ],
     "sourceFile": "topics/internal-notes.dita",
     "links": [
-      {"relation": "related-to", "target": "installing-product"}
+      {
+        "relation": "related-to",
+        "target": "installing-product"
+      }
     ]
   },
   {
@@ -89,7 +192,14 @@
     "title": "Setup",
     "sourceFile": "user-guide.ditamap#topichead--setup",
     "links": [
-      {"relation": "contains", "target": "glossary-anchor"}
+      {
+        "relation": "contains",
+        "target": "glossary-anchor"
+      },
+      {
+        "relation": "contains",
+        "target": "configuration--topics-configuration-copy.dita"
+      }
     ]
   },
   {
@@ -101,5 +211,40 @@
     "ditaClass": "- topic/topic concept/concept glossentry/glossentry",
     "sourceFile": "glossary/anchor.dita",
     "links": []
+  },
+  {
+    "type": "topic",
+    "id": "configuration--topics-configuration-copy.dita",
+    "topicType": "concept",
+    "title": "Configuration \"overview\" — café",
+    "ditaClass": "- topic/topic concept/concept",
+    "sourceFile": "topics/configuration-copy.dita",
+    "links": [
+      {
+        "relation": "generated-from",
+        "target": "configuration",
+        "fragments": [
+          "config-body"
+        ]
+      },
+      {
+        "relation": "copy-of",
+        "target": "configuration"
+      }
+    ]
+  },
+  {
+    "type": "topic",
+    "id": "fixing-errors",
+    "topicType": "troubleshooting",
+    "title": "Fixing install errors",
+    "ditaClass": "- topic/topic troubleshooting/troubleshooting",
+    "sourceFile": "topics/fixing-errors.dita",
+    "links": [
+      {
+        "relation": "references",
+        "target": "installing-product"
+      }
+    ]
   }
 ]

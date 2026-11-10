@@ -42,3 +42,13 @@ ex:b d2g:requires ex:a ;
 ex:a d2g:generatedFrom ex:b ; d2g:qualifiedReuse ex:reuse .
 ex:reuse a d2g:Reuse ; d2g:reuseSource ex:b ; d2g:reusedFragment ex:frag .
 ex:frag a d2g:Fragment ; dcterms:identifier "f1" ; d2g:fragmentOf ex:a .
+
+# UsedKeyShape: a key no map defines.
+# CopyOfShape: a copy of two topics.
+# LinksToShape: a link to something that is not an external resource.
+# IncludesCodeShape: an included "file" that is a topic.
+ex:a d2g:usesKey ex:undefined-key ;
+    d2g:copyOf ex:b , ex:untitled ;
+    d2g:linksTo ex:b ;
+    d2g:includesCode ex:b .
+ex:undefined-key a d2g:Key ; d2g:keyName "undefined-key" .

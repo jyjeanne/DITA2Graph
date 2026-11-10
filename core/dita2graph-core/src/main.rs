@@ -13,9 +13,9 @@ use dita2graph_core::diagnostics::{
     self, BUNDLE_VALIDATION_FAILED, PLACEHOLDER_RDF_BASE, POSSIBLE_SECRET_LEAK,
 };
 use dita2graph_core::{
-    Embedder, NormalizedNode, PreviousEmbeddings, infer_applies_to, infer_related_to,
-    query_sqlite_store, scan_bundle, write_bundle, write_embeddings_index, write_mcp_config,
-    write_rag_index, write_rdf, write_sqlite_store,
+    Embedder, NormalizedNode, PreviousEmbeddings, graph_view, infer_applies_to, infer_related_to,
+    query_sqlite_store, scan_bundle, write_bundle_with, write_embeddings_index, write_mcp_config,
+    write_rag_index, write_rdf, write_sqlite_view,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -108,7 +108,7 @@ struct BuildArgs {
 }
 
 /// Files the RDF export writes under `rdf/`.
-const RDF_FILES: [&str; 3] = ["graph.ttl", "ontology.ttl", "shapes.ttl"];
+use dita2graph_core::rdf::RDF_FILES;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -183,7 +183,14 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     // normalized model rather than each re-deriving it.
     let generated_at = build_time()?;
 
-    let summary = write_bundle(&nodes, &output, generated_at, emit_graph_json)?;
+    // graph.json and graph.db hold the same node/edge view: built once.
+    let graph = (emit_graph_json || store == "sqlite").then(|| graph_view(&nodes));
+    let summary = write_bundle_with(
+        &nodes,
+        &output,
+        generated_at,
+        graph.as_ref().filter(|_| emit_graph_json),
+    )?;
     println!(
         "wrote {} topics, {} maps, {} edges to {} ({} unchanged, skipped)",
         summary.topics_written,
@@ -208,7 +215,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     );
 
     if store == "sqlite" {
-        let store_summary = write_sqlite_store(&nodes, &output)?;
+        let store_summary = write_sqlite_view(graph.as_ref().expect("built for sqlite"), &output)?;
         println!(
             "wrote {} node(s), {} edge(s) to {}",
             store_summary.nodes_written,
@@ -509,6 +516,7 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -519,6 +527,9 @@ mod tests {
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -547,6 +558,9 @@ mod tests {
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -564,6 +578,9 @@ mod tests {
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product-prereqs".into(),
                 topic_type: TopicType::Concept,
                 title: "Prerequisites".into(),

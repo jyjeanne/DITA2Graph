@@ -5,11 +5,13 @@
 //!
 //! Nothing is inferred at build time, so the export writes itself what the
 //! shapes and SPARQL queries need: every node's parent types, both
-//! directions of `d2g:contains`, and the qualification of each
-//! `d2g:generatedFrom` (which fragments of which source). Output is sorted,
-//! so the same model and build time always give the same file.
+//! directions of `d2g:contains` and `d2g:requires` (a prerequisite is also
+//! a `d2g:references`), and the qualification of each `d2g:generatedFrom`
+//! (which fragments of which source). The map's keys, the topics' external
+//! links and included sample files are nodes of their own. Output is
+//! sorted, so the same model and build time always give the same file.
 
-use crate::model::{Link, NormalizedNode, NormalizedTopic, Relation, TopicType};
+use crate::model::{KeyDef, Link, NormalizedNode, NormalizedTopic, Relation, TopicType};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -23,11 +25,17 @@ pub const NAMESPACE: &str = "https://w3id.org/dita2graph/ns#";
 pub const ONTOLOGY_TTL: &str = include_str!("../ontology/d2g.ttl");
 /// The SHACL shapes checking an export, copied to `rdf/shapes.ttl`.
 pub const SHAPES_TTL: &str = include_str!("../ontology/d2g-shapes.ttl");
+/// The files `write_rdf` writes under `rdf/`: the data, the ontology and
+/// the shapes. A build without the export removes exactly these.
+pub const RDF_FILES: [&str; 3] = ["graph.ttl", "ontology.ttl", "shapes.ttl"];
+
 /// Base used when none is given: the reserved `.invalid` domain, so these
 /// IRIs can never collide with real ones.
 const PLACEHOLDER_ROOT: &str = "https://dita2graph.invalid/";
 
-const PREFIXES: &[(&str, &str)] = &[
+/// The prefixes the export declares; the MCP server's `query_graph`
+/// predeclares the same ones.
+pub const PREFIXES: &[(&str, &str)] = &[
     ("d2g", NAMESPACE),
     ("dcterms", "http://purl.org/dc/terms/"),
     ("prov", "http://www.w3.org/ns/prov#"),
@@ -58,12 +66,15 @@ pub fn write_rdf(
     let graph = build_graph(nodes, &base, generator, generated_at);
     let dir = output.join("rdf");
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    fs::write(dir.join("graph.ttl"), graph.to_turtle())
-        .with_context(|| format!("writing {}", dir.join("graph.ttl").display()))?;
-    fs::write(dir.join("ontology.ttl"), ONTOLOGY_TTL)
-        .with_context(|| format!("writing {}", dir.join("ontology.ttl").display()))?;
-    fs::write(dir.join("shapes.ttl"), SHAPES_TTL)
-        .with_context(|| format!("writing {}", dir.join("shapes.ttl").display()))?;
+    let [graph_file, ontology_file, shapes_file] = RDF_FILES;
+    for (file, content) in [
+        (graph_file, graph.to_turtle()),
+        (ontology_file, ONTOLOGY_TTL.to_string()),
+        (shapes_file, SHAPES_TTL.to_string()),
+    ] {
+        fs::write(dir.join(file), content)
+            .with_context(|| format!("writing {}", dir.join(file).display()))?;
+    }
     Ok(RdfSummary {
         triples: graph.len(),
         base,
@@ -207,6 +218,21 @@ fn build_graph(
             .cloned()
             .unwrap_or_else(|| iri(&format!("{base}node/{}", encode_segment(id))))
     };
+    // A topic names a key the way its @keyref does: `scope.name`.
+    let key_iris: HashMap<String, String> = nodes
+        .iter()
+        .filter_map(|node| match node {
+            NormalizedNode::Map(m) => Some(&m.key_defs),
+            NormalizedNode::Topic(_) => None,
+        })
+        .flatten()
+        .map(|key| {
+            (
+                key.qualified_name(),
+                key_iri(base, key.scope.as_deref(), &key.name),
+            )
+        })
+        .collect();
 
     for node in nodes {
         let subject = node_iri(base, node);
@@ -224,19 +250,125 @@ fn build_graph(
 
         // A heading's source file is "<map>#<heading id>"; its file is the map.
         let path = node.source_file().split('#').next().unwrap_or_default();
-        let file = iri(&format!("{base}file/{}", encode_path(path)));
-        graph.add(&subject, "d2g:sourceFile", file.clone());
-        graph.add(&file, "a", "d2g:SourceFile".into());
-        graph.add(&file, "d2g:path", literal(path));
+        let file = add_file(&mut graph, base, path);
+        graph.add(&subject, "d2g:sourceFile", file);
 
-        if let NormalizedNode::Topic(topic) = node {
-            add_topic_metadata(&mut graph, &subject, topic);
+        match node {
+            NormalizedNode::Topic(topic) => {
+                add_topic_metadata(&mut graph, &subject, topic);
+                add_topic_declarations(&mut graph, base, &subject, topic, &key_iris);
+            }
+            NormalizedNode::Map(map) => {
+                for key in &map.key_defs {
+                    add_key(&mut graph, base, &subject, key, &target_iri);
+                }
+            }
         }
         for link in node.links() {
             add_link(&mut graph, base, node.id(), &subject, link, &target_iri);
         }
     }
     graph
+}
+
+/// A source file's node (`file/<path>`), typed and with its path; returns its IRI.
+fn add_file(graph: &mut Graph, base: &str, path: &str) -> String {
+    let file = iri(&format!("{base}file/{}", encode_path(path)));
+    graph.add(&file, "a", "d2g:SourceFile".into());
+    graph.add(&file, "d2g:path", literal(path));
+    file
+}
+
+/// `key/<scope>/<name>`, `_` standing for the root scope.
+fn key_iri(base: &str, scope: Option<&str>, name: &str) -> String {
+    iri(&format!(
+        "{base}key/{}/{}",
+        scope.map_or_else(|| "_".to_string(), encode_segment),
+        encode_segment(name)
+    ))
+}
+
+/// A URL as an IRI: the characters Turtle forbids between `<` and `>`
+/// (spaces, quotes, braces...) are percent-encoded; the rest is kept.
+fn url_iri(url: &str) -> String {
+    let mut out = String::with_capacity(url.len() + 2);
+    out.push('<');
+    for c in url.chars() {
+        if " <>\"{}|^`\\".contains(c) || c.is_control() {
+            let mut buf = [0; 4];
+            for byte in c.encode_utf8(&mut buf).bytes() {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('>');
+    out
+}
+
+/// One key definition of `map`: the key, its name, the map and file that
+/// define it, and what it names (a topic, a URL, a file) or its text.
+fn add_key(
+    graph: &mut Graph,
+    base: &str,
+    map: &str,
+    key: &KeyDef,
+    target_iri: &impl Fn(&str) -> String,
+) {
+    let subject = key_iri(base, key.scope.as_deref(), &key.name);
+    graph.add(&subject, "a", "d2g:Key".into());
+    graph.add(&subject, "d2g:keyName", literal(&key.name));
+    graph.add(map, "d2g:definesKey", subject.clone());
+    graph.add(&subject, "d2g:definedIn", map.to_string());
+    let file = add_file(graph, base, &key.source_file);
+    graph.add(&subject, "d2g:sourceFile", file);
+    if let Some(target) = &key.target {
+        graph.add(&subject, "d2g:keyTarget", target_iri(target));
+    } else if let Some(url) = &key.url {
+        let resource = url_iri(url);
+        graph.add(&resource, "a", "d2g:ExternalResource".into());
+        graph.add(&subject, "d2g:keyTarget", resource);
+    } else if let Some(path) = &key.file {
+        let file = add_file(graph, base, path);
+        graph.add(&subject, "d2g:keyTarget", file);
+    }
+    if let Some(text) = key.text.as_deref().filter(|t| !t.is_empty()) {
+        graph.add(&subject, "d2g:keyText", literal(text));
+    }
+}
+
+/// What the topic declares besides its links: the keys it uses (a key no
+/// map defines is still a node, so the shapes can report it), the URLs it
+/// links to and the sample files it includes.
+fn add_topic_declarations(
+    graph: &mut Graph,
+    base: &str,
+    subject: &str,
+    topic: &NormalizedTopic,
+    key_iris: &HashMap<String, String>,
+) {
+    for name in &topic.keyrefs {
+        let key = match key_iris.get(name) {
+            Some(key) => key.clone(),
+            None => {
+                let key = key_iri(base, None, name);
+                graph.add(&key, "a", "d2g:Key".into());
+                graph.add(&key, "d2g:keyName", literal(name));
+                key
+            }
+        };
+        graph.add(subject, "d2g:usesKey", key);
+    }
+    for link in &topic.external_links {
+        let resource = url_iri(&link.url);
+        graph.add(&resource, "a", "d2g:ExternalResource".into());
+        graph.add(subject, "d2g:linksTo", resource);
+    }
+    for path in &topic.code_refs {
+        let file = add_file(graph, base, path);
+        graph.add(subject, "d2g:includesCode", file);
+    }
 }
 
 fn node_iri(base: &str, node: &NormalizedNode) -> String {
@@ -255,6 +387,7 @@ fn node_classes(node: &NormalizedNode) -> &'static [&'static str] {
             TopicType::Task => &["d2g:Task", "d2g:Topic", "d2g:Node"],
             TopicType::Reference => &["d2g:Reference", "d2g:Topic", "d2g:Node"],
             TopicType::Glossentry => &["d2g:GlossEntry", "skos:Concept", "d2g:Topic", "d2g:Node"],
+            TopicType::Troubleshooting => &["d2g:Troubleshooting", "d2g:Topic", "d2g:Node"],
             TopicType::Topic => &["d2g:Topic", "d2g:Node"],
             TopicType::Topichead => &["d2g:TopicHead", "d2g:Node"],
         },
@@ -293,13 +426,15 @@ fn add_link(
             graph.add(subject, "d2g:contains", target.clone());
             graph.add(&target, "d2g:containedIn", subject.to_string());
         }
-        // The extractor's "requires" today is a link made through a key,
-        // not a prerequisite: until the extractor reads prereq and
-        // importance="required" (docs/semantic-model.md), it is exported
-        // as the link it is.
-        Relation::References | Relation::Requires => {
-            graph.add(subject, "d2g:references", target);
+        Relation::References => graph.add(subject, "d2g:references", target),
+        // A prerequisite (a task's prereq link, or its link marked
+        // importance="required") is also a reference, and its inverse.
+        Relation::Requires => {
+            graph.add(subject, "d2g:requires", target.clone());
+            graph.add(subject, "d2g:references", target.clone());
+            graph.add(&target, "d2g:prerequisiteFor", subject.to_string());
         }
+        Relation::CopyOf => graph.add(subject, "d2g:copyOf", target),
         Relation::RelatedTo => graph.add(subject, "d2g:relatedTo", target),
         Relation::AppliesTo => graph.add(subject, "d2g:appliesTo", target),
         Relation::GeneratedFrom => {
@@ -382,6 +517,9 @@ mod tests {
 
     fn topic(id: &str, topic_type: TopicType, links: Vec<Link>) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: id.into(),
             topic_type,
             title: format!("Title of {id}"),
@@ -411,6 +549,7 @@ mod tests {
     fn sample() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -470,10 +609,80 @@ mod tests {
     }
 
     #[test]
-    fn a_key_link_is_exported_as_a_reference_not_a_prerequisite() {
+    fn a_prerequisite_is_also_a_reference_and_written_both_ways() {
         let ttl = turtle(&sample());
+        assert!(ttl.contains("d2g:requires <https://example.org/ug/node/config>"));
         assert!(ttl.contains("d2g:references <https://example.org/ug/node/config>"));
-        assert!(!ttl.contains("d2g:requires"));
+        assert!(ttl.contains("d2g:prerequisiteFor <https://example.org/ug/node/install>"));
+    }
+
+    #[test]
+    fn keys_external_links_code_files_and_copies_are_exported() {
+        let mut nodes = sample();
+        if let NormalizedNode::Map(map) = &mut nodes[0] {
+            let key = |name: &str| KeyDef {
+                name: name.into(),
+                scope: None,
+                target: None,
+                url: None,
+                file: None,
+                text: None,
+                source_file: "keys.ditamap".into(),
+            };
+            map.key_defs = vec![
+                KeyDef {
+                    target: Some("config".into()),
+                    ..key("config")
+                },
+                KeyDef {
+                    url: Some("https://brew.sh/a b".into()),
+                    text: Some("Homebrew".into()),
+                    ..key("brew")
+                },
+                KeyDef {
+                    scope: Some("legacy".into()),
+                    text: Some("Acme".into()),
+                    ..key("product")
+                },
+            ];
+        }
+        if let NormalizedNode::Topic(topic) = &mut nodes[1] {
+            topic.keyrefs = vec!["brew".into(), "legacy.product".into(), "nowhere".into()];
+            topic.external_links = vec![crate::model::ExternalLink {
+                url: "https://brew.sh/a b".into(),
+                key: Some("brew".into()),
+            }];
+            topic.code_refs = vec!["samples/build.xml".into()];
+            topic.links.push(link(Relation::CopyOf, "config"));
+        }
+        let ttl = turtle(&nodes);
+        let brew = "<https://example.org/ug/key/_/brew>";
+        assert!(ttl.contains(&format!("{brew}\n    a d2g:Key ;")));
+        assert!(ttl.contains(&format!("d2g:definesKey {brew} , <https://example.org/ug/key/_/config> , <https://example.org/ug/key/legacy/product>")));
+        assert!(ttl.contains("d2g:definedIn <https://example.org/ug/map/user-guide>"));
+        assert!(ttl.contains("d2g:keyTarget <https://brew.sh/a%20b>"));
+        assert!(ttl.contains("d2g:keyText \"Homebrew\""));
+        assert!(ttl.contains("d2g:sourceFile <https://example.org/ug/file/keys.ditamap>"));
+        // A scoped key, named scope.key by the topic.
+        assert!(ttl.contains("d2g:usesKey <https://example.org/ug/key/_/brew> , <https://example.org/ug/key/_/nowhere> , <https://example.org/ug/key/legacy/product>"));
+        // A key no map defines is a key without definedIn, for the shapes to report.
+        assert!(ttl.contains(
+            "<https://example.org/ug/key/_/nowhere>\n    a d2g:Key ;\n    d2g:keyName \"nowhere\" ."
+        ));
+        assert!(ttl.contains("<https://brew.sh/a%20b>\n    a d2g:ExternalResource ."));
+        assert!(ttl.contains("d2g:linksTo <https://brew.sh/a%20b>"));
+        assert!(ttl.contains("d2g:includesCode <https://example.org/ug/file/samples/build.xml>"));
+        assert!(ttl.contains("d2g:copyOf <https://example.org/ug/node/config>"));
+        oxttl::TurtleParser::new()
+            .for_slice(ttl.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid Turtle");
+    }
+
+    #[test]
+    fn a_troubleshooting_topic_is_typed_as_such() {
+        let ttl = turtle(&[topic("fix", TopicType::Troubleshooting, vec![])]);
+        assert!(ttl.contains("a d2g:Node , d2g:Topic , d2g:Troubleshooting ;"));
     }
 
     #[test]

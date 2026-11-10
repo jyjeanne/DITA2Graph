@@ -6,8 +6,9 @@ import java.util.List;
  * One edge of the DITA relation taxonomy (docs/plugin-specification.md
  * §4.3): {@code relation} is {@code contains}, {@code references}, or
  * {@code requires} -- derived directly from DITA markup (map {@code
- * topicref} hierarchy, and {@code xref}/{@code link} elements gated on
- * whether they carry a {@code keyref}) -- or {@code generated-from},
+ * topicref} hierarchy, and {@code xref}/{@code link} elements, a task's
+ * prerequisite links being {@code requires}) -- {@code copy-of}, from a
+ * {@code copy-to} copy to its source topic, or {@code generated-from},
  * derived from DITA-OT's own {@code xtrf} source-trace attributes
  * (finding 15): a resolved element whose {@code xtrf} points at a
  * *different* file than its containing topic's own source was pulled in

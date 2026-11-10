@@ -234,6 +234,9 @@ mod tests {
 
     fn topic(id: &str, product: &[&str]) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: id.into(),
             topic_type: TopicType::Concept,
             title: id.into(),
@@ -254,6 +257,9 @@ mod tests {
 
     fn task_topic(id: &str, cmd_uicontrols: &[&str]) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: id.into(),
             topic_type: TopicType::Task,
             title: id.into(),
@@ -274,6 +280,9 @@ mod tests {
 
     fn reference_topic(id: &str, uicontrols: &[&str]) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: id.into(),
             topic_type: TopicType::Reference,
             title: id.into(),
@@ -360,6 +369,7 @@ mod tests {
     fn maps_are_never_considered() {
         let mut nodes = vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "guide".into(),
                 title: "Guide".into(),
                 source_file: "guide.ditamap".into(),
@@ -500,6 +510,9 @@ mod tests {
         // mention outside <cmd> must not trigger applies-to.
         let mut nodes = vec![
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "save-task".into(),
                 topic_type: TopicType::Task,
                 title: "save-task".into(),
@@ -529,6 +542,9 @@ mod tests {
         let mut nodes = vec![
             task_topic("save-task", &["Save"]),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "some-concept".into(),
                 topic_type: TopicType::Concept,
                 title: "some-concept".into(),

@@ -45,7 +45,23 @@ jobs:
           set -euo pipefail
           test -f gradle-build/build/dita2graph/okf/topics/installing-product.md
           grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
-          grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          # requires is the prerequisite in the task's <prereq>; the link
+          # to configuration goes through a key: a reference, key recorded.
+          grep -q '^  - installing-product-prereqs$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^# Keys Used$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^- `config-concept` -> topic `configuration`' gradle-build/build/dita2graph/okf/maps/user-guide.md
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['relation'], e['to']) for e in graph['edges']}
+          assert ('installing-product', 'requires', 'installing-product-prereqs') in edges, edges
+          assert ('installing-product', 'references', 'configuration') in edges, edges
+          assert ('installing-product', 'uses-key', 'key:config-concept') in edges, edges
+          assert ('key:config-concept', 'key-target', 'configuration') in edges, edges
+          key = next(n for n in graph['nodes'] if n['id'] == 'key:config-concept')
+          assert key['type'] == 'Key' and key['sourceFile'] == 'user-guide.ditamap', key
+          PYEOF
 
       - name: Confirm the RAG index looks right (§13.1)
         run: |
@@ -395,7 +411,8 @@ jobs:
             echo "::error::rdf-invalid.ttl conforms to the d2g shapes"
             exit 1
           fi
-          for rule in 'loops back' 'references itself' 'without the reuse' 'does not belong' 'must be relative'; do
+          for rule in 'loops back' 'references itself' 'without the reuse' 'does not belong' 'must be relative' \
+                      'no map defines' 'one source topic' 'file of the corpus' 'class d2g:ExternalResource'; do
             grep -q "$rule" /tmp/rdf-invalid.txt || { echo "::error::no '$rule' violation reported"; exit 1; }
           done
 
@@ -425,6 +442,20 @@ jobs:
             --output=/tmp/rdf-nobase --args.dita2graph.rdf=true -v > /tmp/rdf-nobase.log 2>&1
           grep -q 'DITA2GRAPH083W' /tmp/rdf-nobase.log
           grep -q '<https://dita2graph.invalid/user-guide/map/user-guide>' /tmp/rdf-nobase/rdf/graph.ttl
+
+      - name: Confirm query_graph answers SPARQL over the export, only with --sparql (phase 5)
+        run: |
+          set -euo pipefail
+          call='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_graph","arguments":{"query":"SELECT ?task ?prerequisite WHERE { ?task a d2g:Task ; d2g:requires ?prerequisite }"}}}'
+          # The prerequisite in installing-product's <prereq>, as node: names.
+          response=$(echo "$call" | ./target/release/dita2graph-mcp --sparql /tmp/rdf-sample-docs)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'node:installing-product | node:installing-product-prereqs'
+          # Without --sparql the tool is neither listed nor callable.
+          listed=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./target/release/dita2graph-mcp /tmp/rdf-sample-docs)
+          if echo "$listed" | grep -q query_graph; then echo "::error::query_graph listed without --sparql"; exit 1; fi
+          echo "$call" | ./target/release/dita2graph-mcp /tmp/rdf-sample-docs | grep -q '"isError":true'
 
       - name: Confirm the d2g ontology stays within the OWL 2 RL profile
         run: |

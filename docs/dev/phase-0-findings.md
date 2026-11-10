@@ -988,3 +988,150 @@ What's left for a complete MVP (§11), now that extraction itself works:
     one real duplicate id), topics with two parents 133 → 0; same node
     and edge counts (2,045 and 9,968). `dita-ot/docs` has no `copy-to`
     and is unchanged.
+
+20. **What does a DITA-OT 4.4.1 resolved temp directory still say about
+    keys, external links and `coderef`, and what did `requires` really
+    mean?** Checked in a kept temp directory of the `dita-ot/docs` build
+    (`--clean.temp=no`), for phase 4 of the semantic model
+    (`docs/semantic-model.md`):
+
+    - **Key definitions survive.** Every `<keydef>` and topicref with
+      `@keys` of every submap is in the resolved root map (606 `@keys`),
+      with its resolved `href`, `scope`, `format` and the `xtrf` of the
+      submap that wrote it; DITAVAL has already removed the filtered ones.
+    - **`@keyref` survives, `@conkeyref` does not.** 550 `@keyref` remain
+      on resolved topics (405 on `xref`, 129 on `keyword`, 14 on `link`),
+      the external ones with the resolved URL in `href`. No `@conkeyref`
+      is left: DITA-OT turns it into a conref, then resolves it away.
+    - **`coderef` is gone.** No `<coderef>` element remains; the file's
+      text is inside the `codeblock`, whose `xtrc` still names it, and
+      job.xml lists the 40 included files (`format="coderef"`) without
+      saying who includes them.
+    - **`requires` did not mean prerequisite.** It was any link made
+      through a key: 127 edges on `dita-ot/docs`, 1,559 on the Oxygen
+      guide. The task `<prereq>` sections of `dita-ot/docs` link only to
+      external sites, and the Oxygen guide has one local prerequisite
+      link.
+
+    **Fix** in `DitaModelExtractor`: the map's key definitions become the
+    map node's `keyDefs` (first definition per scope wins, the defining
+    submap from `xtrf`); each topic gets `keyrefs`, `externalLinks`
+    (absolute `http(s)` URLs) and `codeRefs`. `coderef` and `@conkeyref`
+    are read from the topic's source file (job.xml `src`) and kept only
+    when the resolved topic confirms them: the `coderef`'s parent element
+    is still there (same `xtrf` and element counter), the conkeyref's key
+    names a topic this one reuses (`generated-from`). A source that does
+    not parse on its own is skipped with `DITA2GRAPH072I`. `requires` is
+    now a task's `<prereq>` link or a task's link with
+    `importance="required"`; every other link is a `references`, one edge
+    per pair. Topic types come from `@class` (`troubleshooting` added,
+    specializations take their base type), and a `copy-to` copy gets a
+    `copy-of` link to its source. The core writes the declarations into
+    the OKF concepts, as key, URL and file nodes of `graph.json` and
+    `graph.db`, and into the RDF export; the MCP tools traverse them.
+    Three new Java tests.
+
+    **Result:** `dita-ot/docs` gets 608 keys, 431 external URLs (507
+    `links-to`), 510 `uses-key` and 40 sample files (46 `includes-code`),
+    and 0 `requires`; the Oxygen guide 243 keys, 1,008 URLs, 5,163
+    `uses-key`, 158 `copy-of`, 68 troubleshooting topics and 1 `requires`.
+    No topic of either corpus uses an undefined key, no source failed to
+    parse, and both RDF exports validate without a violation (47 warnings
+    on the Oxygen guide, down from 50: the 3 `copy-to` sources now
+    count as published through their copies).
+
+    Rebuilding the benchmark bundles also showed that a copy's two links
+    to its source (`# Generated From` and `# Copy Of`) added 158
+    okf_validator "redundant link" warnings to the 274 the Oxygen guide
+    already had (a child also referenced, a reuse source also linked).
+    `render_concept` now links each target once per concept and names it
+    under later headings: 0 warnings on both corpora, down from 107 and
+    435. The same rebuild skipped every concept file, since only the
+    rendering had changed: the incremental fingerprint now includes a
+    `RENDER_VERSION`, bumped with any change to the concept layout.
+
+    **Benchmark** (`dita2graph-demo/bench`, campaign 4 replayed: 12 real
+    questions, 3 configurations, 3 repetitions, Opus, graded blind with
+    the original answers mixed in): with the MCP server alone, writers'
+    questions 63 → 86 % and users' 83 → 96 % (sans MCP 97 → 97 %). The
+    link and key questions moved most: EULA links 33 → 90, the HTML Help
+    Workshop link 60 → 100, the license transfer impact 50 → 83, renaming
+    an id 25 → 100. On the Oxygen guide, the MCP-only session spends 41 %
+    fewer tokens (875k → 515k) and 38 % less time, now below sans MCP on
+    both corpora. Still missing for the 90 % exit criterion: composite
+    `.dita` files (a root `<reference>` holding nested topics, such as
+    `release-notes/index.dita` and `parameters/ant-parameters-details.dita`)
+    give empty text, since only the root's body is read (r-d6: 67); the
+    MCP tools do not say a topic is resource-only, so a reuse warehouse
+    is counted as a published page (r-o8: 90); and r-o9 needs a map the
+    Editor DITAVAL removes, outside the published graph by design.
+
+    **Fixed after the benchmark.** The title, summary and body of every
+    nested topic now join the text of their file's topic: on
+    `dita-ot/docs`, no topic is left without text (5 before), and the
+    release notes (17,500 characters) and Ant parameter details now
+    contain `outputFile.base`; on the Oxygen guide, 160 remain (207
+    before): 156 `copy-to` copies, whose text is their source's, and 4
+    outline headings. That text quoted markdown examples
+    (`[a link](topic.md)` in `Markdown-DITA-syntax`), which okf_validator
+    took for 8 dangling links and which failed the build:
+    `render_concept` now escapes `](` in the topic text (`RENDER_VERSION`
+    3). `graph.json` and `graph.db` carry each topic's `processingRole`,
+    and every MCP tool marks a resource-only topic with
+    `[resource-only: not a published page]` (10 such topics on
+    `dita-ot/docs`, 31 on the Oxygen guide).
+
+    **Code review of phases 4 and 5** (15 findings, all fixed): keyrefs
+    resolve in the key scopes of the topicrefs naming the topic (parent
+    scope first, as DITA-OT's `KeyrefReader` does); key definitions come
+    from every topicref of the map, relationship tables and topicrefs
+    beyond `args.dita2graph.depth` included; a glossentry's text is its
+    `glossdef` and its `glossBody` again (the `@class` body lookup had
+    picked `glossBody` alone); `analyze_impact` reaches a glossary key's
+    users through the key and counts only concepts in its totals; a huge
+    `limit` or `offset` no longer overflows (it took the server down);
+    nothing points at a skipped draft; a class-less `keydef` is
+    resource-only; a topic named like the map gets a suffixed id;
+    `graph_view` keeps the last of two nodes sharing an id, as `okf/`
+    does, and the map's keys before the topics using them; link syntax is
+    escaped in titles and key text too (`RENDER_VERSION` 4); `d2g:copyOf`
+    is a `prov:wasDerivedFrom`, not a `d2g:generatedFrom`; the node/edge
+    view is built once per build; a topic's source is read only when it
+    can hold a `coderef` or a `conkeyref`; prefixes and export file names
+    have one definition; a declared node is known by its type.
+
+    **Phase 5 campaign** (`dita2graph-demo/bench`, 72 runs: the 12 real
+    questions with the MCP server alone and with `query_graph`, Opus, 3
+    repetitions; graded blind, the replay's MCP-only answers mixed in and
+    graded again exactly as before): with these fixes, the MCP server
+    alone answers writers' questions at 93 % (86 % in the replay), above
+    the 90 % exit criterion, and users' at 96 %. The release notes
+    question (r-d6) goes 67 → 100, the EULA links (r-o8) 90 → 100. The
+    Oxygen guide's MCP-only tokens stay low (506k, 875k in campaign 4); on
+    the DITA-OT docs they rise from 487k to 679k, since r-d6 now reads the
+    release notes' full text (248k for that question). `query_graph`
+    brings no gain: the same 93 % on writers' questions, 92 % on users'
+    (one question lost), and 8 to 30 % more tokens over 61 queries. It
+    stays opt-in.
+
+    **Relationship-table keys and copied descriptions.** Writing a README
+    query for "pages that write out a URL a key already names" gave 78
+    results on `dita-ot/docs`, almost all wrong. Two causes, both in the
+    resolved related links. A link DITA-OT's maplink step generates from a
+    relationship-table topicref loses that topicref's `@keyref`
+    (`topics/ant.dita`: `resources/reltable.ditamap`'s
+    `<topicref keyref="ant-manual">` becomes a plain
+    `href="http://ant.apache.org/manual"`), so the topic seemed to
+    hard-code the URL. The link keeps the topicref's `xtrf` and `xtrc`,
+    though, and the resolved map still has the topicref with its
+    `@keyref` and the same traces: the extractor now finds the key back
+    through them, resolves it in the topicref's scope, and counts it as
+    used by the topic showing the link. Second, DITA-OT copies the target's
+    title and shortdesc into each generated link, with the target's own
+    `xref` and `keyref`; the extractor counted them as the linking topic's.
+    It now skips everything inside a `<link>`. On `dita-ot/docs`: 51
+    external links, 21 references and 84 key uses removed, 193 key uses
+    added; on the Oxygen guide, 3, 1 and 5 removed. The query now gives 3
+    pages on `dita-ot/docs` (two Markdown topics writing the URL out, and
+    `migrating-to-3.7`) and 6 on the Oxygen guide, each checked in the
+    sources. Both exports still validate without a violation.

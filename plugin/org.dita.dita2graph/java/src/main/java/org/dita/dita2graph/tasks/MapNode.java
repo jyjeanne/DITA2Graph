@@ -12,6 +12,8 @@ final class MapNode {
     String title = "";
     String sourceFile;
     final List<Link> links = new ArrayList<>();
+    /** Effective key definitions, in map order: the first definition of a key in its scope wins. */
+    final List<KeyDef> keyDefs = new ArrayList<>();
 
     String toJson() {
         StringBuilder sb = new StringBuilder();
@@ -19,6 +21,16 @@ final class MapNode {
         sb.append(",\"id\":").append(Json.string(id));
         sb.append(",\"title\":").append(Json.string(title));
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
+        if (!keyDefs.isEmpty()) {
+            sb.append(",\"keyDefs\":[");
+            for (int i = 0; i < keyDefs.size(); i++) {
+                if (i > 0) {
+                    sb.append(',');
+                }
+                sb.append(keyDefs.get(i).toJson());
+            }
+            sb.append(']');
+        }
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {
             if (i > 0) {

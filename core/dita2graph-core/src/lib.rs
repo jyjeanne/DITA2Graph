@@ -25,6 +25,7 @@
 
 pub mod diagnostics;
 pub mod embeddings;
+pub mod graph_view;
 pub(crate) mod incremental;
 pub mod mcp_config;
 pub mod model;
@@ -38,11 +39,14 @@ pub mod store;
 pub use embeddings::{
     Embedder, EmbeddingSummary, PreviousEmbeddings, cosine_similarity, write_embeddings_index,
 };
+pub use graph_view::{GraphView, graph_view};
 pub use mcp_config::write_mcp_config;
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
-pub use okf::{BundleSummary, write_bundle};
+pub use okf::{BundleSummary, write_bundle, write_bundle_with};
 pub use rag::{RagSummary, write_rag_index};
 pub use rdf::{RdfSummary, write_rdf};
 pub use relations::{infer_applies_to, infer_related_to};
 pub use secrets::{SecretFinding, scan_bundle};
-pub use store::{StoreSummary, query_sqlite_store, read_sqlite_store, write_sqlite_store};
+pub use store::{
+    StoreSummary, query_sqlite_store, read_sqlite_store, write_sqlite_store, write_sqlite_view,
+};

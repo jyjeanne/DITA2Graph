@@ -202,9 +202,9 @@ d2g:generatedFrom
 
 d2g:copyOf
     a owl:ObjectProperty , owl:FunctionalProperty ;
-    rdfs:subPropertyOf d2g:generatedFrom ;
+    rdfs:subPropertyOf prov:wasDerivedFrom ;
     rdfs:label "copy of"@en , "copie de"@fr ;
-    rdfs:comment "The subject is a copy-to copy of the object."@en ;
+    rdfs:comment "The subject is a copy-to copy of the object. Derived from it, not a d2g:generatedFrom: a copy names no reused fragments (the extractor states the generatedFrom of its content separately)."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Topic ;
     d2g:origin "derived" .
@@ -287,7 +287,7 @@ d2g:includesCode
 d2g:sourceFile
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:label "source file"@en , "fichier source"@fr ;
-    rdfs:domain d2g:Node ;
+    rdfs:comment "The file a node comes from, or the map file that defines a key. No domain: a node and a key share it, and OWL 2 RL allows no union as a domain."@en ;
     rdfs:range d2g:SourceFile ;
     d2g:origin "derived" .
 
@@ -323,6 +323,13 @@ d2g:ditaClass
 d2g:keyName
     a owl:DatatypeProperty ;
     rdfs:label "key name"@en , "nom de clé"@fr ;
+    rdfs:domain d2g:Key ;
+    rdfs:range xsd:string .
+
+d2g:keyText
+    a owl:DatatypeProperty ;
+    rdfs:label "key text"@en , "texte de la clé"@fr ;
+    rdfs:comment "The text a key stands for (its keyword, link text or navtitle) when it names no topic: the value of a variable key, the label of a URL key."@en ;
     rdfs:domain d2g:Key ;
     rdfs:range xsd:string .
 

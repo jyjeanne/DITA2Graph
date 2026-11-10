@@ -28,8 +28,8 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 |---|---|
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
-| `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
-| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16) |
+| `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). Every tool marks a topic the map uses only as a resource with `[resource-only: not a published page]`. `--sparql` adds `query_graph`, read-only SPARQL over the RDF export (opt-in, see the RDF row). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
+| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16). It also records the declarations writers search for (finding 20): the map's key definitions, with the submap that writes each; the keys each topic uses, resolved in the key scopes of the topicrefs naming it (`@conkeyref` read from the source, since DITA-OT resolves it away); external `http(s)` links; `coderef` sample files, kept only when DITAVAL left them in; `copy-to` copies; and each topic's type from `@class` and its resource-only role. A composite `.dita` file's nested topics add their text to the file's topic |
 | `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all seven, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
@@ -41,7 +41,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
 | Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
 | SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: RocksDB storage |
-| RDF export ([`docs/semantic-model.md`](docs/semantic-model.md)) | Done, opt-in (`args.dita2graph.rdf=true`, `--emit-rdf true`): `rdf/graph.ttl` describes the same graph with the `d2g` vocabulary (OWL 2 RL, `core/dita2graph-core/ontology/d2g.ttl`), next to the ontology and the SHACL shapes it must satisfy (`d2g-shapes.ttl`). Stable IRIs on a configurable base (`args.dita2graph.rdf.base`), reproducible output (`SOURCE_DATE_EPOCH`), secret-scanned like `rag/`. CI validates a golden export, a deliberately broken graph and every fixture with pySHACL, and the ontology's OWL 2 RL profile with ROBOT; both benchmark corpora validate without a violation. Still open: keys, external links, `coderef`, `copyOf` and the prerequisite sense of `requires` in the export, and a SHACL check inside the build itself |
+| RDF export ([`docs/semantic-model.md`](docs/semantic-model.md)) | Done, opt-in (`args.dita2graph.rdf=true`, `--emit-rdf true`): `rdf/graph.ttl` describes the same graph with the `d2g` vocabulary (OWL 2 RL, `core/dita2graph-core/ontology/d2g.ttl`), next to the ontology and the SHACL shapes it must satisfy (`d2g-shapes.ttl`). Stable IRIs on a configurable base (`args.dita2graph.rdf.base`), reproducible output (`SOURCE_DATE_EPOCH`), secret-scanned like `rag/`. CI validates a golden export, a deliberately broken graph and every fixture with pySHACL, and the ontology's OWL 2 RL profile with ROBOT; both benchmark corpora validate without a violation. Since phase 4, the model also records the map's keys, the topics' key uses, external links, `coderef` sample files and `copy-to` copies, in every output (OKF sections, `graph.json`/`graph.db` nodes the MCP tools traverse, RDF), types topics by `@class` (`troubleshooting` included), and `requires` means a prerequisite (a task's `<prereq>` link or `importance="required"`), not a link through a key. Phase 5: `dita2graph-mcp --sparql` adds `query_graph`, read-only SPARQL 1.1 over `rdf/graph.ttl` (in-memory Oxigraph, no `SERVICE`, 10 s timeout, paged). Measured with Claude Code on 12 real questions from forums and issue trackers (DITA-OT docs and Oxygen user guide, graded blind): with the declarations, the MCP server alone answers writers' questions at 93 % (63 % before), the level of reading the sources directly; `query_graph` gives the same correctness for 8 to 30 % more tokens, so it stays opt-in. Still open: a SHACL check inside the build itself |
 | Incremental rebuild (§3.3) | Done: a second `build` against unchanged input rewrites nothing unnecessary. `build-state.json` records a per-id fingerprint (content hash + the title/subdirectory a linking topic's rendered file also depends on) so an unchanged topic's `okf/*.md` file keeps its old content and timestamp instead of being rewritten every single build; when embeddings are configured, a topic whose exact chunk text and model are unchanged reuses its cached vector instead of another ONNX inference call. `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten in full — cheap, and must always reflect the complete current set. Verified end to end through the real CLI (reported as `(N unchanged, skipped)`/`(N reused, ...)`), including the correctness case where a topic's own content is untouched but a topic it links to was renamed |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
@@ -49,15 +49,16 @@ full spec envisions: full `<navref>` map composition (`mapref`/
 `anchorref` are done, finding 14; `<navref>` is detected and warned
 about rather than silently dropped, finding 16, but real support would
 mean this plugin independently parsing/merging navigation maps outside
-DITA-OT's own pipeline — not attempted), canonical-node deduplication
-for `conref`/`conkeyref`-reused content (`generated-from` tracks
-provenance but doesn't collapse storage, finding 15), and §5.1's MCP
-Resources — `dita://topics` etc. — which `dita2graph-mcp` doesn't
-implement at all, only the §5.2 tools — real gaps, documented rather
-than hidden. Every relation in §4.3's taxonomy (`contains`/`requires`/
-`references`/`applies-to`/`related-to`/`generated-from`) is now real
-(findings 13, 15), and all five `args.dita2graph.*` parameters,
-including `mcp`, are functionally wired end to end (finding 12).
+DITA-OT's own pipeline — not attempted), §5.1's MCP Resources —
+`dita://topics` etc. — which `dita2graph-mcp` doesn't implement at all,
+only the §5.2 tools, and a SHACL check inside the build (it runs in CI)
+— real gaps, documented rather than hidden. Reused `conref`/`conkeyref`
+text is stored once, in its source topic (canonical-node deduplication,
+[`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)).
+Every relation in §4.3's taxonomy (`contains`/`requires`/`references`/
+`applies-to`/`related-to`/`generated-from`, plus `copy-of`) is now real
+(findings 13, 15, 20), and all seven `args.dita2graph.*` parameters,
+including `mcp` and `rdf`, are functionally wired end to end (finding 12).
 
 **Release status:** the MVP scope (§11) is functionally complete;
 `v0.1.0` is tagged — see **[`Roadmap.md`](Roadmap.md)** for the
@@ -85,9 +86,11 @@ flowchart TD
     E -- fails --> F([Build fails<br/>errors reported]):::fail
     E -- passes --> G["OKF bundle<br/>okf/ nodes, edges, metadata"]
     D --> H["RAG content index<br/>rag/chunks.jsonl, rag/metadata.json"]
+    D -.->|opt-in| R["RDF export<br/>rdf/graph.ttl + d2g ontology (OWL 2 RL)<br/>+ SHACL shapes"]
     G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
     H --> I
-    I --> J["MCP tools<br/>search_topics · search_content · read_topic · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle · validate_live"]
+    R -.->|"--sparql"| I
+    I --> J["MCP tools<br/>search_topics · search_content · read_topic · find_related_topics<br/>explain_task · trace_dependencies · analyze_impact · generate_summary<br/>validate_bundle · validate_live · query_graph (opt-in)"]
     J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
 
     classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
@@ -134,6 +137,40 @@ of tens of tokens each (§9.2) — instead of reading raw resolved
 XML/HTML output or grepping the repo. Useful for onboarding an agent
 (or a new writer) into a doc set it hasn't seen before.
 
+### 4. An authoring assistant that reuses instead of duplicating
+
+When Claude Code drafts or edits a topic, the graph tells it what already
+exists. Before hard-coding a URL, `find_related_topics` or
+`analyze_impact` on that URL shows whether a key already names it and
+which map defines the key, so the draft uses `keyref`. Before
+rewriting a common step, `analyze_impact` with `fragment` shows how
+widely an existing fragment is reused: on the Oxygen user guide,
+"open the preferences page" is pulled into 217 topics from one
+warehouse topic, which the tools mark as resource-only. Once the topic
+is written, `validate_live` checks the source against the DTD and the
+DitaCraft rules before anything is committed or rebuilt.
+
+### 5. Assistants scoped to an audience or a product
+
+Build one bundle per DITAVAL file (public and internal, or one per
+product or platform) and serve each with its own `dita2graph-mcp`. A
+customer-facing support assistant then answers from the public build
+only: the filtering happens at build time, so internal content is not
+in its graph at all, rather than being held back by an instruction in
+a prompt. The secret scan still runs on every bundle, and CI asserts
+that no internal topic leaks into the public one (§6.1).
+
+### 6. Upgrade and deprecation questions
+
+"Is `outputFile.base` still supported, and what replaces it?" The
+answer is spread over release notes, parameter references and
+migration topics, often in composite files that hold several nested
+topics. `read_topic` returns a topic's full published text, nested
+topics included, and `search_content` finds the pages mentioning the
+parameter: in the benchmark, this real question went from 67 % to
+100 % correct with the MCP server alone once composite files were read
+in full.
+
 ## Use cases for technical writers
 
 The graph isn't only for AI agents acting on their own — it's just as
@@ -148,9 +185,10 @@ reuse from an ordinary `keyref` variable substitution. Before editing a
 topic that looks like reused content, a writer can confirm whether
 they're looking at the canonical source or a pulled-in copy — editing
 the wrong one is a classic way DITA content sets drift out of sync.
-(Note: the graph tracks this provenance today but doesn't yet collapse
-duplicate storage into one canonical node — that's an open Phase 6+ item,
-see `docs/dev/canonical-node-dedup-spec.md`.)
+The reused text itself is stored once, in its source topic
+(`docs/dev/canonical-node-dedup-spec.md`), and `read_topic` shows a
+topic as published, each reused fragment marked with where it comes
+from.
 
 ### 2. Safe restructuring — what references this before you rename, merge, or delete it
 
@@ -170,6 +208,83 @@ leaked across a filtering boundary it shouldn't have. `validate_bundle()`
 complements this by re-running `okf-validator` and the secret-leak scan
 on demand, catching broken cross-references or accidentally-committed
 secrets in the same pre-publish pass.
+
+### 4. Keys, external links and sample files — where is this declared, and who uses it?
+
+Keys, external URLs and `coderef` sample files are nodes of the graph:
+`key:<name>`, the URL itself, `file:<path>`. `analyze_impact` on a URL
+lists every published page linking to it, hard-coded or through a key,
+and names the file defining that key — the one place to edit when the
+URL changes. `find_related_topics` on a key lists the topics using it,
+and `read_topic` ends with a topic's external links, keys and sample
+files. A link a relationship table adds through a key counts as a use
+of that key, so a query over the RDF export can list the pages that
+write out a URL a key already names, the candidates for a `keyref`
+([`docs/semantic-model.md`](docs/semantic-model.md#querying)). A topic the map uses only as a resource (a warehouse of reusable
+links or fragments) is marked as such, so it is never counted as a
+published page.
+
+### 5. Structural checks on every docs pull request
+
+With the RDF export on, the SHACL shapes become a quality gate for the
+docs repository itself: build with `--args.dita2graph.rdf=true` in the
+docs CI and run pySHACL on the result. A violation fails the check: a
+key a topic uses but no map defines, a loop of prerequisites or in the
+table of contents, a reuse naming a fragment its source does not have,
+a link to a sample file outside the corpus. Warnings flag topics that
+have no place in the table of contents: on the Oxygen user guide, 46
+topics merged into their parent by `chunk="to-content"` and one
+duplicate id, real cases worth a look.
+
+```bash
+dita --input user-guide.ditamap --format dita2graph -o out \
+  --args.dita2graph.rdf=true --args.dita2graph.rdf.base=https://docs.example.com/
+pyshacl -s out/rdf/shapes.ttl -e out/rdf/ontology.ttl -i none -w -f human out/rdf/graph.ttl
+```
+
+## Use cases for knowledge-graph and data teams
+
+The optional RDF export ([`docs/semantic-model.md`](docs/semantic-model.md))
+describes the same graph with W3C standards, so it leaves the MCP
+server behind and goes wherever RDF goes.
+
+### 1. Documentation analytics with SPARQL
+
+Load `rdf/graph.ttl` into any SPARQL 1.1 engine (Oxigraph, Apache Jena
+Fuseki, GraphDB...) and the doc set becomes measurable: topics without
+a short description by type, the hosts external links point to before
+a site migration, the pages that write out a URL a key already names,
+the fragments whose edit would ripple furthest. The most reused
+fragments, for example:
+
+```sparql
+PREFIX d2g: <https://w3id.org/dita2graph/ns#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+
+SELECT ?source ?fragment (COUNT(DISTINCT ?reuser) AS ?reusers) WHERE {
+  ?reuser d2g:qualifiedReuse ?reuse .
+  ?reuse d2g:reuseSource/dcterms:identifier ?source ;
+         d2g:reusedFragment/dcterms:identifier ?fragment .
+}
+GROUP BY ?source ?fragment
+ORDER BY DESC(?reusers)
+LIMIT 10
+```
+
+On the Oxygen user guide, the top entry is reused by 217 topics, the
+next by 119. More queries: [`docs/semantic-model.md`](docs/semantic-model.md#querying).
+
+### 2. Linking the documentation to other enterprise data
+
+Every topic, key and file has a stable IRI under a base you choose
+(`args.dita2graph.rdf.base`), kept across builds as long as its id
+does not change, and the export reuses Dublin Core, PROV-O and SKOS.
+Next to a product catalogue, a requirements graph or a support-ticket
+graph in the same triple store, a ticket can point to the topics that
+answer it and a feature to the tasks that document it, with each fact
+traced to the build that produced it (`prov:wasGeneratedBy`). Because
+IRIs are stable, comparing the exports of two releases with any RDF
+diff tool shows which topics, links and keys appeared or went away.
 
 ## Toolchain requirements
 
@@ -261,6 +376,11 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_con
 # excerpt of each affected concept
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze_impact","arguments":{"topicId":"configuration"}}}' \
   | ./target/release/dita2graph-mcp gradle-build/build/dita2graph
+
+# Optional, with the RDF export above: SPARQL over the graph
+# (query_graph is only offered with --sparql)
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_graph","arguments":{"query":"SELECT ?type (COUNT(?n) AS ?count) WHERE { ?n a ?type } GROUP BY ?type"}}}' \
+  | ./target/release/dita2graph-mcp --sparql gradle-build/build/dita2graph
 ```
 
 To register the server with Claude Code once you have a bundle built:
@@ -277,13 +397,14 @@ Once registered, an agent can call:
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
-| `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, then the reused fragments by source topic |
-| `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments |
+| `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, then the reused fragments by source topic, and the topic's external links, keys and sample files |
+| `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments. On a key, URL or file node (`key:<name>`, the URL, `file:<path>`), the topics pointing to it |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
-| `analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?)` | Reverse, transitive traversal — everything that would be affected by changing this topic: totals by relation and level, then paged entries with content excerpts; `fragment` keeps the topics reusing one element (§13.1) |
+| `analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?)` | Reverse, transitive traversal — everything that would be affected by changing this topic: totals by relation and level, then paged entries with content excerpts; `fragment` keeps the topics reusing one element (§13.1). Also starts from a key, URL or file node, following the keys that lead to it |
 | `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
+| `query_graph(query, limit?, offset?)` | Opt-in (`dita2graph-mcp --sparql`): read-only SPARQL 1.1 over the bundle's RDF export (`rdf/graph.ttl`, [`docs/semantic-model.md`](docs/semantic-model.md)), paginated, with a 10 s timeout, the `d2g` vocabulary and the bundle's prefixes predeclared. Not offered by default: its benchmark campaign showed no gain over the typed tools |
 | `validate_live(topicId)` | Runs [DitaCraft](https://github.com/jyjeanne/ditacraft)'s live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules, cross-reference, circular-reference, subject-scheme profiling) against the topic's *current* on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp) below |
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.
@@ -333,6 +454,167 @@ against your own DITA content instead, install the plugin into your own
 DITA-OT and invoke it directly — see `docs/plugin-specification.md` §15
 (Appendix A: Quickstart) for the full sequence (`dita --install`, then
 `dita --format dita2graph`).
+
+## Using DITA2Graph with other tools
+
+Every output of a build is a plain, documented format, so the graph is
+not tied to the MCP server or to Claude Code: an IDE agent, a Markdown
+editor, a graph library, a SQL client or a triple store each reads the
+part it understands. All of them name a topic by the same id.
+
+| Output | Format | Tools that read it |
+|---|---|---|
+| `dita2graph-mcp` | MCP over stdio | Claude Code (tested), Claude Desktop, VS Code agent mode, Cursor, custom agents (Claude Agent SDK, MCP SDKs); the MCP Inspector to call the tools by hand |
+| `okf/` | Markdown + YAML frontmatter (OKF v0.2) | `okf_validator`, Obsidian, any Markdown editor or renderer, Git diffs and code review |
+| `graph.json` | JSON: `nodes` (`id`, `type`, `title`, `sourceFile`, `processingRole`) and `edges` (`from`, `to`, `relation`) | NetworkX, D3, Cytoscape.js; Gephi, yEd or Cytoscape through GraphML |
+| `graph.db` (`--store sqlite`) | SQLite: tables `nodes` and `edges` | `sqlite3`, DB Browser for SQLite, DBeaver, Datasette, pandas |
+| `rag/` | JSON Lines: `chunks.jsonl`, `embeddings.jsonl` when built | vector stores (Chroma, Qdrant, pgvector) and RAG frameworks (LangChain, LlamaIndex) |
+| `rdf/` (`--emit-rdf true`) | Turtle: the graph, the OWL 2 RL ontology, the SHACL shapes | Oxigraph, Apache Jena Fuseki, GraphDB, rdflib, pySHACL, Protégé |
+
+### Other MCP clients
+
+`dita2graph-mcp` is a standard MCP server over stdio: a client starts it
+with the bundle directory (or `--config <bundle>/mcp/mcp-server.toml`)
+and the flags it needs (`--sparql` for `query_graph`, `--source-root`
+for `validate_live`). It is tested with Claude Code; other clients take
+the same command in their own configuration file. Use absolute paths,
+since each client starts the server from its own working directory (on
+Windows, `dita2graph-mcp.exe`, with `\\` in JSON).
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`)
+and a Claude Code project shared through the repository (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "dita2graph": {
+      "command": "/opt/dita2graph/bin/dita2graph-mcp",
+      "args": ["--source-root", "/path/to/dita-sources", "/path/to/out"]
+    }
+  }
+}
+```
+
+VS Code, for GitHub Copilot's agent mode (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "dita2graph": {
+      "type": "stdio",
+      "command": "/opt/dita2graph/bin/dita2graph-mcp",
+      "args": ["--source-root", "/path/to/dita-sources", "/path/to/out"]
+    }
+  }
+}
+```
+
+To call the tools by hand, the MCP Inspector starts the server and lists
+its tools in a browser:
+
+```bash
+npx @modelcontextprotocol/inspector ./target/release/dita2graph-mcp gradle-build/build/dita2graph
+```
+
+### The OKF bundle in a Markdown editor
+
+`okf/` is a folder of Markdown files with YAML frontmatter, linked to
+each other by relative links (`[Building output using Ant](runant.md)`).
+Opened as an Obsidian vault, its graph view and backlinks show the graph
+the MCP tools traverse, and the frontmatter shows as properties. Any
+Markdown renderer reads it too. An incremental rebuild leaves unchanged
+concept files as they were, so with `okf/` under Git, the diff between
+two builds shows which topics changed.
+
+### `graph.json` and `graph.db` in code or SQL
+
+`graph.json` holds the structure: ids, types, roles and edges. A topic's
+title and text are in its OKF concept and in `rag/chunks.jsonl`, under
+the same id; key, URL and file nodes carry their title. In Python, with
+NetworkX:
+
+```python
+import json
+import networkx as nx
+
+graph = json.load(open("out/graph.json", encoding="utf-8"))
+g = nx.MultiDiGraph()
+for node in graph["nodes"]:
+    g.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+for edge in graph["edges"]:
+    g.add_edge(edge["from"], edge["to"], relation=edge["relation"])
+
+nx.write_graphml(g, "out/graph.graphml")  # for Gephi, yEd or Cytoscape
+```
+
+`graph.db` holds the same nodes and edges, indexed, for any SQLite
+client. The topics linked from the most pages, for example:
+
+```bash
+sqlite3 out/graph.db "SELECT to_id, COUNT(DISTINCT from_id) AS pages FROM edges
+  WHERE relation IN ('references', 'requires') GROUP BY to_id ORDER BY pages DESC LIMIT 5"
+```
+
+`datasette out/graph.db` serves the same tables as browsable web pages,
+with a JSON API.
+
+### `rag/` in a vector store or a RAG framework
+
+Each line of `rag/chunks.jsonl` is one topic (`id`, `title`, `text`,
+`topicType`, `okfNode`), and each line of `rag/embeddings.jsonl`, when
+embeddings are built, its vector (`id`, `model`, `dim`, `vector`). They
+load as documents with metadata into a vector store or a RAG framework.
+Since the ids are the graph's, a retrieved topic can then be widened
+through `graph.json` or the MCP tools: its prerequisites, the topics
+reusing it, the pages linking to it.
+
+### `rdf/` in a triple store or an ontology editor
+
+`rdf/graph.ttl` is standard Turtle. In Python, with rdflib, the keys
+used by the most pages:
+
+```python
+from rdflib import Graph
+
+g = Graph().parse("out/rdf/graph.ttl")
+query = """
+PREFIX d2g: <https://w3id.org/dita2graph/ns#>
+SELECT ?key (COUNT(DISTINCT ?topic) AS ?pages) WHERE {
+  ?topic d2g:usesKey/d2g:keyName ?key .
+} GROUP BY ?key ORDER BY DESC(?pages) LIMIT 5
+"""
+for row in g.query(query):
+    print(row.key, row.pages)
+```
+
+As a SPARQL endpoint, with a query page in the browser:
+
+```bash
+# Oxigraph (http://localhost:7878)
+oxigraph load --location docs-db --file out/rdf/graph.ttl
+oxigraph serve --location docs-db
+# Apache Jena Fuseki (http://localhost:3030/docs/sparql)
+fuseki-server --file=out/rdf/graph.ttl /docs
+```
+
+GraphDB or Stardog import the same file. Protégé opens
+`out/rdf/ontology.ttl` to browse the `d2g` vocabulary, and pySHACL, or
+another engine implementing SHACL-SPARQL, checks `graph.ttl` against
+`shapes.ttl` (see [use case 5 for writers](#5-structural-checks-on-every-docs-pull-request)).
+
+### On the authoring side
+
+- **Oxygen XML Editor**: install the plugin into the DITA-OT 4.4 Oxygen
+  is set to use; `dita2graph` is then one more transtype for a DITA Map
+  transformation scenario.
+- **DitaCraft (VS Code)**: the editor extension whose language server
+  `validate_live` runs, so a writer sees in the editor, as they type,
+  the problems an agent gets from `validate_live`.
+- **Gradle**: `gradle-build/` drives the whole pipeline from a Gradle
+  Kotlin DSL build, including one bundle per DITAVAL file.
+- **CI**: `.github/workflows/integration.yml` builds with a real DITA-OT
+  4.4 and validates the result; the same steps fit a documentation
+  repository's own CI.
 
 ## Repository layout
 

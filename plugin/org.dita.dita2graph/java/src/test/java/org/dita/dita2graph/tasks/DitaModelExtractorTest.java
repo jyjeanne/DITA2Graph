@@ -9,6 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -57,12 +59,18 @@ class DitaModelExtractorTest {
         assertEquals(List.of("admin"), installingProduct.audience);
         assertEquals(List.of("enterprise"), installingProduct.product);
         assertEquals(List.of("install-task"), installingProduct.keys);
-        // The keyref'd cross-reference in <context> resolves to "requires";
-        // the bare xref in <prereq> (no keyref) resolves to "references".
+        // The xref in the task's <prereq> is a prerequisite ("requires");
+        // the keyref'd one in <context> is a plain "references" whose key
+        // is recorded.
         assertTrue(installingProduct.links.stream()
-                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("configuration")));
+                .anyMatch(l -> l.relation.equals("references") && l.target.equals("configuration")));
         assertTrue(installingProduct.links.stream()
-                .anyMatch(l -> l.relation.equals("references") && l.target.equals("installing-product-prereqs")));
+                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("installing-product-prereqs")));
+        assertEquals(Set.of("config-concept"), installingProduct.keyrefs);
+        assertEquals(List.of("config-concept", "install-task"),
+                map.keyDefs.stream().map(k -> k.name).toList());
+        assertEquals(List.of("configuration", "installing-product"),
+                map.keyDefs.stream().map(k -> k.target).toList());
 
         TopicNode configuration = findTopic(nodes, "configuration");
         assertEquals("concept", configuration.topicType);
@@ -73,7 +81,7 @@ class DitaModelExtractorTest {
         TopicNode prereqs = findTopic(nodes, "installing-product-prereqs");
         assertEquals("topic", prereqs.topicType);
         assertTrue(prereqs.links.stream()
-                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("configuration")));
+                .anyMatch(l -> l.relation.equals("references") && l.target.equals("configuration")));
         // Generic <topic> uses <body> (not <conbody>/<taskbody>); getTextContent()
         // includes the <xref> element's own link text inline with the
         // surrounding prose, since DOM text extraction doesn't distinguish
@@ -345,14 +353,15 @@ class DitaModelExtractorTest {
         List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
 
         TopicNode reuser = findTopic(nodes, "reuser");
-        long requiresToConfig = reuser.links.stream()
-                .filter(l -> l.relation.equals("requires") && l.target.equals("configuration"))
+        long referencesToConfig = reuser.links.stream()
+                .filter(l -> l.relation.equals("references") && l.target.equals("configuration"))
                 .count();
         long referencesToPrereqs = reuser.links.stream()
                 .filter(l -> l.relation.equals("references") && l.target.equals("installing-product-prereqs"))
                 .count();
-        assertEquals(1, requiresToConfig,
-                "two keyref'd mentions of the same target should collapse to one requires edge: " + reuser.links);
+        assertEquals(1, referencesToConfig,
+                "two keyref'd mentions of the same target should collapse to one edge: " + reuser.links);
+        assertEquals(Set.of("config"), reuser.keyrefs);
         assertEquals(1, referencesToPrereqs,
                 "two bare mentions of the same target should collapse to one references edge: " + reuser.links);
     }
@@ -432,7 +441,7 @@ class DitaModelExtractorTest {
         assertEquals("topics/installing-product.dita", installingProduct.sourceFile);
         assertEquals(List.of("install-task"), installingProduct.keys);
         assertTrue(installingProduct.links.stream()
-                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("configuration")));
+                .anyMatch(l -> l.relation.equals("requires") && l.target.equals("installing-product-prereqs")));
     }
 
     @Test
@@ -667,11 +676,14 @@ class DitaModelExtractorTest {
         assertTrue(warnings.isEmpty(), "no unresolved links expected: " + warnings);
 
         TopicNode a = findTopic(nodes, "a");
-        // requires c from the prose; references b from the reltable. The
+        // references c from the prose; references b from the reltable. The
         // reltable link to c adds nothing (the prose already links c), the
         // sibling link is navigation, and the external one leaves the corpus.
         assertEquals(2, a.links.size(), "a: " + a.links.stream().map(l -> l.relation + "->" + l.target).toList());
-        assertTrue(a.links.stream().anyMatch(l -> l.relation.equals("requires") && l.target.equals("c")));
+        assertTrue(a.links.stream().anyMatch(l -> l.relation.equals("references") && l.target.equals("c")));
+        // ... but is an external link of a, through no key.
+        assertEquals(Set.of("https://example.com/talk"), a.externalLinks.keySet());
+        assertNull(a.externalLinks.get("https://example.com/talk"));
         assertTrue(a.links.stream().anyMatch(l -> l.relation.equals("references") && l.target.equals("b")));
     }
 
@@ -781,6 +793,404 @@ class DitaModelExtractorTest {
                 "copy: " + copy.links);
         assertTrue(source.links.stream().noneMatch(l -> l.relation.equals("generated-from")),
                 "source: " + source.links);
+        assertTrue(copy.links.stream().anyMatch(l -> l.relation.equals("copy-of") && l.target.equals("shared")),
+                "copy: " + copy.links);
+        assertTrue(source.links.stream().noneMatch(l -> l.relation.equals("copy-of")), "source: " + source.links);
+    }
+
+    @Test
+    void keyDefinitionsExternalLinksAndPrerequisitesFollowTheMarkup(@TempDir Path tempDir) throws Exception {
+        // Shaped after dita-ot/docs' resolved userguide.ditamap (DITA-OT
+        // 4.4.1, kept temp directory): every keydef of a submap survives,
+        // with @keys, its resolved href and the submap's xtrf.
+        String keysSrc = "file:/src/resources/keys.ditamap";
+        write(tempDir, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/install.dita\" path=\"topics/install.dita\" format=\"dita\"></file>"
+                + "<file src=\"file:/src/topics/setup.dita\" path=\"topics/setup.dita\" format=\"dita\"></file>"
+                + "<file src=\"file:/src/topics/about.dita\" path=\"topics/about.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + keysSrc + "\" path=\"resources/keys.ditamap\" format=\"ditamap\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>");
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\" class=\"- map/map \"><title>User Guide</title>"
+                + "<topicref class=\"- map/topicref \" href=\"topics/install.dita\" keys=\"install\"/>"
+                + "<topicref class=\"- map/topicref \" href=\"topics/setup.dita\" keys=\"setup setup-alias\"/>"
+                + "<topicref class=\"- map/topicref \" href=\"topics/about.dita\"/>"
+                + "<topicgroup class=\"+ map/topicref mapgroup-d/topicgroup \" xtrf=\"" + keysSrc + "\">"
+                + "<keydef class=\"+ map/topicref mapgroup-d/keydef \" keys=\"brew\" href=\"https://brew.sh\" "
+                + "scope=\"external\" format=\"html\" processing-role=\"resource-only\" xtrf=\"" + keysSrc + "\">"
+                + "<topicmeta class=\"- map/topicmeta \"><linktext class=\"- map/linktext \">Homebrew</linktext></topicmeta></keydef>"
+                + "<keydef class=\"+ map/topicref mapgroup-d/keydef \" keys=\"product\" processing-role=\"resource-only\" "
+                + "xtrf=\"" + keysSrc + "\"><topicmeta class=\"- map/topicmeta \"><keywords class=\"- topic/keywords \">"
+                + "<keyword class=\"- topic/keyword \">Acme   Builder</keyword></keywords></topicmeta></keydef>"
+                + "<keydef class=\"+ map/topicref mapgroup-d/keydef \" keys=\"logo\" href=\"images/logo.png\" format=\"png\" "
+                + "processing-role=\"resource-only\" xtrf=\"" + keysSrc + "\"/>"
+                // A second definition of "install": the first one wins.
+                + "<keydef class=\"+ map/topicref mapgroup-d/keydef \" keys=\"install\" href=\"topics/about.dita\" "
+                + "processing-role=\"resource-only\" xtrf=\"" + keysSrc + "\"/>"
+                + "</topicgroup>"
+                + "<topicgroup class=\"+ map/topicref mapgroup-d/topicgroup \" keyscope=\"legacy\">"
+                + "<keydef class=\"+ map/topicref mapgroup-d/keydef \" keys=\"install\" href=\"topics/about.dita\" "
+                + "processing-role=\"resource-only\"/></topicgroup>"
+                + "</map>");
+        write(tempDir, "topics/install.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<task id=\"install\" class=\"- topic/topic task/task \"><title>Install</title>"
+                + "<taskbody class=\"- topic/body task/taskbody \">"
+                + "<prereq class=\"- topic/section task/prereq \"><p>Install <xref href=\"https://brew.sh\" keyref=\"brew\" "
+                + "scope=\"external\" format=\"html\">Homebrew</xref> and read <xref href=\"setup.dita\">Setup</xref>.</p></prereq>"
+                + "<context class=\"- topic/section task/context \"><p><keyword keyref=\"product\">Acme Builder</keyword> "
+                + "is described in <xref href=\"about.dita\" keyref=\"about\">About</xref>.</p></context>"
+                + "</taskbody>"
+                + "<related-links class=\"- topic/related-links \">"
+                + "<link href=\"about.dita\" importance=\"required\" class=\"- topic/link \"/>"
+                + "<link href=\"setup.dita\" role=\"parent\" class=\"- topic/link \" keyref=\"setup\"/>"
+                + "</related-links></task>");
+        write(tempDir, "topics/setup.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"setup\" class=\"- topic/topic concept/concept \"><title>Setup</title>"
+                + "<conbody class=\"- topic/body concept/conbody \">"
+                + "<p>A concept has no prerequisites: <xref href=\"install.dita\" importance=\"required\">Install</xref>.</p>"
+                + "</conbody></concept>");
+        write(tempDir, "topics/about.dita", topicXml("about", "About"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+        assertTrue(warnings.isEmpty(), "warnings: " + warnings);
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(List.of("install", "setup", "setup-alias", "brew", "product", "logo", "install"),
+                map.keyDefs.stream().map(k -> k.name).toList());
+        KeyDef install = map.keyDefs.get(0);
+        assertEquals("install", install.target, "the first definition of install wins");
+        assertEquals("user-guide.ditamap", install.sourceFile);
+        assertNull(install.text, "a key that names a topic keeps no text");
+        assertEquals("setup", map.keyDefs.get(2).target);
+        KeyDef brew = map.keyDefs.get(3);
+        assertEquals("https://brew.sh", brew.url);
+        assertEquals("Homebrew", brew.text);
+        assertEquals("resources/keys.ditamap", brew.sourceFile, "the submap that defines it, from xtrf");
+        KeyDef product = map.keyDefs.get(4);
+        assertNull(product.target);
+        assertNull(product.url);
+        assertEquals("Acme Builder", product.text);
+        assertEquals("images/logo.png", map.keyDefs.get(5).file);
+        KeyDef scoped = map.keyDefs.get(6);
+        assertEquals("legacy", scoped.scope);
+        assertEquals("about", scoped.target);
+        assertTrue(map.toJson().contains("{\"name\":\"brew\",\"url\":\"https://brew.sh\",\"text\":\"Homebrew\","
+                + "\"sourceFile\":\"resources/keys.ditamap\"}"), map.toJson());
+
+        TopicNode task = findTopic(nodes, "install");
+        // prereq link and a task's required link: requires; the rest references.
+        assertEquals(List.of("requires->setup", "requires->about"),
+                task.links.stream().map(l -> l.relation + "->" + l.target).toList());
+        // The parent link is generated navigation: its keyref is not a use.
+        assertEquals(Set.of("brew", "product", "about"), task.keyrefs);
+        assertEquals(Map.of("https://brew.sh", "brew"), task.externalLinks);
+        assertTrue(task.toJson().contains("\"externalLinks\":[{\"url\":\"https://brew.sh\",\"key\":\"brew\"}]"),
+                task.toJson());
+        // importance="required" outside a task is no prerequisite.
+        assertEquals(List.of("references->install"), findTopic(nodes, "setup").links.stream()
+                .map(l -> l.relation + "->" + l.target).toList());
+    }
+
+    @Test
+    void coderefAndConkeyrefAreReadFromTheSourceWhenTheResolvedTopicConfirmsThem(@TempDir Path tempDir)
+            throws Exception {
+        // DITA-OT replaces <coderef> with the file's text and resolves
+        // conkeyref away (dita-ot/docs, kept temp directory): job.xml lists
+        // the sample files (format "coderef") but not who includes them.
+        Path srcDir = tempDir.resolve("src");
+        String sampleSrc = srcDir.resolve("topics/sample.dita").toFile().toURI().toString();
+        String warehouseSrc = srcDir.resolve("topics/warehouse.dita").toFile().toURI().toString();
+        String brokenSrc = srcDir.resolve("topics/broken.dita").toFile().toURI().toString();
+        String buildSrc = srcDir.resolve("samples/build.xml").toFile().toURI().toString();
+        String filteredSrc = srcDir.resolve("samples/filtered.xml").toFile().toURI().toString();
+        Path temp = tempDir.resolve("temp");
+        write(temp, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"" + sampleSrc + "\" path=\"topics/sample.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + warehouseSrc + "\" path=\"topics/warehouse.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + brokenSrc + "\" path=\"topics/broken.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + buildSrc + "\" path=\"samples/build.xml\" format=\"coderef\"></file>"
+                + "<file src=\"" + filteredSrc + "\" path=\"samples/filtered.xml\" format=\"coderef\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>");
+        write(temp, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/sample.dita\"/><topicref href=\"topics/broken.dita\"/>"
+                + "<keydef keys=\"warehouse\" href=\"topics/warehouse.dita\" processing-role=\"resource-only\"/>"
+                + "<keydef keys=\"other\" href=\"topics/broken.dita\" processing-role=\"resource-only\"/>"
+                + "</map>");
+        // The source: two coderefs (DITAVAL removed the second codeblock)
+        // and two conkeyrefs (only the first one's content got reused).
+        write(srcDir, "topics/sample.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"sample\"><title>Sample</title><body>"
+                + "<codeblock><coderef href=\"../samples/build.xml#line-range(1,5)\"/></codeblock>"
+                + "<codeblock audience=\"internal\"><coderef href=\"../samples/filtered.xml\"/></codeblock>"
+                + "<p conkeyref=\"warehouse/shared-p\"/><p conkeyref=\"other/gone\"/>"
+                + "</body></topic>");
+        write(srcDir, "topics/broken.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"broken\"><title>Broken</title><body><p>&undefined;<coderef href=\"x\"/></p></body></topic>");
+        write(temp, "topics/sample.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"sample\" xtrf=\"" + sampleSrc + "\" xtrc=\"topic:1;1:1\"><title>Sample</title>"
+                + "<body xtrf=\"" + sampleSrc + "\" xtrc=\"body:1;1:30\">"
+                + "<codeblock xtrf=\"" + sampleSrc + "\" xtrc=\"codeblock:1;1:36\">&lt;project/&gt;</codeblock>"
+                + "<p xtrf=\"" + warehouseSrc + "\" xtrc=\"p:1;1:60\">Shared text.</p>"
+                + "</body></topic>");
+        write(temp, "topics/warehouse.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"warehouse\" xtrf=\"" + warehouseSrc + "\" xtrc=\"topic:1;1:1\"><title>Warehouse</title>"
+                + "<body xtrf=\"" + warehouseSrc + "\" xtrc=\"body:1;1:30\">"
+                + "<p id=\"shared-p\" xtrf=\"" + warehouseSrc + "\" xtrc=\"p:1;1:60\">Shared text.</p></body></topic>");
+        // A codeblock: the source is read only when a coderef could have
+        // filled one (or the topic reuses content).
+        write(temp, "topics/broken.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"broken\"><title>Broken</title><body><codeblock>x</codeblock></body></topic>");
+
+        List<String> infos = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(temp.toFile(), false, msg -> { }, infos::add).extract();
+
+        TopicNode sample = findTopic(nodes, "sample");
+        assertEquals(Set.of("samples/build.xml"), sample.codeRefs);
+        assertEquals(Set.of("warehouse"), sample.keyrefs, "the conkeyref whose content was reused");
+        assertTrue(sample.toJson().contains("\"codeRefs\":[\"samples/build.xml\"]"), sample.toJson());
+        assertTrue(findTopic(nodes, "broken").codeRefs.isEmpty());
+        assertTrue(infos.stream().anyMatch(m -> m.startsWith("DITA2GRAPH072I") && m.contains("topics/broken.dita")),
+                "infos: " + infos);
+    }
+
+    @Test
+    void topicTypeComesFromClassSoSpecializationsAndTroubleshootingAreRecognized(@TempDir Path tempDir)
+            throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/fix.dita", "topics/group.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/fix.dita\"/><topicref href=\"topics/group.dita\"/></map>");
+        write(tempDir, "topics/fix.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<troubleshooting id=\"fix\" class=\"- topic/topic troubleshooting/troubleshooting \">"
+                + "<title>Fix it</title><troublebody class=\"- topic/body troubleshooting/troublebody \">"
+                + "<p>Restart the server.</p></troublebody></troubleshooting>");
+        write(tempDir, "topics/group.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<glossgroup id=\"group\" class=\"- topic/topic concept/concept glossgroup/glossgroup \">"
+                + "<title>Terms</title></glossgroup>");
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        TopicNode fix = findTopic(nodes, "fix");
+        assertEquals("troubleshooting", fix.topicType);
+        assertEquals("Restart the server.", fix.body);
+        assertEquals("concept", findTopic(nodes, "group").topicType, "a specialization takes its base type");
+        assertTrue(warnings.isEmpty(), "both types are recognized: " + warnings);
+    }
+
+    @Test
+    void nestedTopicsOfACompositeFileJoinTheRootTopicsText(@TempDir Path tempDir) throws Exception {
+        // Shaped after dita-ot/docs' release-notes/index.dita: a root
+        // <reference> with no body, one nested <reference> per release.
+        write(tempDir, ".job.xml", jobXml("release-notes/index.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"release-notes/index.dita\"/></map>");
+        write(tempDir, "release-notes/index.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<reference id=\"notes\" class=\"- topic/topic reference/reference \">"
+                + "<title class=\"- topic/title \">Release notes</title>"
+                + "<reference id=\"v2\" class=\"- topic/topic reference/reference \">"
+                + "<title class=\"- topic/title \">Release 2</title>"
+                + "<refbody class=\"- topic/body reference/refbody \"><section class=\"- topic/section \">"
+                + "<p class=\"- topic/p \">outputFile.base is deprecated.</p></section></refbody>"
+                + "<reference id=\"v2-fixes\" class=\"- topic/topic reference/reference \">"
+                + "<title class=\"- topic/title \">Fixes</title>"
+                + "<refbody class=\"- topic/body reference/refbody \"><p class=\"- topic/p \">Bug 42.</p></refbody>"
+                + "</reference></reference>"
+                + "<reference id=\"v1\" class=\"- topic/topic reference/reference \">"
+                + "<title class=\"- topic/title \">Release 1</title>"
+                + "<shortdesc class=\"- topic/shortdesc \">The first one.</shortdesc>"
+                + "<refbody class=\"- topic/body reference/refbody \"><p class=\"- topic/p \">Hello.</p></refbody>"
+                + "</reference></reference>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode notes = findTopic(nodes, "notes");
+        assertEquals("Release notes", notes.title, "the root keeps its own title");
+        assertEquals("Release 2 outputFile.base is deprecated. Fixes Bug 42. Release 1 The first one. Hello.",
+                notes.body);
+    }
+
+    @Test
+    void keyrefsResolveInTheKeyScopeOfTheTopicrefParentScopeFirst(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/old.dita", "topics/new.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<keydef keys=\"shared\"><topicmeta><keywords><keyword>Root</keyword></keywords></topicmeta></keydef>"
+                + "<topicref href=\"topics/new.dita\"/>"
+                + "<topicgroup keyscope=\"legacy\">"
+                + "<keydef keys=\"product\"><topicmeta><keywords><keyword>Classic</keyword></keywords></topicmeta></keydef>"
+                + "<keydef keys=\"shared\"><topicmeta><keywords><keyword>Legacy</keyword></keywords></topicmeta></keydef>"
+                + "<topicref href=\"topics/old.dita\"/></topicgroup></map>");
+        String keywords = "<keyword keyref=\"product\"/><keyword keyref=\"shared\"/><keyword keyref=\"legacy.product\"/>";
+        write(tempDir, "topics/old.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"old\"><title>Old</title><body><p>" + keywords + "</p></body></topic>");
+        write(tempDir, "topics/new.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"new\"><title>New</title><body><p>" + keywords + "</p></body></topic>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        // In the legacy scope, product is the scope's own key, and shared
+        // is the root's: a parent scope's definition takes precedence.
+        assertEquals(Set.of("legacy.product", "shared"), findTopic(nodes, "old").keyrefs);
+        // In the root scope, a bare product is defined nowhere.
+        assertEquals(Set.of("product", "shared", "legacy.product"), findTopic(nodes, "new").keyrefs);
+    }
+
+    @Test
+    void aGlossentrysTextIsItsDefinitionAndItsGlossBody(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/api.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title><topicref href=\"topics/api.dita\"/></map>");
+        write(tempDir, "topics/api.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<glossentry id=\"api\" class=\"- topic/topic concept/concept glossentry/glossentry \">"
+                + "<glossterm class=\"- topic/title concept/title glossentry/glossterm \">API</glossterm>"
+                + "<glossdef class=\"- topic/abstract concept/abstract glossentry/glossdef \">Application programming interface.</glossdef>"
+                + "<glossBody class=\"- topic/body concept/conbody glossentry/glossBody \">"
+                + "<glossUsage class=\"- topic/note concept/note glossentry/glossUsage \">Spell it out first.</glossUsage>"
+                + "</glossBody></glossentry>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        assertEquals("Application programming interface. Spell it out first.", findTopic(nodes, "api").body);
+    }
+
+    @Test
+    void nothingPointsAtASkippedDraft(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/draft.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"/><topicref href=\"topics/draft.dita\" keys=\"wip\"/></map>");
+        write(tempDir, "topics/a.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"a\"><title>A</title><body><p><xref href=\"draft.dita\">WIP</xref></p></body></topic>");
+        write(tempDir, "topics/draft.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"draft\" status=\"draft\"><title>Draft</title><body><p>Soon.</p></body></topic>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(List.of("a"), map.links.stream().map(l -> l.target).toList());
+        assertTrue(findTopic(nodes, "a").links.isEmpty(), "a: " + findTopic(nodes, "a").links);
+        assertEquals("wip", map.keyDefs.get(0).name);
+        assertNull(map.keyDefs.get(0).target, "the key's topic is not exported");
+    }
+
+    @Test
+    void aKeydefIsResourceOnlyByDefaultEvenWithoutClass(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/x.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"/>"
+                + "<keydef keys=\"x\" href=\"topics/x.dita\"/>"
+                + "<keydef keys=\"v\"><topicmeta><navtitle>Variable</navtitle></topicmeta></keydef></map>");
+        write(tempDir, "topics/a.dita", topicXml("a", "A"));
+        write(tempDir, "topics/x.dita", topicXml("x", "X"));
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(List.of("a"), map.links.stream().map(l -> l.target).toList(), "a keydef is no TOC entry");
+        assertEquals("resource-only", findTopic(nodes, "x").processingRole);
+        assertTrue(nodes.stream().noneMatch(n -> n instanceof TopicNode && "topichead".equals(((TopicNode) n).topicType)),
+                "a text keydef is no heading");
+        assertEquals(List.of("x", "v"), map.keyDefs.stream().map(k -> k.name).toList());
+    }
+
+    @Test
+    void keysAreRecordedBeyondTheDepthLimitAndInRelationshipTables(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/b.dita", "topics/c.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"><topicref href=\"topics/b.dita\" keys=\"deep\"/></topicref>"
+                + "<reltable><relrow><relcell><topicref href=\"topics/c.dita\" keys=\"related\"/></relcell></relrow></reltable>"
+                + "</map>");
+        for (String id : List.of("a", "b", "c")) {
+            write(tempDir, "topics/" + id + ".dita", topicXml(id, id.toUpperCase()));
+        }
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, 1, msg -> { }, msg -> { }).extract();
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(List.of("deep", "related"), map.keyDefs.stream().map(k -> k.name).toList());
+        assertEquals(List.of("b", "c"), map.keyDefs.stream().map(k -> k.target).toList());
+        assertTrue(findTopic(nodes, "a").links.isEmpty(), "depth 1: a contains nothing");
+    }
+
+    @Test
+    void aRelationshipTableLinkThroughAKeyUsesThatKeyAndAGeneratedDescriptionAddsNothing(@TempDir Path tempDir)
+            throws Exception {
+        // DITA-OT 4.4.1 drops the reltable topicref's @keyref from the link
+        // it generates, but keeps the topicref's xtrf/xtrc, and copies the
+        // target's shortdesc, with the target's own xref and keyword, into
+        // the link (dita-ot/docs: topics/ant.dita, key ant-manual).
+        String reltable = "file:/src/reltable.ditamap";
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/b.dita", "topics/c.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"/><topicref href=\"topics/b.dita\" keys=\"b-key\"/>"
+                + "<topicref href=\"topics/c.dita\" keys=\"c-key\"/>"
+                + "<keydef keys=\"talk\" href=\"https://example.com/talk\" scope=\"external\" format=\"html\"/>"
+                + "<reltable><relrow>"
+                + "<relcell><topicref href=\"topics/a.dita\" xtrf=\"" + reltable + "\" xtrc=\"topicref:1;5:10\"/></relcell>"
+                + "<relcell>"
+                + "<topicref keyref=\"talk\" href=\"https://example.com/talk\" scope=\"external\" format=\"html\""
+                + " xtrf=\"" + reltable + "\" xtrc=\"topicref:2;6:10\"/>"
+                + "<topicref keyref=\"b-key\" href=\"topics/b.dita\" xtrf=\"" + reltable + "\" xtrc=\"topicref:3;7:10\"/>"
+                + "</relcell></relrow></reltable></map>");
+        write(tempDir, "topics/a.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"a\"><title>A</title><conbody><p>A content.</p></conbody>"
+                + "<related-links><linkpool xtrf=\"" + reltable + "\" xtrc=\"topicref:1;5:10\">"
+                + "<link class=\"- topic/link \" href=\"https://example.com/talk\" role=\"friend\" scope=\"external\""
+                + " format=\"html\" xtrf=\"" + reltable + "\" xtrc=\"topicref:2;6:10\">"
+                + "<linktext class=\"- topic/linktext \">Talk</linktext></link>"
+                + "<link class=\"- topic/link \" href=\"b.dita\" role=\"friend\" scope=\"local\" format=\"dita\""
+                + " xtrf=\"" + reltable + "\" xtrc=\"topicref:3;7:10\">"
+                + "<linktext class=\"- topic/linktext \">B</linktext>"
+                + "<desc class=\"- topic/desc \">About B, see <xref class=\"- topic/xref \" href=\"c.dita\""
+                + " keyref=\"c-key\">C</xref> and <keyword class=\"- topic/keyword \" keyref=\"product\"/>.</desc>"
+                + "</link></linkpool></related-links></concept>");
+        // b links the same URL in its prose, without the key; the reltable
+        // link back to a went through no key.
+        write(tempDir, "topics/b.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"b\"><title>B</title><conbody><p>See <xref href=\"https://example.com/talk\""
+                + " scope=\"external\" format=\"html\">the talk</xref>.</p></conbody>"
+                + "<related-links><linkpool xtrf=\"" + reltable + "\" xtrc=\"topicref:3;7:10\">"
+                + "<link class=\"- topic/link \" href=\"a.dita\" role=\"friend\" scope=\"local\" format=\"dita\""
+                + " xtrf=\"" + reltable + "\" xtrc=\"topicref:1;5:10\"/>"
+                + "</linkpool></related-links></concept>");
+        write(tempDir, "topics/c.dita", topicXml("c", "C"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+        assertTrue(warnings.isEmpty(), "warnings: " + warnings);
+
+        TopicNode a = findTopic(nodes, "a");
+        assertEquals(Map.of("https://example.com/talk", "talk"), a.externalLinks);
+        assertEquals(Set.of("talk", "b-key"), a.keyrefs, "the description's c-key and product are b's");
+        assertEquals(List.of("references->b"), a.links.stream().map(l -> l.relation + "->" + l.target).toList());
+
+        TopicNode b = findTopic(nodes, "b");
+        assertNull(b.externalLinks.get("https://example.com/talk"), "b hard-codes the URL");
+        assertTrue(b.keyrefs.isEmpty(), "b: " + b.keyrefs);
+        assertEquals(List.of("references->a"), b.links.stream().map(l -> l.relation + "->" + l.target).toList());
+    }
+
+    @Test
+    void aTopicNamedLikeTheMapGetsAnIdOfItsOwn(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/guide.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title><topicref href=\"topics/guide.dita\"/></map>");
+        write(tempDir, "topics/guide.dita", topicXml("user-guide", "About this guide"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+
+        assertEquals("About this guide", findTopic(nodes, "user-guide--topics-guide.dita").title);
+        assertTrue(warnings.stream().anyMatch(w -> w.startsWith("DITA2GRAPH070W")), "warnings: " + warnings);
     }
 
     private static String jobXml(String... topicPaths) {
