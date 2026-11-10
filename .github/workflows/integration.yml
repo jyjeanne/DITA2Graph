@@ -280,6 +280,15 @@ jobs:
               # direct child of user-guide), not spliced under intro at
               # the anchor's actual position (sample-docs-mapref/README.md).
               ('user-guide', 'spliced', 'contains'),
+              # Keys (phase 4): the base map defines those of the submap
+              # too (no keyscope, so one root scope), but not nav.ditamap's
+              # nav-topic-concept, which a navref never brings in.
+              ('user-guide', 'key:intro-concept', 'defines-key'),
+              ('user-guide', 'key:after-concept', 'defines-key'),
+              ('user-guide', 'key:spliced-concept', 'defines-key'),
+              ('key:intro-concept', 'intro', 'key-target'),
+              ('key:after-concept', 'after', 'key-target'),
+              ('key:spliced-concept', 'spliced', 'key-target'),
           }
           assert edges == expected, f'edges did not match: {edges}'
           print('mapref/anchorref composition OK:', edges)
