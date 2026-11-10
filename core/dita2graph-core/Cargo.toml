@@ -28,5 +28,8 @@ tokenizers.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
+# Parses the RDF export back in tests (src/rdf.rs); the export itself is
+# hand-written Turtle and needs no RDF library.
+oxttl = "0.2"
 tempfile = "3"
 toml.workspace = true

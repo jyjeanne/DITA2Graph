@@ -233,6 +233,8 @@ mod tests {
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
                 resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
@@ -259,6 +261,8 @@ mod tests {
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
                 resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -335,6 +339,8 @@ mod tests {
             uicontrols: vec![],
             cmd_uicontrols: vec![],
             resolved_body: None,
+            processing_role: None,
+            dita_class: None,
             source_file: "topics/configuration.dita".into(),
             links: vec![],
         })];

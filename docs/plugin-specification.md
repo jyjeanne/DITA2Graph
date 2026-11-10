@@ -261,8 +261,10 @@ Key parameters:
 | `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1). **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --emit-graph-json`, verified against a live DITA-OT 4.4 run |
 | `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
 | `args.dita2graph.include-drafts` | `false` | Include topics flagged `status="draft"` |
+| `args.dita2graph.rdf` | `false` | Whether to also write the graph as RDF under `rdf/` (§2.4): `graph.ttl`, the `d2g` ontology and its SHACL shapes ([semantic-model.md](semantic-model.md)). Forwarded to `dita2graph-core build --emit-rdf` |
+| `args.dita2graph.rdf.base` | *(none)* | Base IRI of the RDF export's nodes, e.g. `https://docs.example.com/user-guide/`. Without it the IRIs use the placeholder `https://dita2graph.invalid/<map id>/` and `DITA2GRAPH083W` is logged. Forwarded to `--rdf-base` |
 
-All five parameters above are declared as `<param>` children of the
+All seven parameters above are declared as `<param>` children of the
 `dita2graph` `<transtype>` in `plugin.xml`, required for DITA-OT's own
 CLI parser to accept a `--args.dita2graph.*` override at all — a real,
 previously-unverified gap, not just a documentation nicety: confirmed
@@ -295,6 +297,10 @@ output/
  │   ├── chunks.jsonl           # One enriched, plain-text record per topic
  │   ├── embeddings.jsonl       # Node-level embeddings (§13.1, opt-in)
  │   └── metadata.json
+ ├── rdf/                     # The same graph as RDF (opt-in, args.dita2graph.rdf, semantic-model.md)
+ │   ├── graph.ttl              # Nodes, edges and provenance in Turtle
+ │   ├── ontology.ttl           # The d2g vocabulary (OWL 2 RL)
+ │   └── shapes.ttl             # The SHACL shapes a graph.ttl must satisfy
  └── mcp/
      ├── mcp-server.toml    # MCP server configuration bound to okf/ (+ graph.db when built)
      └── manifest.json      # Declared resources & tools (see section 5)
@@ -330,7 +336,10 @@ is written only when `args.dita2graph.mcp=true` (§2.3), and only as
 anything; a `manifest.json` would describe declared resources/tools the
 way §5.1 describes them, but `dita2graph-mcp` answers `tools/list`
 directly at runtime instead (§5.2) and doesn't implement resources at
-all.
+all. `rdf/` is written only when `args.dita2graph.rdf=true`, from the same
+normalized model, and goes through the same secret scan as `rag/` (§6.4);
+like `graph.db`, a later build without it removes the export's files, so
+`rdf/` never describes an older graph than `okf/`.
 
 ### 2.5 Error handling, logging, and exit codes
 
@@ -354,6 +363,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
   | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
   | `DITA2GRAPH071I` | Info | A `copy-to` copy carries its source topic's id — expected, not a warning. The source keeps its id, the copy's node gets the suffixed one, is the node its topicref contains, and derives from the source through `generated-from` (finding 19). |
+  | `DITA2GRAPH083W` | Warning | `args.dita2graph.rdf=true` without `args.dita2graph.rdf.base`: the RDF export's IRIs sit under the reserved `https://dita2graph.invalid/<map id>/` and are not meant to be published or merged with other graphs ([semantic-model.md](semantic-model.md)). |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);
@@ -447,6 +457,7 @@ versioned on its own.
   "title": "Installing Product",
   "shortdesc": "Steps to install the product in a production environment.",
   "body": "Download the installer package for your platform. Run the installer and follow the on-screen prompts. Verify the installation by checking the product version.",
+  "ditaClass": "- topic/topic task/task",
   "audience": ["admin"],
   "product": ["enterprise"],
   "keys": ["install-task"],
@@ -463,6 +474,15 @@ versioned on its own.
   ]
 }
 ```
+
+Two optional fields describe a topic beyond its type, and are omitted
+when they have nothing to say: `ditaClass`, the root element's `@class`
+(whitespace-normalized), which names a specialization the topic type
+folds away; and `processingRole`, `"resource-only"` when every topicref
+naming the topic is resource-only (a reuse warehouse, a key target), so
+the map never publishes it in the table of contents. Both reach the RDF
+export (`d2g:ditaClass`, `d2g:processingRole`); the OKF bundle does not
+use them yet. An older model without them reads the same as before.
 
 ### 3.3 Core engine responsibilities
 
@@ -585,6 +605,15 @@ dita2graph-core query \
 
 dita2graph-core validate \
   --bundle output/okf   # runs okf-validator conformance checks (§6.4, §10)
+
+# Also write the graph as RDF (rdf/graph.ttl + ontology + SHACL shapes,
+# semantic-model.md). SOURCE_DATE_EPOCH, when set, fixes the build time
+# recorded in the export (and the rest of the bundle) for reproducible output.
+dita2graph-core build \
+  --input output/normalized-model.json \
+  --output output/ \
+  --emit-rdf true \
+  --rdf-base https://docs.example.com/user-guide/
 ```
 
 ---

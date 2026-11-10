@@ -16,6 +16,8 @@ Component, class, activity, and sequence diagrams of the system:
 A complete install-to-query walkthrough, on both the bundled sample
 project and your own existing DITA project:
 **[`docs/tutorial.md`](docs/tutorial.md)**.
+The optional RDF export, its `d2g` ontology and SHACL shapes:
+**[`docs/semantic-model.md`](docs/semantic-model.md)**.
 
 ## Status
 
@@ -28,7 +30,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
 | `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16) |
-| `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all five, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
+| `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all seven, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
 | `sample-docs-nested/` | A fixture exercising nested `topicref`/`topichead`/`topicgroup` and the `related-links` exclusion (finding 11) |
@@ -39,6 +41,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | Licensing | Decided and shipped: dual **MIT OR Apache-2.0** across the whole repo (`LICENSE`, `NOTICE`) |
 | Hybrid graph+RAG architecture (§13.1) | Done, opt-in: body-text extraction, `rag/chunks.jsonl` + `rag/metadata.json` (same single pass as `okf/`), `search_content` (graph-narrowed, keyword-frequency ranking blended with cosine similarity when a local ONNX embedding model is configured), `analyze_impact` (reverse, transitive graph traversal with a text excerpt per affected concept), and node-level embeddings (`rag/embeddings.jsonl`, `--embedding-model`/`--embedding-tokenizer`, bring-your-own ONNX model). Still open: a real-model accuracy benchmark against a regression corpus, and the heavier "fold embeddings into the OKF bundle format itself" convergence direction |
 | SQLite query-index storage (§7/§3.3) | Done, opt-in: `dita2graph-core build --store sqlite` writes `graph.db`, an indexed mirror of `graph.json`'s nodes/edges. Both readers use it when present: `dita2graph-core query --store <path>` (a `graph.db` file directly, or a bundle directory's `graph.json`, unchanged default) and `dita2graph-mcp`'s `BundleReader`, which prefers `graph.db` over `graph.json` whenever it exists (verified against a real server with `graph.json` deleted afterward). `run_build` removes a leftover `graph.db` from an earlier `--store sqlite` build when a later rebuild omits it, so its presence stays a reliable signal for both readers. Still open: RocksDB storage |
+| RDF export ([`docs/semantic-model.md`](docs/semantic-model.md)) | Done, opt-in (`args.dita2graph.rdf=true`, `--emit-rdf true`): `rdf/graph.ttl` describes the same graph with the `d2g` vocabulary (OWL 2 RL, `core/dita2graph-core/ontology/d2g.ttl`), next to the ontology and the SHACL shapes it must satisfy (`d2g-shapes.ttl`). Stable IRIs on a configurable base (`args.dita2graph.rdf.base`), reproducible output (`SOURCE_DATE_EPOCH`), secret-scanned like `rag/`. CI validates a golden export, a deliberately broken graph and every fixture with pySHACL, and the ontology's OWL 2 RL profile with ROBOT; both benchmark corpora validate without a violation. Still open: keys, external links, `coderef`, `copyOf` and the prerequisite sense of `requires` in the export, and a SHACL check inside the build itself |
 | Incremental rebuild (§3.3) | Done: a second `build` against unchanged input rewrites nothing unnecessary. `build-state.json` records a per-id fingerprint (content hash + the title/subdirectory a linking topic's rendered file also depends on) so an unchanged topic's `okf/*.md` file keeps its old content and timestamp instead of being rewritten every single build; when embeddings are configured, a topic whose exact chunk text and model are unchanged reuses its cached vector instead of another ONNX inference call. `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten in full — cheap, and must always reflect the complete current set. Verified end to end through the real CLI (reported as `(N unchanged, skipped)`/`(N reused, ...)`), including the correctness case where a topic's own content is untouched but a topic it links to was renamed |
 
 See `docs/dev/phase-0-findings.md` for what's still narrower than the
@@ -231,6 +234,14 @@ cat gradle-build/build/dita2graph/rag/chunks.jsonl
   --store gradle-build/build/dita2graph/graph.db \
   --topic installing-product --relation requires
 
+# Optional: also write the graph as RDF (rdf/graph.ttl + the d2g ontology
+# + its SHACL shapes, docs/semantic-model.md), then validate it
+./target/release/dita2graph-core build \
+  --input <normalized-model.json> --output gradle-build/build/dita2graph \
+  --emit-rdf true --rdf-base https://docs.example.com/user-guide/
+pyshacl -s gradle-build/build/dita2graph/rdf/shapes.ttl -e gradle-build/build/dita2graph/rdf/ontology.ttl \
+  -i none -w -f human gradle-build/build/dita2graph/rdf/graph.ttl
+
 # Incremental rebuild needs no flag -- run the same build again with
 # unchanged input and the CLI output reports what got skipped:
 #   wrote 0 topics, 0 maps, 5 edges to .../okf (3 unchanged, skipped)
@@ -330,7 +341,9 @@ Roadmap.md                      # phase-by-phase status and what's next
 docs/plugin-specification.md    # design spec, source of truth
 docs/architecture.md            # component/class/activity/sequence diagrams
 docs/dev/phase-0-findings.md    # spike results and decisions made from them
-core/dita2graph-core/           # Rust: normalized model, OKF writer, CLI (§3)
+docs/semantic-model.md          # RDF export: d2g vocabulary, IRIs, SHACL shapes
+core/dita2graph-core/           # Rust: normalized model, OKF writer, RDF export, CLI (§3)
+core/dita2graph-core/ontology/  # d2g ontology (OWL 2 RL) and SHACL shapes, embedded in the binary
 mcp/dita2graph-mcp/             # Rust: MCP server (§5)
 plugin/org.dita.dita2graph/     # DITA-OT plugin: plugin.xml/build.xml/cfg (§2)
 plugin/org.dita.dita2graph/java # Java: ExtractTask, builds lib/dita2graph-core.jar

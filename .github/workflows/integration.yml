@@ -369,6 +369,72 @@ jobs:
           print('depth=1 correctly omitted the nested edge:', edges)
           "
 
+      # RDF export (docs/semantic-model.md): pySHACL validates graphs
+      # against the d2g shapes, SHACL-SPARQL constraints included, and
+      # ROBOT checks that the ontology stays within OWL 2 RL.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pySHACL
+        run: python -m pip install pyshacl==0.30.1
+
+      - name: Confirm the shapes accept the golden RDF graph and reject a broken one
+        run: |
+          set -euo pipefail
+          ONT=core/dita2graph-core/ontology
+          DATA=core/dita2graph-core/tests/data
+          # The golden export (tests/rdf_export.rs) conforms without a
+          # single warning.
+          pyshacl -s $ONT/d2g-shapes.ttl -e $ONT/d2g.ttl -i none -f human $DATA/rdf-model.graph.ttl
+          # A graph breaking one rule per node must not conform, and each
+          # SPARQL rule must report: a SHACL Core-only engine would skip
+          # them without a word.
+          if pyshacl -s $ONT/d2g-shapes.ttl -e $ONT/d2g.ttl -i none -f human \
+               $DATA/rdf-invalid.ttl > /tmp/rdf-invalid.txt; then
+            echo "::error::rdf-invalid.ttl conforms to the d2g shapes"
+            exit 1
+          fi
+          for rule in 'loops back' 'references itself' 'without the reuse' 'does not belong' 'must be relative'; do
+            grep -q "$rule" /tmp/rdf-invalid.txt || { echo "::error::no '$rule' violation reported"; exit 1; }
+          done
+
+      - name: Confirm args.dita2graph.rdf exports each fixture as a graph the shapes accept
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+          SOURCE_DATE_EPOCH: "0"
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          for fixture in sample-docs sample-docs-nested sample-docs-mapref sample-docs-relations; do
+            out=/tmp/rdf-$fixture
+            rm -rf "$out"
+            "$DITA_BIN" --input=$fixture/user-guide.ditamap --format=dita2graph --output="$out" \
+              --args.dita2graph.rdf=true --args.dita2graph.rdf.base=https://example.org/$fixture/
+            for file in graph.ttl ontology.ttl shapes.ttl; do test -f "$out/rdf/$file"; done
+            grep -q "<https://example.org/$fixture/map/user-guide>" "$out/rdf/graph.ttl"
+            # Violations fail the step; warnings (a published topic
+            # outside the table of contents...) are only printed.
+            pyshacl -s "$out/rdf/shapes.ttl" -e "$out/rdf/ontology.ttl" -i none -w -f human "$out/rdf/graph.ttl"
+          done
+          # Not asked for: no rdf/ at all (the mcp step's default build).
+          test ! -d /tmp/mcp-default-test/rdf
+          # No base: placeholder IRIs, and DITA2GRAPH083W says so.
+          rm -rf /tmp/rdf-nobase
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/rdf-nobase --args.dita2graph.rdf=true -v > /tmp/rdf-nobase.log 2>&1
+          grep -q 'DITA2GRAPH083W' /tmp/rdf-nobase.log
+          grep -q '<https://dita2graph.invalid/user-guide/map/user-guide>' /tmp/rdf-nobase/rdf/graph.ttl
+
+      - name: Confirm the d2g ontology stays within the OWL 2 RL profile
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/robot.jar https://github.com/ontodev/robot/releases/download/v1.9.11/robot.jar
+          echo "53cd275c8e4c0dad1fc2c1c34174876795cd7d6b6926e1444adcbb0cb3c7ab26  /tmp/robot.jar" | sha256sum -c -
+          java -jar /tmp/robot.jar validate-profile --profile RL \
+            --input core/dita2graph-core/ontology/d2g.ttl --output /tmp/d2g-profile.txt
+          cat /tmp/d2g-profile.txt
+
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build
         run: |

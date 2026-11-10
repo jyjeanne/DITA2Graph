@@ -33,4 +33,8 @@
     <reason>A &lt;navref&gt; map-composition element was found but is not resolved by DITA-OT for this transtype and is not independently parsed by this plugin.</reason>
     <response>The referenced navigation map's content is excluded from the graph. Restructure the source to use topicref/mapref instead if that content should appear.</response>
   </message>
+  <message id="DITA2GRAPH083W" type="warn">
+    <reason>The RDF export has no base IRI: its node IRIs use the placeholder https://dita2graph.invalid/&lt;map id&gt;/.</reason>
+    <response>Set --args.dita2graph.rdf.base to a namespace you control before publishing rdf/graph.ttl or loading it next to other graphs.</response>
+  </message>
 </messages>

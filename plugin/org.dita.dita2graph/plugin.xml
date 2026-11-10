@@ -49,6 +49,11 @@
       <val>true</val>
       <val default="true">false</val>
     </param>
+    <param name="args.dita2graph.rdf" desc="Whether to also write the graph as RDF: rdf/graph.ttl, with the d2g ontology (rdf/ontology.ttl) and its SHACL shapes (rdf/shapes.ttl) beside it (docs/semantic-model.md)." type="enum">
+      <val>true</val>
+      <val default="true">false</val>
+    </param>
+    <param name="args.dita2graph.rdf.base" desc="Base IRI of the RDF export's nodes, e.g. https://docs.example.com/user-guide/. Without it, the IRIs use the placeholder https://dita2graph.invalid/&lt;map id&gt;/ and DITA2GRAPH083W is logged." type="string"/>
   </transtype>
 
   <!-- Imports build.xml's dita2graph target into the Ant build, the same

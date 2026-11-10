@@ -1,0 +1,243 @@
+# SHACL shapes checking every graph DITA2Graph exports
+# (docs/semantic-model.md). Validated in a closed world: what the export
+# does not state is absent. The export writes the triples these shapes
+# rely on (parent types, both directions of an inverse, the super-property
+# of a sub-property), so they also work on rdf/graph.ttl alone; the
+# validator still loads the ontology beside it.
+#
+# Severities: sh:Violation fails a build, sh:Warning and sh:Info are
+# reported only. The SPARQL-based constraints (sh:sparql) are part of
+# SHACL-SPARQL: a SHACL Core-only engine ignores them without an error.
+
+@prefix d2g:     <https://w3id.org/dita2graph/ns#> .
+@prefix sh:      <http://www.w3.org/ns/shacl#> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+
+<https://w3id.org/dita2graph/shapes>
+    a owl:Ontology ;
+    owl:versionInfo "0.1.0" ;
+    rdfs:label "DITA2Graph shapes"@en ;
+    rdfs:seeAlso <https://w3id.org/dita2graph/ns> ;
+    sh:declare [
+        sh:prefix "d2g" ;
+        sh:namespace "https://w3id.org/dita2graph/ns#"^^xsd:anyURI
+    ] .
+
+# Every node has one identifier, one non-empty title, one source file and
+# one OKF concept file.
+d2g:NodeShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:Node ;
+    sh:property [
+        sh:path dcterms:identifier ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1
+    ] ;
+    sh:property [
+        sh:path dcterms:title ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:minLength 1
+    ] ;
+    sh:property [
+        sh:path d2g:sourceFile ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:class d2g:SourceFile
+    ] ;
+    sh:property [
+        sh:path d2g:okfConcept ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:datatype xsd:string
+    ] .
+
+# A source file's path is relative: no leading slash or backslash, no
+# drive letter, no URL scheme (the same rule as OKF's resource field).
+d2g:SourceFileShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:SourceFile ;
+    sh:property [
+        sh:path d2g:path ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^[^/\\\\:][^:]*$" ;
+        sh:message "A source file path must be relative" ;
+    ] .
+
+# contains: from the map, a topic or a heading, to a topic or a heading,
+# without a cycle.
+d2g:ContainsShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:contains ;
+    sh:or (
+        [ sh:class d2g:Map ]
+        [ sh:class d2g:Topic ]
+        [ sh:class d2g:TopicHead ]
+    ) ;
+    sh:property [
+        sh:path d2g:contains ;
+        sh:or ( [ sh:class d2g:Topic ] [ sh:class d2g:TopicHead ] )
+    ] ;
+    sh:sparql [
+        sh:message "The table of contents loops back to this node" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this WHERE { $this d2g:contains+ $this }
+        """
+    ] .
+
+# A published topic that is not resource-only has a parent in the table of
+# contents. A warning: a topic merged by chunk="to-content" or published
+# only through links has none, and each case is worth a look.
+d2g:PublishedTopicShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:Topic ;
+    sh:severity sh:Warning ;
+    sh:message "Published topic without a parent in the table of contents" ;
+    sh:or (
+        [ sh:path d2g:processingRole ; sh:hasValue "resource-only" ]
+        [ sh:path [ sh:inversePath d2g:contains ] ; sh:minCount 1 ]
+    ) .
+
+# references: the target exists and is not the source.
+d2g:ReferencesShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:references ;
+    sh:property [
+        sh:path d2g:references ;
+        sh:class d2g:Node
+    ] ;
+    sh:sparql [
+        sh:message "A topic references itself" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this WHERE { $this d2g:references $this }
+        """
+    ] .
+
+# requires: from a task, to a topic, without a cycle of prerequisites.
+d2g:RequiresShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:requires ;
+    sh:class d2g:Task ;
+    sh:property [
+        sh:path d2g:requires ;
+        sh:class d2g:Topic
+    ] ;
+    sh:sparql [
+        sh:message "Prerequisites loop back to this task" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this WHERE { $this d2g:requires+ $this }
+        """
+    ] .
+
+# appliesTo: from a task to a reference.
+d2g:AppliesToShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:appliesTo ;
+    sh:class d2g:Task ;
+    sh:property [
+        sh:path d2g:appliesTo ;
+        sh:class d2g:Reference
+    ] .
+
+# generatedFrom: between topics, always qualified by a reuse.
+d2g:GeneratedFromShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:generatedFrom ;
+    sh:property [
+        sh:path d2g:generatedFrom ;
+        sh:class d2g:Topic
+    ] ;
+    sh:sparql [
+        sh:message "A generatedFrom without the reuse that names its fragments" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this ?value WHERE {
+                $this d2g:generatedFrom ?value .
+                FILTER NOT EXISTS { $this d2g:qualifiedReuse/d2g:reuseSource ?value }
+            }
+        """
+    ] .
+
+# A reuse has one source and at least one fragment, each fragment
+# belonging to that source.
+d2g:ReuseShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:Reuse ;
+    sh:property [
+        sh:path d2g:reuseSource ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:class d2g:Topic
+    ] ;
+    sh:property [
+        sh:path d2g:reusedFragment ;
+        sh:minCount 1 ;
+        sh:class d2g:Fragment
+    ] ;
+    sh:sparql [
+        sh:message "A reused fragment does not belong to the reuse's source" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this ?value WHERE {
+                $this d2g:reusedFragment ?value ; d2g:reuseSource ?source .
+                FILTER NOT EXISTS { ?value d2g:fragmentOf ?source }
+            }
+        """
+    ] .
+
+d2g:FragmentShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:Fragment ;
+    sh:property [
+        sh:path d2g:fragmentOf ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:class d2g:Topic
+    ] ;
+    sh:property [
+        sh:path dcterms:identifier ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:minLength 1
+    ] .
+
+# A key has a name, a map that defines it and a target.
+d2g:KeyShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:Key ;
+    sh:property [ sh:path d2g:keyName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path d2g:definedIn ; sh:minCount 1 ; sh:maxCount 1 ; sh:class d2g:Map ] ;
+    sh:property [ sh:path d2g:keyTarget ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+# Every key used is defined.
+d2g:UsedKeyShape
+    a sh:NodeShape ;
+    sh:targetObjectsOf d2g:usesKey ;
+    sh:class d2g:Key ;
+    sh:property [ sh:path d2g:definedIn ; sh:minCount 1 ] .
+
+# relatedTo holds both ways.
+d2g:RelatedToShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf d2g:relatedTo ;
+    sh:severity sh:Warning ;
+    sh:sparql [
+        sh:message "relatedTo is stated in one direction only" ;
+        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
+        sh:select """
+            SELECT $this ?value WHERE {
+                $this d2g:relatedTo ?value .
+                FILTER NOT EXISTS { ?value d2g:relatedTo $this }
+            }
+        """
+    ] .
+
+# An external resource is an absolute http(s) URL.
+d2g:ExternalResourceShape
+    a sh:NodeShape ;
+    sh:targetClass d2g:ExternalResource ;
+    sh:severity sh:Warning ;
+    sh:nodeKind sh:IRI ;
+    sh:pattern "^https?://" .

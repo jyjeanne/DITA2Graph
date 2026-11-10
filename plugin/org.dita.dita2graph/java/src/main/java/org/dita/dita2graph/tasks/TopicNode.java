@@ -32,6 +32,14 @@ final class TopicNode {
      * when the body reuses something; omitted from JSON otherwise.
      */
     String resolvedBody;
+    /**
+     * {@code "resource-only"} when every topicref naming the topic is
+     * resource-only (a reuse warehouse, a key target): the map never
+     * publishes it in the table of contents. Null, and omitted, otherwise.
+     */
+    String processingRole;
+    /** The root element's DITA {@code @class}, whitespace-normalized; names the specialization. */
+    String ditaClass;
     final List<String> audience = new ArrayList<>();
     final List<String> product = new ArrayList<>();
     final List<String> keys = new ArrayList<>();
@@ -66,6 +74,12 @@ final class TopicNode {
         }
         if (resolvedBody != null && !resolvedBody.isEmpty()) {
             sb.append(",\"resolvedBody\":").append(Json.string(resolvedBody));
+        }
+        if (processingRole != null) {
+            sb.append(",\"processingRole\":").append(Json.string(processingRole));
+        }
+        if (ditaClass != null) {
+            sb.append(",\"ditaClass\":").append(Json.string(ditaClass));
         }
         sb.append(",\"audience\":").append(Json.stringArray(audience));
         sb.append(",\"product\":").append(Json.stringArray(product));

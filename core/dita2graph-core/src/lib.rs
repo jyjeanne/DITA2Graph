@@ -19,7 +19,9 @@
 //! `graph.json`/`rag/chunks.jsonl`/`graph.db` are still always rewritten
 //! in full every build, since their content must always reflect the
 //! complete current node set regardless. RocksDB storage remains later
-//! Phase 6+ work.
+//! Phase 6+ work. An opt-in RDF export (`rdf.rs`, `build --emit-rdf
+//! true`) writes the same model as Turtle, with the `d2g` ontology and
+//! its SHACL shapes beside it (`docs/semantic-model.md`).
 
 pub mod diagnostics;
 pub mod embeddings;
@@ -28,6 +30,7 @@ pub mod mcp_config;
 pub mod model;
 pub mod okf;
 pub mod rag;
+pub mod rdf;
 pub mod relations;
 pub mod secrets;
 pub mod store;
@@ -39,6 +42,7 @@ pub use mcp_config::write_mcp_config;
 pub use model::{Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType};
 pub use okf::{BundleSummary, write_bundle};
 pub use rag::{RagSummary, write_rag_index};
+pub use rdf::{RdfSummary, write_rdf};
 pub use relations::{infer_applies_to, infer_related_to};
 pub use secrets::{SecretFinding, scan_bundle};
 pub use store::{StoreSummary, query_sqlite_store, read_sqlite_store, write_sqlite_store};

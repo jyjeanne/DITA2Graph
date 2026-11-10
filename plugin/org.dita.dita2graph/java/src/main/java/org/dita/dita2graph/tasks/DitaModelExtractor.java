@@ -192,6 +192,10 @@ final class DitaModelExtractor {
      * the other's whole content.
      */
     private final Set<String> copyPaths = new HashSet<>();
+    /** Temp paths named by a resource-only topicref. */
+    private final Set<String> resourceOnlyTargets = new HashSet<>();
+    /** Temp paths named by a topicref of the table of contents (any depth). */
+    private final Set<String> navigationTargets = new HashSet<>();
 
     DitaModelExtractor(File tempDir, boolean includeDrafts, Consumer<String> warn, Consumer<String> info) {
         this(tempDir, includeDrafts, Integer.MAX_VALUE, warn, info);
@@ -210,6 +214,8 @@ final class DitaModelExtractor {
         String path;
         String format;
         boolean input;
+        /** DITA-OT's own {@code resource-only="true"}, when it writes one. */
+        boolean resourceOnly;
         /** The {@code src} attribute (an absolute {@code file:} URI) -- matches resolved elements' own {@code xtrf} values verbatim (finding 15). */
         String src;
     }
@@ -344,6 +350,8 @@ final class DitaModelExtractor {
         headings.clear();
         headingIdCounts.clear();
         copyPaths.clear();
+        resourceOnlyTargets.clear();
+        navigationTargets.clear();
         jobDitaPaths = new HashSet<>();
         for (JobFile file : files) {
             if ("dita".equals(file.format)) {
@@ -439,6 +447,14 @@ final class DitaModelExtractor {
                 // applies here too).
                 warn.accept("DITA2GRAPH040W: " + file.path + " has unrecognized topic type <"
                         + root.getTagName() + ">; emitting as generic Topic");
+            }
+            String ditaClass = normalizeSpace(root.getAttribute("class"));
+            topic.ditaClass = ditaClass.isEmpty() ? null : ditaClass;
+            // Resource-only only when nothing in the table of contents
+            // names the file too: one navigation topicref publishes it.
+            boolean resourceOnly = file.resourceOnly || resourceOnlyTargets.contains(file.path);
+            if (resourceOnly && !navigationTargets.contains(file.path)) {
+                topic.processingRole = "resource-only";
             }
             topic.title = childText(root, "title", topic.id);
             String shortdesc = directChildText(root, "shortdesc");
@@ -681,6 +697,7 @@ final class DitaModelExtractor {
             f.format = el.getAttribute("format");
             f.src = el.getAttribute("src");
             f.input = "true".equals(el.getAttribute("input"));
+            f.resourceOnly = "true".equals(el.getAttribute("resource-only"));
             files.add(f);
         }
         return files;
@@ -816,9 +833,11 @@ final class DitaModelExtractor {
                         // level for its children, which DITA-OT has
                         // already marked resource-only too unless they
                         // explicitly opt back in.
+                        resourceOnlyTargets.add(targetPath);
                         walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                         break;
                     }
+                    navigationTargets.add(targetPath);
                     containments.add(new RawContainment(containerPath, targetPath));
                     walkMapChildren(child, mapPath, targetPath, level + 1, containments, keysByPath);
                     break;

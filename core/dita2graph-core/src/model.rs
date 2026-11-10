@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// `docs/plugin-specification.md` §3.2 exactly (`{"type": "topic", ...}`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
+// Nearly every node is a topic (a corpus has a handful of maps), so
+// boxing topics to shrink the map variant would cost one allocation per
+// node to save memory on almost none.
+#[allow(clippy::large_enum_variant)]
 pub enum NormalizedNode {
     Topic(NormalizedTopic),
     Map(NormalizedMap),
@@ -90,6 +94,19 @@ pub struct NormalizedTopic {
         skip_serializing_if = "Option::is_none"
     )]
     pub resolved_body: Option<String>,
+    /// `resource-only` when the map uses the topic only as a resource
+    /// (a reuse warehouse, a key target) and never publishes it in the
+    /// table of contents; `None` for a normal topic.
+    #[serde(
+        default,
+        rename = "processingRole",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub processing_role: Option<String>,
+    /// The root element's DITA `@class` (`- topic/topic concept/concept `
+    /// trimmed), which names specializations the topic type folds away.
+    #[serde(default, rename = "ditaClass", skip_serializing_if = "Option::is_none")]
+    pub dita_class: Option<String>,
     #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]

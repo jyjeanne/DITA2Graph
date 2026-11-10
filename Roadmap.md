@@ -557,7 +557,28 @@ state, most-complete first:
    finding 17): `read_topic` (full text, reused fragments in place),
    fragment ids on `generated-from`, relationship-table links as
    `references`, and no `contains` edge for resource-only topicrefs.
-8. **Other extended capabilities** (§13.2, least scoped): multi-map/
+8. **Semantic model: RDF, OWL 2 and SHACL** — 🔄 phases 1 to 3 done,
+   opt-in. `args.dita2graph.rdf=true` (`dita2graph-core build --emit-rdf
+   true`) writes `rdf/graph.ttl`: the same graph described with the `d2g`
+   vocabulary (`core/dita2graph-core/ontology/d2g.ttl`, OWL 2 RL, at
+   `https://w3id.org/dita2graph/ns#`), next to that ontology and the
+   SHACL shapes a graph must satisfy (`d2g-shapes.ttl`). Stable IRIs on
+   `args.dita2graph.rdf.base` (a reserved `.invalid` placeholder plus
+   `DITA2GRAPH083W` without one), parent classes, both directions of
+   `contains` and qualified reuses written out so plain SPARQL and
+   closed-world SHACL need no reasoner, reproducible output with
+   `SOURCE_DATE_EPOCH`. The extractor now also records each topic's
+   `@class` (`ditaClass`) and resource-only role (`processingRole`).
+   CI validates a golden export, a deliberately broken graph (each rule
+   must fire) and every fixture with pySHACL, and the OWL 2 RL profile
+   with ROBOT. Both benchmark corpora validate without a violation; the
+   50 warnings on the Oxygen XML user guide are real cases (46
+   `chunk="to-content"` merges, 3 `copy-to` sources, 1 duplicate id).
+   Reference: [`docs/semantic-model.md`](docs/semantic-model.md). Next:
+   extractor support for keys, external links, `coderef`, `copyOf` and
+   the prerequisite sense of `requires` (phase 4), then a SHACL gate in
+   the build with diagnostics `080E`–`082I` (phase 5).
+9. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
    pages with links back into the graph.

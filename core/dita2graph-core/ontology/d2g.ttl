@@ -1,0 +1,348 @@
+# The d2g vocabulary: classes and properties of the knowledge graph
+# DITA2Graph builds from a DITA publication resolved by DITA-OT
+# (docs/semantic-model.md). Kept within the OWL 2 RL profile: domains and
+# ranges are broad and allow simple inferences; the validity rules live in
+# the SHACL shapes (d2g-shapes.ttl), checked in a closed world.
+
+@prefix d2g:     <https://w3id.org/dita2graph/ns#> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov:    <http://www.w3.org/ns/prov#> .
+@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
+
+<https://w3id.org/dita2graph/ns>
+    a owl:Ontology ;
+    owl:versionIRI <https://w3id.org/dita2graph/ns/0.1.0> ;
+    owl:versionInfo "0.1.0" ;
+    rdfs:label "DITA2Graph vocabulary"@en , "Vocabulaire DITA2Graph"@fr ;
+    rdfs:comment "Classes and properties of the knowledge graph DITA2Graph builds from a DITA publication resolved by DITA-OT."@en ;
+    rdfs:seeAlso <https://github.com/jyjeanne/DITA2Graph> .
+
+# ---------------------------------------------------------------------------
+# Annotation used on every relation of this vocabulary.
+
+d2g:origin
+    a owl:AnnotationProperty ;
+    rdfs:label "origin"@en , "origine"@fr ;
+    rdfs:comment "How DITA2Graph obtains a relation: \"declared\" (written by the author in the DITA source), \"derived\" (read from DITA-OT's resolved output) or \"inferred\" (a heuristic)."@en .
+
+# ---------------------------------------------------------------------------
+# Terms reused from other vocabularies, declared so the ontology stays in
+# OWL 2 RL (Dublin Core and PROV-O publish some of them as plain
+# rdf:Property).
+
+skos:Concept a owl:Class .
+prov:Activity a owl:Class .
+prov:wasDerivedFrom a owl:ObjectProperty .
+prov:wasGeneratedBy a owl:ObjectProperty .
+prov:used a owl:ObjectProperty .
+prov:endedAtTime a owl:DatatypeProperty .
+dcterms:references a owl:ObjectProperty .
+dcterms:identifier a owl:DatatypeProperty .
+dcterms:title a owl:DatatypeProperty .
+dcterms:description a owl:DatatypeProperty .
+
+# ---------------------------------------------------------------------------
+# Classes
+
+d2g:Node
+    a owl:Class ;
+    rdfs:label "Node"@en , "Nœud"@fr ;
+    rdfs:comment "A unit of the publication represented in the graph: the map, a topic or a table-of-contents heading."@en .
+
+d2g:Map
+    a owl:Class ;
+    rdfs:subClassOf d2g:Node ;
+    rdfs:label "Map"@en , "Map"@fr ;
+    rdfs:comment "The input map of the publication (a map or a bookmap)."@en .
+
+d2g:Topic
+    a owl:Class ;
+    rdfs:subClassOf d2g:Node ;
+    rdfs:label "Topic"@en , "Topic"@fr ;
+    rdfs:comment "A published DITA topic; the generic class when it is not one of the specialized types below."@en .
+
+d2g:Concept
+    a owl:Class ;
+    rdfs:subClassOf d2g:Topic ;
+    rdfs:label "Concept"@en , "Concept"@fr ;
+    rdfs:comment "A DITA concept topic."@en .
+
+d2g:Task
+    a owl:Class ;
+    rdfs:subClassOf d2g:Topic ;
+    rdfs:label "Task"@en , "Tâche"@fr ;
+    rdfs:comment "A DITA task topic."@en .
+
+d2g:Reference
+    a owl:Class ;
+    rdfs:subClassOf d2g:Topic ;
+    rdfs:label "Reference"@en , "Référence"@fr ;
+    rdfs:comment "A DITA reference topic."@en .
+
+d2g:GlossEntry
+    a owl:Class ;
+    rdfs:subClassOf d2g:Topic , skos:Concept ;
+    rdfs:label "Glossary entry"@en , "Entrée de glossaire"@fr ;
+    rdfs:comment "A DITA glossentry topic: a defined term, hence also a skos:Concept."@en .
+
+d2g:Troubleshooting
+    a owl:Class ;
+    rdfs:subClassOf d2g:Topic ;
+    rdfs:label "Troubleshooting"@en , "Dépannage"@fr ;
+    rdfs:comment "A DITA troubleshooting topic."@en .
+
+d2g:TopicHead
+    a owl:Class ;
+    rdfs:subClassOf d2g:Node ;
+    rdfs:label "Topic head"@en , "Titre de table des matières"@fr ;
+    rdfs:comment "A titled table-of-contents entry with no topic of its own: a topichead, a navtitle-only bookmap chapter."@en .
+
+d2g:Fragment
+    a owl:Class ;
+    rdfs:label "Fragment"@en , "Fragment"@fr ;
+    rdfs:comment "An element of a topic that other topics reuse, named by its @id (or a fallback name when it has none)."@en .
+
+d2g:Reuse
+    a owl:Class ;
+    rdfs:label "Reuse"@en , "Réutilisation"@fr ;
+    rdfs:comment "One reuse: which topic pulls which fragments from which source topic."@en .
+
+d2g:Key
+    a owl:Class ;
+    rdfs:label "Key"@en , "Clé"@fr ;
+    rdfs:comment "A DITA key, defined in a map within a key scope."@en .
+
+d2g:ExternalResource
+    a owl:Class ;
+    rdfs:label "External resource"@en , "Ressource externe"@fr ;
+    rdfs:comment "A resource outside the corpus, named by its URL."@en .
+
+d2g:SourceFile
+    a owl:Class ;
+    rdfs:label "Source file"@en , "Fichier source"@fr ;
+    rdfs:comment "A file of the DITA source: a topic, a map or an included sample file."@en .
+
+[] a owl:AllDisjointClasses ;
+   owl:members ( d2g:Concept d2g:Task d2g:Reference d2g:GlossEntry d2g:Troubleshooting ) .
+
+[] a owl:AllDisjointClasses ;
+   owl:members ( d2g:Map d2g:Topic d2g:TopicHead ) .
+
+# ---------------------------------------------------------------------------
+# Object properties
+
+d2g:contains
+    a owl:ObjectProperty , owl:AsymmetricProperty , owl:IrreflexiveProperty ;
+    rdfs:label "contains"@en , "contient"@fr ;
+    rdfs:comment "In the published table of contents, the object is a direct child of the subject. Navigation, not dependency."@en ;
+    rdfs:domain d2g:Node ;
+    rdfs:range d2g:Node ;
+    owl:inverseOf d2g:containedIn ;
+    d2g:origin "declared" .
+
+d2g:containedIn
+    a owl:ObjectProperty ;
+    rdfs:label "contained in"@en , "contenu dans"@fr ;
+    rdfs:comment "Inverse of d2g:contains."@en ;
+    d2g:origin "declared" .
+
+d2g:references
+    a owl:ObjectProperty ;
+    rdfs:subPropertyOf dcterms:references ;
+    rdfs:label "references"@en , "renvoie à"@fr ;
+    rdfs:comment "The subject links to the object for the reader to consult; no order is implied. From xref and link, including relationship-table links."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Node ;
+    d2g:origin "declared" .
+
+d2g:requires
+    a owl:ObjectProperty ;
+    rdfs:subPropertyOf d2g:references ;
+    rdfs:label "requires"@en , "demande au préalable"@fr ;
+    rdfs:comment "The subject task can only be done after reading or doing the object: a link in the task's prereq, or a link of the task marked importance=\"required\"."@en ;
+    rdfs:domain d2g:Task ;
+    rdfs:range d2g:Topic ;
+    owl:inverseOf d2g:prerequisiteFor ;
+    d2g:origin "declared" .
+
+d2g:prerequisiteFor
+    a owl:ObjectProperty ;
+    rdfs:label "prerequisite for"@en , "prérequis de"@fr ;
+    rdfs:comment "Inverse of d2g:requires."@en ;
+    d2g:origin "declared" .
+
+d2g:relatedTo
+    a owl:ObjectProperty , owl:SymmetricProperty ;
+    rdfs:label "related to"@en , "lié à"@fr ;
+    rdfs:comment "Both topics are about the same product: a hint, not an author's statement."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Topic ;
+    d2g:origin "inferred" .
+
+d2g:appliesTo
+    a owl:ObjectProperty ;
+    rdfs:label "applies to"@en , "s'applique à"@fr ;
+    rdfs:comment "The task operates a user-interface element the reference describes."@en ;
+    rdfs:domain d2g:Task ;
+    rdfs:range d2g:Reference ;
+    d2g:origin "inferred" .
+
+d2g:generatedFrom
+    a owl:ObjectProperty ;
+    rdfs:subPropertyOf prov:wasDerivedFrom ;
+    rdfs:label "generated from"@en , "reprend du contenu de"@fr ;
+    rdfs:comment "Part of the subject's published content comes from the object, through conref or conkeyref: changing the object changes the subject."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Topic ;
+    d2g:origin "derived" .
+
+d2g:copyOf
+    a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:subPropertyOf d2g:generatedFrom ;
+    rdfs:label "copy of"@en , "copie de"@fr ;
+    rdfs:comment "The subject is a copy-to copy of the object."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Topic ;
+    d2g:origin "derived" .
+
+d2g:qualifiedReuse
+    a owl:ObjectProperty ;
+    rdfs:label "qualified reuse"@en , "réutilisation qualifiée"@fr ;
+    rdfs:comment "Qualifies a d2g:generatedFrom with the fragments it reuses."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Reuse ;
+    d2g:origin "derived" .
+
+d2g:reuseSource
+    a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:label "reuse source"@en , "source de la réutilisation"@fr ;
+    rdfs:domain d2g:Reuse ;
+    rdfs:range d2g:Topic ;
+    d2g:origin "derived" .
+
+d2g:reusedFragment
+    a owl:ObjectProperty ;
+    rdfs:label "reused fragment"@en , "fragment réutilisé"@fr ;
+    rdfs:domain d2g:Reuse ;
+    rdfs:range d2g:Fragment ;
+    d2g:origin "derived" .
+
+d2g:fragmentOf
+    a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:label "fragment of"@en , "fragment de"@fr ;
+    rdfs:comment "The topic that holds the fragment."@en ;
+    rdfs:domain d2g:Fragment ;
+    rdfs:range d2g:Topic ;
+    d2g:origin "derived" .
+
+d2g:definesKey
+    a owl:ObjectProperty ;
+    rdfs:label "defines key"@en , "définit la clé"@fr ;
+    rdfs:domain d2g:Map ;
+    rdfs:range d2g:Key ;
+    owl:inverseOf d2g:definedIn ;
+    d2g:origin "declared" .
+
+d2g:definedIn
+    a owl:ObjectProperty ;
+    rdfs:label "defined in"@en , "définie dans"@fr ;
+    rdfs:comment "Inverse of d2g:definesKey."@en ;
+    d2g:origin "declared" .
+
+d2g:keyTarget
+    a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:label "key target"@en , "cible de la clé"@fr ;
+    rdfs:comment "What the key names: a topic or an external resource. A key's IRI includes its scope, so it has one target."@en ;
+    rdfs:domain d2g:Key ;
+    d2g:origin "declared" .
+
+d2g:usesKey
+    a owl:ObjectProperty ;
+    rdfs:label "uses key"@en , "utilise la clé"@fr ;
+    rdfs:comment "The topic links to or reuses content through the key (keyref, conkeyref)."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:Key ;
+    d2g:origin "declared" .
+
+d2g:linksTo
+    a owl:ObjectProperty ;
+    rdfs:label "links to"@en , "pointe vers"@fr ;
+    rdfs:comment "The topic links to a URL outside the corpus."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:ExternalResource ;
+    d2g:origin "declared" .
+
+d2g:includesCode
+    a owl:ObjectProperty ;
+    rdfs:label "includes code"@en , "inclut le fichier"@fr ;
+    rdfs:comment "The topic shows the content of a sample file (coderef)."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range d2g:SourceFile ;
+    d2g:origin "declared" .
+
+d2g:sourceFile
+    a owl:ObjectProperty , owl:FunctionalProperty ;
+    rdfs:label "source file"@en , "fichier source"@fr ;
+    rdfs:domain d2g:Node ;
+    rdfs:range d2g:SourceFile ;
+    d2g:origin "derived" .
+
+# ---------------------------------------------------------------------------
+# Datatype properties
+
+d2g:audience
+    a owl:DatatypeProperty ;
+    rdfs:label "audience"@en , "public"@fr ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range xsd:string .
+
+d2g:product
+    a owl:DatatypeProperty ;
+    rdfs:label "product"@en , "produit"@fr ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range xsd:string .
+
+d2g:processingRole
+    a owl:DatatypeProperty ;
+    rdfs:label "processing role"@en , "rôle de traitement"@fr ;
+    rdfs:comment "\"resource-only\" when every topicref naming the topic is resource-only: a reuse warehouse or a key target, outside the table of contents."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range xsd:string .
+
+d2g:ditaClass
+    a owl:DatatypeProperty ;
+    rdfs:label "DITA class"@en , "classe DITA"@fr ;
+    rdfs:comment "The full @class value of the topic's root element, which keeps its specialization."@en ;
+    rdfs:domain d2g:Topic ;
+    rdfs:range xsd:string .
+
+d2g:keyName
+    a owl:DatatypeProperty ;
+    rdfs:label "key name"@en , "nom de clé"@fr ;
+    rdfs:domain d2g:Key ;
+    rdfs:range xsd:string .
+
+d2g:path
+    a owl:DatatypeProperty ;
+    rdfs:label "path"@en , "chemin"@fr ;
+    rdfs:comment "The file's path relative to the publication's root, with forward slashes; never absolute."@en ;
+    rdfs:domain d2g:SourceFile ;
+    rdfs:range xsd:string .
+
+d2g:okfConcept
+    a owl:DatatypeProperty ;
+    rdfs:label "OKF concept"@en , "concept OKF"@fr ;
+    rdfs:comment "Path of the node's OKF concept file in the bundle (okf/topics/<id>.md, okf/maps/<id>.md)."@en ;
+    rdfs:domain d2g:Node ;
+    rdfs:range xsd:string .
+
+d2g:generator
+    a owl:DatatypeProperty ;
+    rdfs:label "generator"@en , "générateur"@fr ;
+    rdfs:comment "Name and version of the program that ran the build."@en ;
+    rdfs:domain prov:Activity ;
+    rdfs:range xsd:string .

@@ -686,6 +686,9 @@ class DitaModelExtractorTest {
                 + "<topicref href=\"topics/a.dita\"/>"
                 + "<topicgroup processing-role=\"resource-only\">"
                 + "<topicref href=\"topics/warehouse.dita\" processing-role=\"resource-only\"/>"
+                // a is published above: also naming it as a resource
+                // does not take it out of the table of contents.
+                + "<topicref href=\"topics/a.dita\" processing-role=\"resource-only\"/>"
                 + "</topicgroup></map>");
         write(tempDir, "topics/a.dita", topicXml("a", "A"));
         write(tempDir, "topics/warehouse.dita", topicXml("warehouse", "Conref warehouse"));
@@ -694,7 +697,34 @@ class DitaModelExtractorTest {
 
         MapNode map = (MapNode) nodes.get(0);
         assertEquals(List.of("a"), map.links.stream().map(l -> l.target).toList());
-        findTopic(nodes, "warehouse");
+        TopicNode warehouse = findTopic(nodes, "warehouse");
+        assertEquals("resource-only", warehouse.processingRole);
+        assertTrue(warehouse.toJson().contains("\"processingRole\":\"resource-only\""), warehouse.toJson());
+        TopicNode a = findTopic(nodes, "a");
+        assertNull(a.processingRole);
+        assertTrue(!a.toJson().contains("processingRole"), a.toJson());
+    }
+
+    @Test
+    void rootClassAttributeIsKeptAsDitaClass(@TempDir Path tempDir) throws Exception {
+        write(tempDir, ".job.xml", jobXml("topics/faq.dita", "topics/plain.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/faq.dita\"/><topicref href=\"topics/plain.dita\"/></map>");
+        // A specialization the topic type folds into "concept".
+        write(tempDir, "topics/faq.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"faq\" class=\"- topic/topic concept/concept  faq/faq \">"
+                + "<title>FAQ</title><conbody><p>Answers.</p></conbody></concept>");
+        write(tempDir, "topics/plain.dita", topicXml("plain", "Plain"));
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode faq = findTopic(nodes, "faq");
+        assertEquals("concept", faq.topicType);
+        assertEquals("- topic/topic concept/concept faq/faq", faq.ditaClass);
+        assertTrue(faq.toJson().contains("\"ditaClass\":\"- topic/topic concept/concept faq/faq\""), faq.toJson());
+        // No @class (a hand-written fixture): nothing to record.
+        assertNull(findTopic(nodes, "plain").ditaClass);
     }
 
     @Test

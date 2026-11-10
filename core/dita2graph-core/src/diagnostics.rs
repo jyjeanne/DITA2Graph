@@ -35,6 +35,9 @@ pub const BUNDLE_VALIDATION_FAILED: MessageId = MessageId("DITA2GRAPH030E", Seve
 pub const UNKNOWN_TOPIC_TYPE: MessageId = MessageId("DITA2GRAPH040W", Severity::Warning);
 /// A generated concept matches a high-confidence secret pattern (§6.4).
 pub const POSSIBLE_SECRET_LEAK: MessageId = MessageId("DITA2GRAPH050E", Severity::Error);
+/// The RDF export has no `--rdf-base`: its IRIs sit under the reserved
+/// `https://dita2graph.invalid/` domain and are not meant to be published.
+pub const PLACEHOLDER_RDF_BASE: MessageId = MessageId("DITA2GRAPH083W", Severity::Warning);
 
 #[derive(Serialize)]
 struct Diagnostic<'a> {
@@ -67,5 +70,6 @@ mod tests {
         assert_eq!(BUNDLE_VALIDATION_FAILED.0, "DITA2GRAPH030E");
         assert_eq!(UNKNOWN_TOPIC_TYPE.0, "DITA2GRAPH040W");
         assert_eq!(POSSIBLE_SECRET_LEAK.0, "DITA2GRAPH050E");
+        assert_eq!(PLACEHOLDER_RDF_BASE.0, "DITA2GRAPH083W");
     }
 }

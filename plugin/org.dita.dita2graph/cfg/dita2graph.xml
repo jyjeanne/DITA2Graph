@@ -12,4 +12,6 @@
   <param name="emit-graph-json" default="true"/>
   <param name="store" default="sqlite"/>
   <param name="include-drafts" default="false"/>
+  <param name="rdf" default="false"/>
+  <param name="rdf.base" default=""/>
 </dita2graph-config>

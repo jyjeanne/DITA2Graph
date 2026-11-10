@@ -202,6 +202,8 @@ mod tests {
             uicontrols: vec![],
             cmd_uicontrols: vec![],
             resolved_body: None,
+            processing_role: None,
+            dita_class: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
