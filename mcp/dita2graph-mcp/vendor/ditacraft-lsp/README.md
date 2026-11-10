@@ -1,15 +1,19 @@
 # Vendored: DitaCraft standalone LSP server
 
 **Source:** [`jyjeanne/ditacraft`](https://github.com/jyjeanne/ditacraft)
-**Version vendored:** v0.10.2 (commit `1b5f889e77202c0ce0cb56075b757b1b72b1750f`,
-2026-10-12 release; `dist/lsp-server.js` downloaded from that release's
-`lsp-server-0.10.2.zip` GitHub Release asset rather than rebuilt from
+**Version vendored:** v0.10.3 (commit `e00d5ee48c038c28a84e895b1ce63aeaaa721e13`,
+2026-10-13 release; `dist/lsp-server.js` downloaded from that release's
+`lsp-server-0.10.3.zip` GitHub Release asset rather than rebuilt from
 source, to vendor exactly what upstream shipped — SHA-256
-`d9b1130b412643782b8132b33cef5ab883fb0811a666992161d4e283b84a38a0`)
-**DTDs:** `dtds/` matches the same tag; v0.10.2 only changed
-`dtds/base/catalog.xml` since v0.9.1 (adds the missing DITA 1.3
-`topicDefn.ent` mapping, which otherwise suffix-matched the DITA 1.2
-copy, whose common elements lack `<div>`)
+`24224cd6bc2325876b9079c3295fda7ed4325cba4989ca685fa150ea629d8fad`).
+v0.10.3 is a maintenance release: DITA-OT parity diagnostics now match
+the release-notes and resources maps with the platform path separator,
+so they also run on Linux and macOS, not only on Windows.
+**DTDs:** `dtds/` matches the same tag; its 327 files are byte-identical
+between v0.10.2 and v0.10.3 (compared blob by blob in both tags' Git
+trees). v0.10.2 had only changed `dtds/base/catalog.xml` since v0.9.1
+(adds the missing DITA 1.3 `topicDefn.ent` mapping, which otherwise
+suffix-matched the DITA 1.2 copy, whose common elements lack `<div>`)
 **License:** MIT (`jyjeanne/ditacraft`'s `LICENSE`) — compatible with
 DITA2Graph's own dual MIT OR Apache-2.0. See root `NOTICE`.
 **Known issues in this specific vendored build:** see `KNOWN-ISSUES.md`
@@ -82,8 +86,8 @@ Two equally valid ways to get a fresh `dist/lsp-server.js`, matching
 exactly what `jyjeanne/ditacraft`'s own release workflow produces
 either way:
 
-**Preferred — download the release asset directly** (what the v0.9.1
-and v0.10.2 updates did), so what's vendored here is byte-identical to
+**Preferred — download the release asset directly** (what the v0.9.1,
+v0.10.2 and v0.10.3 updates did), so what's vendored here is byte-identical to
 what upstream actually shipped, not a local rebuild that merely
 *should* match:
 

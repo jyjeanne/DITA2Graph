@@ -535,7 +535,9 @@ state, most-complete first:
    `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`. **Since
    updated to v0.10.2** (root map discovery, and fewer false key/reference
    warnings: external-URL keydefs, keyword markup, `href="#./element"`,
-   references quoted inside `<codeph>`). **Windows fixed alongside it:**
+   references quoted inside `<codeph>`), **then to v0.10.3** (DITA-OT
+   parity diagnostics matched with the platform path separator, so they
+   also run on Linux and macOS). **Windows fixed alongside it:**
    on Windows, `canonicalize()` returns `\\?\C:\...` verbatim paths, and
    `live.rs` percent-encoded them into `file://%5C%5C%3F%5CC%3A...` URIs
    the LSP couldn't map back to any file — so every href/keyref came back
