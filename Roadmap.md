@@ -50,7 +50,8 @@ Ant target-naming conventions, missing CLI `<param>` declarations, and
 more).
 
 Map extraction walks `topicref`/`topichead`/`topicgroup` nesting at any
-depth (finding 11), excludes DITA-OT's auto-generated `related-links`
+depth (finding 11), recognizes bookmap and glossary specializations by
+`@class` with titled headings as `Topic Head` nodes (finding 18), excludes DITA-OT's auto-generated `related-links`
 navigation from cross-reference extraction, and supports `mapref`/
 `anchorref` submap composition with zero extra code — DITA-OT's own
 preprocessing already flattens it into the same map tree (finding 14).
@@ -535,7 +536,9 @@ state, most-complete first:
    `mcp/dita2graph-mcp/vendor/ditacraft-lsp/KNOWN-ISSUES.md`. **Since
    updated to v0.10.2** (root map discovery, and fewer false key/reference
    warnings: external-URL keydefs, keyword markup, `href="#./element"`,
-   references quoted inside `<codeph>`). **Windows fixed alongside it:**
+   references quoted inside `<codeph>`), **then to v0.10.3** (DITA-OT
+   parity diagnostics matched with the platform path separator, so they
+   also run on Linux and macOS). **Windows fixed alongside it:**
    on Windows, `canonicalize()` returns `\\?\C:\...` verbatim paths, and
    `live.rs` percent-encoded them into `file://%5C%5C%3F%5CC%3A...` URIs
    the LSP couldn't map back to any file — so every href/keyref came back
@@ -545,7 +548,71 @@ state, most-complete first:
    Windows machine; `file_uri_from_path_str` now strips the verbatim
    prefix and builds `file:///C:/...` URIs (unit-tested with Windows
    inputs on every platform).
-7. **Other extended capabilities** (§13.2, least scoped): multi-map/
+7. **Benchmark-driven graph and MCP fixes** — ✅ done. A token/latency
+   benchmark of Claude Code on the raw DITA sources vs. through this
+   MCP server (`dita2graph-demo/bench`, 8 questions x 3 runs on
+   `dita-ot/docs`) showed the MCP 1.9x cheaper in tokens overall but
+   weaker on content and reuse questions. Four fixes, each read from
+   DITA-OT's own resolved output (`docs/dev/phase-0-findings.md`
+   finding 17): `read_topic` (full text, reused fragments in place),
+   fragment ids on `generated-from`, relationship-table links as
+   `references`, and no `contains` edge for resource-only topicrefs.
+8. **Semantic model: RDF, OWL 2 and SHACL** — ✅ phases 1 to 5 done,
+   all opt-in. `args.dita2graph.rdf=true` (`dita2graph-core build --emit-rdf
+   true`) writes `rdf/graph.ttl`: the same graph described with the `d2g`
+   vocabulary (`core/dita2graph-core/ontology/d2g.ttl`, OWL 2 RL, at
+   `https://w3id.org/dita2graph/ns#`), next to that ontology and the
+   SHACL shapes a graph must satisfy (`d2g-shapes.ttl`). Stable IRIs on
+   `args.dita2graph.rdf.base` (a reserved `.invalid` placeholder plus
+   `DITA2GRAPH083W` without one), parent classes, both directions of
+   `contains` and qualified reuses written out so plain SPARQL and
+   closed-world SHACL need no reasoner, reproducible output with
+   `SOURCE_DATE_EPOCH`. The extractor now also records each topic's
+   `@class` (`ditaClass`) and resource-only role (`processingRole`).
+   CI validates a golden export, a deliberately broken graph (each rule
+   must fire) and every fixture with pySHACL, and the OWL 2 RL profile
+   with ROBOT. Phase 4 put the declarations in the graph: the map's keys
+   (with the submap that defines each), the keys topics use (`@keyref`,
+   and `@conkeyref` read from the source), external `http(s)` links,
+   `coderef` sample files (read from the source, kept only when DITAVAL
+   left them in), `copy-to` copies (`copy-of`), topic types read from
+   `@class` (68 troubleshooting topics in the Oxygen guide), and
+   `requires` redefined as a prerequisite: 127 and 1,559 keyref-made
+   edges on the two corpora become references, leaving 0 and 1 real
+   prerequisites. They reach the OKF concepts, `graph.json`/`graph.db`
+   (key, URL and file nodes: 608 keys, 431 URLs and 40 sample files on the
+   DITA-OT docs) and the MCP tools (`analyze_impact` on a URL names the
+   pages linking to it and the file defining its key). Both corpora
+   validate without a violation, and no topic uses an undefined key; the
+   47 warnings on the Oxygen guide are real cases (46
+   `chunk="to-content"` merges, 1 duplicate id). Reference:
+   [`docs/semantic-model.md`](docs/semantic-model.md). The fourth
+   benchmark campaign, replayed and graded blind against the original
+   answers: with the MCP server alone, writers' questions 63 → 86 % and
+   users' 83 → 96 %, the Oxygen guide's tokens −41 % and time −38 %. Two
+   defects it found are fixed since: nested topics' text joins their
+   file's topic (0 topics without text on the DITA-OT docs, 5 before), and
+   every MCP tool marks a resource-only topic. With them, the phase 5
+   campaign (72 runs, graded blind with the replay's answers mixed in)
+   gives 93 % on writers' questions with the MCP server alone: **the exit
+   criterion (above 90 %) is met**, at the level of reading the sources
+   (94 % without MCP, 96 % with MCP and sources). The release-notes
+   question goes 67 → 100 and the EULA links 90 → 100; what remains is a
+   map the Editor DITAVAL removes, outside the published graph by design.
+   Phase 5, SPARQL in the MCP server: `dita2graph-mcp --sparql` offers
+   `query_graph`, read-only SPARQL 1.1 over `rdf/graph.ttl` (an in-memory
+   Oxigraph store, no RocksDB, no HTTP client, so `SERVICE` reaches
+   nothing; queries only, a 10 s timeout, paginated results with the
+   total first, the d2g vocabulary and this bundle's `node:`/`map:`/`key:`
+   prefixes predeclared). 148 ms for a first query on the Oxygen guide,
+   loading its 55,491 triples included. Per the specification, the tool
+   was adopted only if a dedicated campaign showed a gain over the typed
+   tools: it did not (same 93 % on writers' questions, 92 % instead of
+   96 % on users', 8 to 30 % more tokens over 61 calls), so `query_graph`
+   stays opt-in behind `--sparql`. Still open from
+   phase 3: the SHACL check runs in CI (pySHACL), not in the build
+   (diagnostics `080E`–`082I`).
+9. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
    pages with links back into the graph.

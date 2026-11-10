@@ -1,0 +1,448 @@
+# Semantic model: RDF, OWL 2 and SHACL
+
+DITA2Graph can write its knowledge graph as RDF, next to the OKF bundle:
+the same nodes and relations, described by a published vocabulary (`d2g`,
+an OWL 2 RL ontology) and checked by SHACL shapes. The export is opt-in;
+the OKF bundle, `graph.json`, `graph.db`, `rag/` and the MCP server do not
+depend on it. What the model declares besides links between topics (the
+map's keys, the URLs topics link to, the sample files they include) is in
+those outputs too: see [Keys, external links and sample files](#keys-external-links-and-sample-files).
+
+What it is for:
+
+- **Loading the graph anywhere RDF goes**: a triple store, a SPARQL
+  endpoint, a knowledge-graph platform, a notebook with rdflib. Every
+  relation has a defined meaning, so a graph from one build can be merged
+  with others (several publications, another product's graph) without
+  guessing what an edge means.
+- **Explicit validity rules**: the shapes state what a correct graph is
+  (no loop in the table of contents, a prerequisite comes from a task, a
+  reuse names fragments of its own source...). Any SHACL engine checks
+  them, and CI does on every change.
+- **Queries the MCP tools don't anticipate**: SPARQL over the whole graph
+  (also from the MCP server, opt-in: [`query_graph`](#from-the-mcp-server)),
+  for audits and one-off questions.
+
+## Producing it
+
+```bash
+dita --input user-guide.ditamap --format dita2graph \
+  --args.dita2graph.rdf=true \
+  --args.dita2graph.rdf.base=https://docs.example.com/user-guide/
+```
+
+or, from a normalized model, `dita2graph-core build --input model.json
+--output out/ --emit-rdf true --rdf-base https://docs.example.com/user-guide/`.
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `args.dita2graph.rdf` (`--emit-rdf`) | `false` | Write `rdf/`. A later build without it removes the export's files, so `rdf/` never lags behind `okf/`. |
+| `args.dita2graph.rdf.base` (`--rdf-base`) | none | Base IRI of the data. Must be an absolute IRI; a `/` is appended when it ends with neither `/` nor `#`. An invalid base fails the build before anything is written. Without a base, the IRIs use `https://dita2graph.invalid/<map id>/` (`.invalid` is reserved, RFC 2606) and `DITA2GRAPH083W` is logged: fine for local use, not for publishing. |
+
+`SOURCE_DATE_EPOCH` (seconds since the Unix epoch), when set, fixes the
+build time recorded in the export and the rest of the bundle: the same
+sources then give byte-identical files. The export is sorted, so it does
+not depend on the order of the model either.
+
+Files written:
+
+```
+rdf/
+ ├── graph.ttl      # the data: nodes, relations, source files, the build
+ ├── ontology.ttl   # the d2g vocabulary (copy of core/dita2graph-core/ontology/d2g.ttl)
+ └── shapes.ttl     # the SHACL shapes (copy of core/dita2graph-core/ontology/d2g-shapes.ttl)
+```
+
+`rdf/` goes through the same secret scan as `okf/` and `rag/`
+(`DITA2GRAPH050E`).
+
+## Vocabulary
+
+Namespace `https://w3id.org/dita2graph/ns#` (prefix `d2g`), ontology IRI
+`https://w3id.org/dita2graph/ns`, version `0.1.0`. It reuses Dublin Core
+(`dcterms:`), PROV-O (`prov:`) and SKOS (`skos:`) where they fit.
+
+The w3id.org identifiers (registration pending, `ids/dita2graph/` in
+[perma-id/w3id.org](https://github.com/perma-id/w3id.org)) redirect to
+the files published on GitHub Pages
+(`.github/workflows/ontology-pages.yml`), which serves them as
+`text/turtle`: `ns` and `shapes` give the latest release to a client
+asking for `text/turtle`, and this page otherwise; `ns.ttl` and
+`shapes.ttl` always give Turtle; a version IRI, `ns/0.1.0`, gives that
+release. Each release of the vocabulary is a `d2g-X.Y.Z` tag on the
+commit that sets its `owl:versionIRI`; pushing it publishes the release,
+and a published version never changes.
+
+The ontology stays within the **OWL 2 RL** profile (checked in CI with
+ROBOT), so a rule engine can apply it without a full OWL reasoner. It
+describes; it does not validate: domains and ranges are broad, and the
+rules a graph must follow live in the shapes, checked in a closed world.
+
+### Classes
+
+| Class | Meaning | From |
+|---|---|---|
+| `d2g:Node` | Anything shown in the publication's outline | — |
+| `d2g:Map` ⊑ Node | The input map or bookmap | the map |
+| `d2g:Topic` ⊑ Node | A topic, generic when none of the types below | `topic`, unknown types |
+| `d2g:Concept`, `d2g:Task`, `d2g:Reference` ⊑ Topic | The DITA topic types | `concept`, `task`, `reference` |
+| `d2g:GlossEntry` ⊑ Topic, `skos:Concept` | A glossary entry: a defined term | `glossentry` |
+| `d2g:Troubleshooting` ⊑ Topic | A troubleshooting topic | `troubleshooting` |
+| `d2g:TopicHead` ⊑ Node | A titled outline entry with no topic: `topichead`, a navtitle-only chapter | heading nodes |
+| `d2g:Reuse` | One reuse: who pulls which fragments from which source | `generated-from` |
+| `d2g:Fragment` | A reused element of a topic, by `@id` (or `element@line` without one) | `generated-from` fragments |
+| `d2g:SourceFile` | A file of the corpus, by relative path: a topic's or a map's file, a sample file a topic includes, a local file a key names | `sourceFile`, `codeRefs`, key definitions |
+| `d2g:Key` | A key, by scope and name | the map's `keyDefs`, the topics' `keyrefs` |
+| `d2g:ExternalResource` | A URL outside the corpus | `http(s)` links and keys |
+
+A topic's type is read from its root element's `@class`, not its name, so
+a specialization takes the type it specializes (`glossgroup` is a
+concept); `d2g:ditaClass` keeps the full value. The topic types are
+pairwise disjoint, and so are `Map`, `Topic` and `TopicHead`.
+
+### Relations
+
+| Property | From → to | Meaning |
+|---|---|---|
+| `d2g:contains` / `d2g:containedIn` | Node → Node | Direct child in the published table of contents; navigation, not dependency. Asymmetric, irreflexive. |
+| `d2g:references` ⊑ `dcterms:references` | Topic → Node | A link for the reader to follow (`xref`, `link`, relationship tables) |
+| `d2g:requires` ⊑ `references` / `d2g:prerequisiteFor` | Task → Topic | A real prerequisite: a link in the task's `prereq`, or a task's link marked `importance="required"` |
+| `d2g:relatedTo` | Topic ↔ Topic | Same product (inferred hint). Symmetric. |
+| `d2g:appliesTo` | Task → Reference | The task operates a UI control the reference describes (inferred) |
+| `d2g:generatedFrom` ⊑ `prov:wasDerivedFrom` | Topic → Topic | Part of the subject's content comes from the object (`conref`, `conkeyref`) |
+| `d2g:qualifiedReuse`, `d2g:reuseSource`, `d2g:reusedFragment`, `d2g:fragmentOf` | Topic → Reuse → Topic, Fragment | Which fragments a `generatedFrom` reuses |
+| `d2g:copyOf` ⊑ `prov:wasDerivedFrom` | Topic → Topic | A `copy-to` copy of the object; the reuse of its content is a separate, qualified `generatedFrom` |
+| `d2g:definesKey` / `d2g:definedIn` | Map ↔ Key | The map (with its submaps) defines the key |
+| `d2g:keyTarget` | Key → Topic, ExternalResource or SourceFile | What the key names; a text key (a variable) names nothing and has a `d2g:keyText` |
+| `d2g:usesKey` | Topic → Key | The topic uses the key: `@keyref` on any element, or a `@conkeyref` whose content it really reuses |
+| `d2g:linksTo` | Topic → ExternalResource | An `http(s)` link outside the corpus, directly or through a key |
+| `d2g:includesCode` | Topic → SourceFile | A sample file the topic shows with `coderef` |
+| `d2g:sourceFile` | Node, Key → SourceFile | The node's file (a heading's file is its map); for a key, the map file that defines it |
+
+Each relation carries a `d2g:origin` annotation: `declared` (written by
+the author), `derived` (read from DITA-OT's resolved output) or
+`inferred` (a heuristic). Weigh `inferred` edges accordingly.
+
+**`requires` means prerequisite.** A link inside a task's `<prereq>`, or a
+task's link with `importance="required"`, is the only DITA markup that
+says "do or read this first", and the only one that gives `requires`. A
+link that merely goes through a key is a `references`, its key recorded
+as `usesKey`. Before phase 4 of this model, `requires` meant "a link made
+through a key": on the two benchmark corpora that rule gave 127 and 1,559
+`requires` edges, the new one 0 and 1. The OKF bundle (`# Requires`,
+`relations.requires`), `graph.json` and the MCP tool `trace_dependencies`
+follow the same meaning; one edge is kept per pair of topics, `requires`
+when any of their links says so.
+
+### Attributes
+
+| Property | On | Value |
+|---|---|---|
+| `dcterms:identifier` | Node, Fragment | The node id used everywhere else (OKF file name, MCP tools) |
+| `dcterms:title`, `dcterms:description` | Node | Title, `shortdesc` |
+| `d2g:audience`, `d2g:product` | Topic | One triple per value |
+| `d2g:processingRole` | Topic | `"resource-only"` when every topicref naming the topic is resource-only |
+| `d2g:ditaClass` | Topic | The root element's `@class`, which keeps a specialization the type folds away |
+| `d2g:okfConcept` | Node | The node's OKF concept file, e.g. `okf/topics/<id>.md` |
+| `d2g:keyName`, `d2g:keyText` | Key | The key's name; the text it stands for when it names no topic (its keyword, link text or navtitle), and the label of a URL key |
+| `d2g:path` | SourceFile | Path relative to the publication, with `/` |
+| `prov:wasGeneratedBy` | Node | The build, a `prov:Activity` with `prov:endedAtTime` and `d2g:generator` |
+
+### IRIs
+
+All data IRIs sit under the base `<b>`; each id is percent-encoded as one
+path segment (RFC 3986 unreserved characters kept), each source path
+segment by segment.
+
+| Resource | IRI |
+|---|---|
+| The map | `<b>map/<map id>` |
+| A topic or heading | `<b>node/<id>` |
+| A fragment | `<b>node/<source id>/fragment/<fragment>` |
+| A reuse | `<b>node/<reuser id>/reuse/<source id>` |
+| A source file | `<b>file/<relative path>` |
+| The build | `<b>build/<timestamp, ':' replaced by '-'>` |
+| A key | `<b>key/<scope>/<name>`, `_` for the root scope |
+| An external resource | The URL itself, with the characters an IRI cannot hold (space, `"`, `<`, `{`...) percent-encoded |
+
+A node keeps its IRI across builds as long as its id does not change.
+
+### What the export states explicitly
+
+Nothing is inferred at build time, and SHACL validation runs in a closed
+world, so the export writes what queries and shapes need instead of
+leaving it to a reasoner: every node's parent classes (`a d2g:Task ,
+d2g:Topic , d2g:Node`), both directions of `contains` and of `requires`
+(`prerequisiteFor`), the `references` every `requires` also is, both
+directions of `definesKey`, and the `Reuse` and `Fragment` resources
+qualifying each `generatedFrom`. A key a topic uses but no map defines is
+still a `d2g:Key`, without `definedIn`, so the shapes report it. A plain
+SPARQL engine needs no reasoning to query the export.
+
+## Validation
+
+`shapes.ttl` holds these shapes (severity Violation unless noted):
+
+| Shape | Rule |
+|---|---|
+| `NodeShape` | One identifier, one non-empty title, one source file, one OKF concept |
+| `SourceFileShape` | One relative path: no leading `/` or `\`, no drive letter, no URL scheme |
+| `ContainsShape` | From a map, topic or heading to a topic or heading; no loop |
+| `PublishedTopicShape` (Warning) | A topic has a parent in the table of contents, unless it is resource-only or a `copy-to` source published through its copies |
+| `ReferencesShape` | Target is a node; a topic does not reference itself |
+| `RequiresShape` | From a task to a topic; no loop of prerequisites |
+| `AppliesToShape` | From a task to a reference |
+| `GeneratedFromShape` | Between topics, always qualified by a reuse |
+| `ReuseShape`, `FragmentShape` | A reuse has one source and fragments of that source; a fragment has one topic and an identifier |
+| `KeyShape` | A key has one name, at most one defining map and at most one target |
+| `UsedKeyShape` | A key a topic uses is defined by the map |
+| `CopyOfShape` | A copy and its source are topics; a copy has one source |
+| `LinksToShape`, `IncludesCodeShape` | From a topic, to an external resource; to a file of the corpus |
+| `RelatedToShape` (Warning) | `relatedTo` is stated both ways |
+| `ExternalResourceShape` (Warning) | An external resource is an `http(s)` URL |
+
+Several rules use SHACL-SPARQL (`sh:sparql`): an engine limited to SHACL
+Core skips them silently. pySHACL runs them all:
+
+```bash
+pip install pyshacl==0.30.1
+pyshacl -s out/rdf/shapes.ttl -e out/rdf/ontology.ttl -i none -w -f human out/rdf/graph.ttl
+```
+
+`-w` lets warnings through (exit code 0) and still prints them; without
+it, a warning fails the check.
+
+The build does not run the shapes itself yet. CI
+(`.github/workflows/integration.yml`) does, on every pull request:
+
+- the golden export `core/dita2graph-core/tests/data/rdf-model.graph.ttl`
+  (written by `tests/rdf_export.rs` from `rdf-model.json`, which uses every
+  node kind and relation) conforms without a single warning;
+- `tests/data/rdf-invalid.ttl`, which breaks one rule per node, must be
+  rejected, with each SPARQL rule reported;
+- each fixture under `sample-docs*/` is built with the export and
+  validated;
+- ROBOT checks that `d2g.ttl` stays within OWL 2 RL.
+
+On the two public corpora of the benchmark (`dita2graph-demo`, DITA-OT
+4.4.1), the export validates without a violation, every key the topics
+use being defined:
+
+| Corpus | Topics | Keys | URLs | Sample files | Triples | Warnings |
+|---|---|---|---|---|---|---|
+| DITA-OT documentation | 225 | 608 | 431 | 40 | 10,193 (772 KB) | 0 |
+| Oxygen XML user guide | 2,040 | 243 | 1,008 | 0 | 55,482 (4.8 MB) | 47 |
+
+The 47 `PublishedTopicShape` warnings are 46 topics merged into their
+parent by `chunk="to-content"` and 1 duplicate id: real cases worth a
+look, not noise. The 3 `copy-to` sources published only through their
+copies no longer warn, nor do the 31 reuse warehouses marked
+resource-only.
+
+## Querying
+
+Any SPARQL 1.1 engine works. Examples, with these prefixes:
+
+```sparql
+PREFIX d2g: <https://w3id.org/dita2graph/ns#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+```
+
+Which topics reuse fragments of a topic, and which ones (impact of an
+edit):
+
+```sparql
+SELECT ?reuser ?fragment WHERE {
+  ?source dcterms:identifier "warehouse" .
+  ?reuser d2g:qualifiedReuse ?reuse .
+  ?reuse d2g:reuseSource ?source ; d2g:reusedFragment/dcterms:identifier ?fragment .
+}
+```
+
+The outline above a topic, from the map down:
+
+```sparql
+SELECT ?title WHERE {
+  ?topic dcterms:identifier "glossary-anchor" .
+  ?ancestor d2g:contains+ ?topic ; dcterms:title ?title .
+}
+```
+
+Tasks that operate a reference's controls, with their audience:
+
+```sparql
+SELECT ?task ?reference ?audience WHERE {
+  ?task d2g:appliesTo ?reference .
+  OPTIONAL { ?task d2g:audience ?audience }
+}
+```
+
+The pages that point to a URL, directly or through a key, and the file to
+edit to change that key:
+
+```sparql
+SELECT ?topic ?key ?file WHERE {
+  { ?topic d2g:linksTo <https://brew.sh> }
+  UNION
+  { ?key d2g:keyTarget <https://brew.sh> ; d2g:sourceFile/d2g:path ?file .
+    ?topic d2g:usesKey ?key }
+}
+```
+
+The pages that write out a URL a key already names, candidates for a
+`keyref` (3 pages on the DITA-OT documentation, 6 on the Oxygen guide):
+
+```sparql
+SELECT ?topic ?url ?key WHERE {
+  ?k d2g:keyTarget ?url ; d2g:keyName ?key .
+  ?url a d2g:ExternalResource .
+  ?t d2g:linksTo ?url ; dcterms:identifier ?topic .
+  FILTER NOT EXISTS { ?t d2g:usesKey/d2g:keyTarget ?url }
+  FILTER NOT EXISTS { ?t d2g:processingRole "resource-only" }
+}
+ORDER BY ?url ?topic
+```
+
+The pages that show a sample file:
+
+```sparql
+SELECT ?topic WHERE {
+  ?topic d2g:includesCode/d2g:path "samples/install.sh" .
+}
+```
+
+Everything to do or read before a task, prerequisites of prerequisites
+included:
+
+```sparql
+SELECT ?prerequisite WHERE {
+  ?task dcterms:identifier "installing-product" ; d2g:requires+ ?prerequisite .
+}
+```
+
+### From the MCP server
+
+`dita2graph-mcp --sparql` adds the tool `query_graph(query, limit?,
+offset?)`, which runs a SPARQL 1.1 query on the bundle's `rdf/graph.ttl`
+(phase 5). It is opt-in: the specification adopted it only if a benchmark
+campaign showed agents gain from it over the typed tools, and the campaign
+(`dita2graph-demo/bench`, 12 real questions, Opus, 3 repetitions, graded
+blind) showed none. With `query_graph`, agents answered writers' questions
+as well as with the typed tools alone (93 %), users' questions slightly
+less well (92 % against 96 %), and spent 8 % (Oxygen guide) to 30 %
+(DITA-OT docs) more tokens across 61 queries. The tool stays behind
+`--sparql`, for people who want to query the graph themselves.
+
+- The export is loaded on the first query into an in-memory
+  [Oxigraph](https://github.com/oxigraph/oxigraph) store (MIT OR
+  Apache-2.0), built without RocksDB and without its HTTP client: a
+  `SERVICE` clause has nothing to reach. A rebuild of the bundle reloads
+  it.
+- Queries only: SELECT, ASK, CONSTRUCT and DESCRIBE. An update is a
+  syntax error. A query runs for 10 seconds at most and its text is
+  limited to 20,000 characters.
+- Results come a page at a time (`limit`, default 50, at most 500;
+  `offset`), the total first, counting stopped at 10,000 (or the end of
+  the page asked for). Literals are cut at 200 characters: `read_topic`
+  is for text.
+- Predeclared prefixes: `d2g:`, `dcterms:`, `prov:`, `skos:`, `rdf:`,
+  `rdfs:`, `owl:`, `xsd:`, and for the bundle's data `node:` (topics and
+  headings), `map:` and `key:` (root-scope keys). IRIs come back in that
+  form when they can, so a result pastes into the next query. The tool's
+  description lists the vocabulary, so an agent can write a query without
+  reading the ontology.
+
+On the Oxygen XML user guide (55,491 triples), the first query answers in
+148 ms, loading included, the next ones in a few milliseconds. The EULA
+question of the benchmark (which topics link to the URL, how, and which
+file to edit) is one query:
+
+```sparql
+SELECT ?topic ?how ?file WHERE {
+  { ?t d2g:linksTo <https://www.oxygenxml.com/eula.html> .
+    FILTER NOT EXISTS { ?t d2g:processingRole "resource-only" }
+    BIND("link" AS ?how) ?t d2g:sourceFile/d2g:path ?file }
+  UNION
+  { ?k d2g:keyTarget <https://www.oxygenxml.com/eula.html> ; d2g:sourceFile/d2g:path ?file .
+    ?t d2g:usesKey ?k . BIND("key" AS ?how) }
+  ?t dcterms:identifier ?topic
+}
+```
+
+## Keys, external links and sample files
+
+The extractor reads them from DITA-OT's resolved output, and from the
+topic's source file for the two things preprocessing removes:
+
+- **Key definitions**: every `<keydef>` and topicref with `@keys` of the
+  resolved map, which still carries the `xtrf` of the submap that wrote
+  it. Every topicref counts, relationship tables and topicrefs beyond
+  `args.dita2graph.depth` included, as for DITA-OT's own key reader. In
+  each scope the first definition in map order wins, as in DITA. A key
+  names a topic (through the copy, for a `copy-to` topicref), a URL, a
+  local file, or nothing: a text key, kept with its text. A `keydef` is
+  resource-only unless it says otherwise.
+- **Key uses**: `@keyref` on any element of a resolved topic (a link, a
+  keyword variable, an image), except the navigation links DITA-OT
+  generates from the map. `@conkeyref` does not survive conref
+  resolution; it is read from the source and kept only when the topic
+  really reuses content from the key's target. A relationship-table link
+  loses the `@keyref` of the map topicref it comes from, but keeps that
+  topicref's `xtrf` and `xtrc`: the key is found back through them, in
+  the topicref's scope, and counts as used by the topic showing the link,
+  whose page changes with the key. The title and shortdesc DITA-OT copies
+  from the target into a generated link are the target's: their links
+  and keys are not counted for the topic showing the link (on the
+  DITA-OT documentation, this removed 51 external links, 21 references
+  and 84 key uses that belonged to the linked topics).
+- **External links**: `xref` and `link` to an absolute `http(s)` URL,
+  each URL once per topic, with the key the link went through, a
+  relationship table's included.
+- **Sample files**: `coderef` is replaced by the file's text, and job.xml
+  lists the file (format `coderef`) without saying who includes it. The
+  extractor reads the `coderef` elements from the topic's source and keeps
+  one only when its parent element is still in the resolved topic (same
+  `xtrf` and element counter in `xtrc`), so a `coderef` DITAVAL filtered
+  out does not count. A source that does not parse on its own (an entity
+  its DTD defines) is skipped with `DITA2GRAPH072I`.
+
+These declarations are in every output, not only the RDF export:
+
+- the normalized model: the map's `keyDefs`, each topic's `keyrefs`,
+  `externalLinks` and `codeRefs`, and the `copy-of` link of a `copy-to`
+  copy ([plugin specification §3.2](plugin-specification.md#32-normalized-dita-model-input-to-the-core-engine));
+- the OKF concepts: `# Key Definitions` in the map, `# Keys Used`,
+  `# External Links`, `# Code Files` and `# Copy Of` in the topics;
+- `graph.json` and `graph.db`: a node per key (`key:<name>`,
+  `key:<scope>.<name>` for a scoped key), URL (the URL itself) and sample
+  file (`file:<path>`), with its title and defining file, and the edges
+  `defines-key`, `key-target`, `uses-key`, `links-to`, `includes-code`;
+- the MCP tools: `search_topics` finds these nodes; `find_related_topics`
+  on one lists what points at it and, for a key, the file that defines
+  it; `analyze_impact` on a URL lists the pages that link to it directly
+  or through a key, with that key's file; `read_topic` ends with the
+  topic's external links, keys and sample files. Every tool marks a topic
+  the map uses only as a resource with `[resource-only: not a published
+  page]`, from the `processingRole` that `graph.json` and `graph.db` now
+  carry.
+
+## Limits and next steps
+
+- `query_graph` stays opt-in: its benchmark campaign showed no gain over
+  the typed tools (see [From the MCP server](#from-the-mcp-server)). A new
+  campaign is worth running only if the typed tools stop covering a kind
+  of question.
+- The shapes run in CI, not in the build. A build-time check, with its
+  own diagnostics (`DITA2GRAPH080E` for a violation, `081W` and `082I` for
+  warnings and notes), is planned.
+- A topic's `@keyref` resolves in the key scopes of the topicrefs that
+  reference it, a parent scope's definition first, as in DITA; a topic
+  referenced from two scopes keeps both resolutions. Neither benchmark
+  corpus uses key scopes, so this is tested on fixtures only.
+- A topic left out as a draft (`args.dita2graph.include-drafts=false`)
+  leaves no link or key target pointing at it.
+- Fragments without an `@id` are still named `element@line`, and duplicate
+  topic ids are still suffixed in reading order: both IRIs can change when
+  a source file changes.
+- The vocabulary is versioned (`owl:versionIRI`): a term's meaning does
+  not change within a version; a change gets a new version.

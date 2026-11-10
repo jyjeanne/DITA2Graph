@@ -45,7 +45,23 @@ jobs:
           set -euo pipefail
           test -f gradle-build/build/dita2graph/okf/topics/installing-product.md
           grep -q 'relations:' gradle-build/build/dita2graph/okf/topics/installing-product.md
-          grep -q '^  - configuration$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          # requires is the prerequisite in the task's <prereq>; the link
+          # to configuration goes through a key: a reference, key recorded.
+          grep -q '^  - installing-product-prereqs$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^# Keys Used$' gradle-build/build/dita2graph/okf/topics/installing-product.md
+          grep -q '^- `config-concept` -> topic `configuration`' gradle-build/build/dita2graph/okf/maps/user-guide.md
+          python3 - <<'PYEOF'
+          import json
+          with open('gradle-build/build/dita2graph/graph.json') as f:
+              graph = json.load(f)
+          edges = {(e['from'], e['relation'], e['to']) for e in graph['edges']}
+          assert ('installing-product', 'requires', 'installing-product-prereqs') in edges, edges
+          assert ('installing-product', 'references', 'configuration') in edges, edges
+          assert ('installing-product', 'uses-key', 'key:config-concept') in edges, edges
+          assert ('key:config-concept', 'key-target', 'configuration') in edges, edges
+          key = next(n for n in graph['nodes'] if n['id'] == 'key:config-concept')
+          assert key['type'] == 'Key' and key['sourceFile'] == 'user-guide.ditamap', key
+          PYEOF
 
       - name: Confirm the RAG index looks right (§13.1)
         run: |
@@ -224,11 +240,14 @@ jobs:
           edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
           expected = {
               ('user-guide', 'chapter', 'contains'),
-              ('user-guide', 'grouped', 'contains'),   # skips through <topichead>
+              ('user-guide', 'topichead--group', 'contains'),  # <topichead navtitle=\"Group\"> is a heading node
+              ('topichead--group', 'grouped', 'contains'),
               ('user-guide', 'another', 'contains'),   # skips through <topicgroup>
               ('chapter', 'section', 'contains'),      # nested topicref -> chapter, not the map
           }
           assert edges == expected, f'edges did not match: {edges}'
+          heading = next(n for n in graph['nodes'] if n['id'] == 'topichead--group')
+          assert heading['type'] == 'Topic Head', heading
           # DITA-OT auto-generates <related-links> parent/child navigation
           # for this genuinely nested map (confirmed directly,
           # sample-docs-nested/README.md); it must never show up as a
@@ -353,15 +372,99 @@ jobs:
           with open('/tmp/depth-test/graph.json') as f:
               graph = json.load(f)
           edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
-          # depth=1: top-level topicrefs still contained (topichead/
-          # topicgroup don't consume a level), but section (nested one
-          # level inside chapter) is not -- it's still a node, just with
-          # no incoming contains edge.
+          # depth=1: top-level entries still contained (a topicgroup
+          # doesn't consume a level; the Group heading does), but section
+          # (nested one level inside chapter) and grouped (under the
+          # heading) are not -- still nodes, just with no incoming
+          # contains edge.
           assert ('user-guide', 'chapter', 'contains') in edges, edges
+          assert ('user-guide', 'another', 'contains') in edges, edges
           assert ('chapter', 'section', 'contains') not in edges, edges
+          assert ('topichead--group', 'grouped', 'contains') not in edges, edges
           assert any(n['id'] == 'section' for n in graph['nodes']), 'section should still be extracted as a node'
           print('depth=1 correctly omitted the nested edge:', edges)
           "
+
+      # RDF export (docs/semantic-model.md): pySHACL validates graphs
+      # against the d2g shapes, SHACL-SPARQL constraints included, and
+      # ROBOT checks that the ontology stays within OWL 2 RL.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pySHACL
+        run: python -m pip install pyshacl==0.30.1
+
+      - name: Confirm the shapes accept the golden RDF graph and reject a broken one
+        run: |
+          set -euo pipefail
+          ONT=core/dita2graph-core/ontology
+          DATA=core/dita2graph-core/tests/data
+          # The golden export (tests/rdf_export.rs) conforms without a
+          # single warning.
+          pyshacl -s $ONT/d2g-shapes.ttl -e $ONT/d2g.ttl -i none -f human $DATA/rdf-model.graph.ttl
+          # A graph breaking one rule per node must not conform, and each
+          # SPARQL rule must report: a SHACL Core-only engine would skip
+          # them without a word.
+          if pyshacl -s $ONT/d2g-shapes.ttl -e $ONT/d2g.ttl -i none -f human \
+               $DATA/rdf-invalid.ttl > /tmp/rdf-invalid.txt; then
+            echo "::error::rdf-invalid.ttl conforms to the d2g shapes"
+            exit 1
+          fi
+          for rule in 'loops back' 'references itself' 'without the reuse' 'does not belong' 'must be relative' \
+                      'no map defines' 'one source topic' 'file of the corpus' 'class d2g:ExternalResource'; do
+            grep -q "$rule" /tmp/rdf-invalid.txt || { echo "::error::no '$rule' violation reported"; exit 1; }
+          done
+
+      - name: Confirm args.dita2graph.rdf exports each fixture as a graph the shapes accept
+        env:
+          DITA2GRAPH_CORE_BIN: ${{ github.workspace }}/target/release/dita2graph-core
+          SOURCE_DATE_EPOCH: "0"
+        run: |
+          set -euo pipefail
+          DITA_BIN=gradle-build/build/dita-ot/dita-ot-4.4/bin/dita
+          for fixture in sample-docs sample-docs-nested sample-docs-mapref sample-docs-relations; do
+            out=/tmp/rdf-$fixture
+            rm -rf "$out"
+            "$DITA_BIN" --input=$fixture/user-guide.ditamap --format=dita2graph --output="$out" \
+              --args.dita2graph.rdf=true --args.dita2graph.rdf.base=https://example.org/$fixture/
+            for file in graph.ttl ontology.ttl shapes.ttl; do test -f "$out/rdf/$file"; done
+            grep -q "<https://example.org/$fixture/map/user-guide>" "$out/rdf/graph.ttl"
+            # Violations fail the step; warnings (a published topic
+            # outside the table of contents...) are only printed.
+            pyshacl -s "$out/rdf/shapes.ttl" -e "$out/rdf/ontology.ttl" -i none -w -f human "$out/rdf/graph.ttl"
+          done
+          # Not asked for: no rdf/ at all (the mcp step's default build).
+          test ! -d /tmp/mcp-default-test/rdf
+          # No base: placeholder IRIs, and DITA2GRAPH083W says so.
+          rm -rf /tmp/rdf-nobase
+          "$DITA_BIN" --input=sample-docs/user-guide.ditamap --format=dita2graph \
+            --output=/tmp/rdf-nobase --args.dita2graph.rdf=true -v > /tmp/rdf-nobase.log 2>&1
+          grep -q 'DITA2GRAPH083W' /tmp/rdf-nobase.log
+          grep -q '<https://dita2graph.invalid/user-guide/map/user-guide>' /tmp/rdf-nobase/rdf/graph.ttl
+
+      - name: Confirm query_graph answers SPARQL over the export, only with --sparql (phase 5)
+        run: |
+          set -euo pipefail
+          call='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_graph","arguments":{"query":"SELECT ?task ?prerequisite WHERE { ?task a d2g:Task ; d2g:requires ?prerequisite }"}}}'
+          # The prerequisite in installing-product's <prereq>, as node: names.
+          response=$(echo "$call" | ./target/release/dita2graph-mcp --sparql /tmp/rdf-sample-docs)
+          echo "$response"
+          echo "$response" | grep -q '"isError":false'
+          echo "$response" | grep -q 'node:installing-product | node:installing-product-prereqs'
+          # Without --sparql the tool is neither listed nor callable.
+          listed=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./target/release/dita2graph-mcp /tmp/rdf-sample-docs)
+          if echo "$listed" | grep -q query_graph; then echo "::error::query_graph listed without --sparql"; exit 1; fi
+          echo "$call" | ./target/release/dita2graph-mcp /tmp/rdf-sample-docs | grep -q '"isError":true'
+
+      - name: Confirm the d2g ontology stays within the OWL 2 RL profile
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/robot.jar https://github.com/ontodev/robot/releases/download/v1.9.11/robot.jar
+          echo "53cd275c8e4c0dad1fc2c1c34174876795cd7d6b6926e1444adcbb0cb3c7ab26  /tmp/robot.jar" | sha256sum -c -
+          java -jar /tmp/robot.jar validate-profile --profile RL \
+            --input core/dita2graph-core/ontology/d2g.ttl --output /tmp/d2g-profile.txt
+          cat /tmp/d2g-profile.txt
 
       - name: Confirm DITA-OT's validation gate rejects broken content
         working-directory: gradle-build

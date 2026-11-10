@@ -1,0 +1,54 @@
+# A graph that breaks the d2g shapes on purpose, one rule per node below.
+# CI validates it and fails if pySHACL calls it conforming: proof that the
+# shapes, SPARQL constraints included, actually run (a SHACL engine
+# without SHACL-SPARQL would silently skip half of them).
+
+@prefix d2g: <https://w3id.org/dita2graph/ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ex: <https://example.org/invalid/node/> .
+@prefix file: <https://example.org/invalid/file/> .
+
+file:a.dita a d2g:SourceFile ; d2g:path "a.dita" .
+# SourceFileShape: an absolute path.
+file:abs a d2g:SourceFile ; d2g:path "/etc/abs.dita" .
+
+# ContainsShape: a loop in the table of contents (a -> b -> a).
+ex:a a d2g:Concept , d2g:Topic , d2g:Node ;
+    dcterms:identifier "a" ; dcterms:title "A" ;
+    d2g:sourceFile file:a.dita ; d2g:okfConcept "okf/topics/a.md" ;
+    d2g:contains ex:b .
+ex:b a d2g:Concept , d2g:Topic , d2g:Node ;
+    dcterms:identifier "b" ; dcterms:title "B" ;
+    d2g:sourceFile file:a.dita ; d2g:okfConcept "okf/topics/b.md" ;
+    d2g:contains ex:a .
+
+# NodeShape: no title.
+ex:untitled a d2g:Topic , d2g:Node ;
+    dcterms:identifier "untitled" ;
+    d2g:sourceFile file:abs ; d2g:okfConcept "okf/topics/untitled.md" ;
+    d2g:containedIn ex:a .
+ex:a d2g:contains ex:untitled .
+
+# RequiresShape: a prerequisite stated by a concept, not a task.
+# AppliesToShape: a concept applying to a concept.
+# ReferencesShape: a topic referencing itself.
+# GeneratedFromShape: a generatedFrom with no reuse naming its fragments.
+ex:b d2g:requires ex:a ;
+    d2g:appliesTo ex:a ;
+    d2g:references ex:b ;
+    d2g:generatedFrom ex:a .
+
+# ReuseShape: a reused fragment that belongs to another topic.
+ex:a d2g:generatedFrom ex:b ; d2g:qualifiedReuse ex:reuse .
+ex:reuse a d2g:Reuse ; d2g:reuseSource ex:b ; d2g:reusedFragment ex:frag .
+ex:frag a d2g:Fragment ; dcterms:identifier "f1" ; d2g:fragmentOf ex:a .
+
+# UsedKeyShape: a key no map defines.
+# CopyOfShape: a copy of two topics.
+# LinksToShape: a link to something that is not an external resource.
+# IncludesCodeShape: an included "file" that is a topic.
+ex:a d2g:usesKey ex:undefined-key ;
+    d2g:copyOf ex:b , ex:untitled ;
+    d2g:linksTo ex:b ;
+    d2g:includesCode ex:b .
+ex:undefined-key a d2g:Key ; d2g:keyName "undefined-key" .

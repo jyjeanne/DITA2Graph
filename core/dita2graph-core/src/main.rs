@@ -7,13 +7,15 @@
 //! internal error.
 
 use anyhow::{Context, Result};
-use chrono::Utc;
-use clap::{Parser, Subcommand};
-use dita2graph_core::diagnostics::{self, BUNDLE_VALIDATION_FAILED, POSSIBLE_SECRET_LEAK};
+use chrono::{DateTime, Utc};
+use clap::{Args, Parser, Subcommand};
+use dita2graph_core::diagnostics::{
+    self, BUNDLE_VALIDATION_FAILED, PLACEHOLDER_RDF_BASE, POSSIBLE_SECRET_LEAK,
+};
 use dita2graph_core::{
-    Embedder, NormalizedNode, PreviousEmbeddings, infer_applies_to, infer_related_to,
-    query_sqlite_store, scan_bundle, write_bundle, write_embeddings_index, write_mcp_config,
-    write_rag_index, write_sqlite_store,
+    Embedder, NormalizedNode, PreviousEmbeddings, graph_view, infer_applies_to, infer_related_to,
+    query_sqlite_store, scan_bundle, write_bundle_with, write_embeddings_index, write_mcp_config,
+    write_rag_index, write_rdf, write_sqlite_view,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,45 +32,7 @@ struct Cli {
 enum Command {
     /// Build an OKF bundle from a normalized DITA model (§3.2), then
     /// validate it before declaring success.
-    Build {
-        /// Path to a JSON file containing an array of normalized nodes.
-        #[arg(long)]
-        input: PathBuf,
-        /// Output directory; `okf/`, `graph.json`, and `rag/` (§13.1) are
-        /// written under it (§2.4).
-        #[arg(long)]
-        output: PathBuf,
-        /// Backing store for the query index (§7 implementation stack).
-        /// `sqlite` writes `<output>/graph.db`, a SQLite mirror of
-        /// `graph.json`'s nodes/edges for fast indexed `query` lookups
-        /// on a real corpus (`src/store.rs`); `rocksdb` is still planned,
-        /// not implemented; `none` (default) writes no index -- `query`
-        /// falls back to reading `graph.json` directly either way.
-        #[arg(long, default_value = "none")]
-        store: String,
-        /// Whether to also write graph.json alongside the OKF bundle
-        /// (§2.3's `args.dita2graph.emit-graph-json`). Accepts
-        /// "true"/"false", matching the Ant property's own string
-        /// values (`ExtractTask` forwards it verbatim).
-        #[arg(long, default_value = "true")]
-        emit_graph_json: String,
-        /// Whether to also write mcp/mcp-server.toml (§2.3's
-        /// `args.dita2graph.mcp`), a real config `dita2graph-mcp
-        /// --config` can read. Accepts "true"/"false".
-        #[arg(long, default_value = "false")]
-        mcp: String,
-        /// Path to an ONNX sentence-embedding model (§13.1's node-level
-        /// embeddings). Optional -- when given, must be paired with
-        /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
-        /// is written and `search_content` stays keyword-only, unchanged
-        /// from today. Requires `ORT_DYLIB_PATH` to point at a real ONNX
-        /// Runtime shared library at run time (`src/embeddings.rs`).
-        #[arg(long, requires = "embedding_tokenizer")]
-        embedding_model: Option<PathBuf>,
-        /// Path to the tokenizer.json matching `--embedding-model`.
-        #[arg(long, requires = "embedding_model")]
-        embedding_tokenizer: Option<PathBuf>,
-    },
+    Build(BuildArgs),
     /// Validate an existing OKF bundle with `okf-validator` (§2.5, §6.4, §10).
     Validate {
         /// Path to the bundle directory (the `okf/` directory itself).
@@ -92,26 +56,64 @@ enum Command {
     },
 }
 
+#[derive(Args, Debug, Clone)]
+struct BuildArgs {
+    /// Path to a JSON file containing an array of normalized nodes.
+    #[arg(long)]
+    input: PathBuf,
+    /// Output directory; `okf/`, `graph.json`, and `rag/` (§13.1) are
+    /// written under it (§2.4).
+    #[arg(long)]
+    output: PathBuf,
+    /// Backing store for the query index (§7 implementation stack).
+    /// `sqlite` writes `<output>/graph.db`, a SQLite mirror of
+    /// `graph.json`'s nodes/edges for fast indexed `query` lookups
+    /// on a real corpus (`src/store.rs`); `rocksdb` is still planned,
+    /// not implemented; `none` (default) writes no index -- `query`
+    /// falls back to reading `graph.json` directly either way.
+    #[arg(long, default_value = "none")]
+    store: String,
+    /// Whether to also write graph.json alongside the OKF bundle
+    /// (§2.3's `args.dita2graph.emit-graph-json`). Accepts
+    /// "true"/"false", matching the Ant property's own string
+    /// values (`ExtractTask` forwards it verbatim).
+    #[arg(long, default_value = "true")]
+    emit_graph_json: String,
+    /// Whether to also write mcp/mcp-server.toml (§2.3's
+    /// `args.dita2graph.mcp`), a real config `dita2graph-mcp
+    /// --config` can read. Accepts "true"/"false".
+    #[arg(long, default_value = "false")]
+    mcp: String,
+    /// Whether to also write the graph as RDF (`rdf/graph.ttl`, with the
+    /// `d2g` ontology and SHACL shapes beside it; `src/rdf.rs`, §2.3's
+    /// `args.dita2graph.rdf`). Accepts "true"/"false".
+    #[arg(long, default_value = "false")]
+    emit_rdf: String,
+    /// Base IRI of the RDF export's nodes (`args.dita2graph.rdf.base`).
+    /// Without it, they sit under `https://dita2graph.invalid/<map id>/`
+    /// and DITA2GRAPH083W says so.
+    #[arg(long)]
+    rdf_base: Option<String>,
+    /// Path to an ONNX sentence-embedding model (§13.1's node-level
+    /// embeddings). Optional -- when given, must be paired with
+    /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
+    /// is written and `search_content` stays keyword-only, unchanged
+    /// from today. Requires `ORT_DYLIB_PATH` to point at a real ONNX
+    /// Runtime shared library at run time (`src/embeddings.rs`).
+    #[arg(long, requires = "embedding_tokenizer")]
+    embedding_model: Option<PathBuf>,
+    /// Path to the tokenizer.json matching `--embedding-model`.
+    #[arg(long, requires = "embedding_model")]
+    embedding_tokenizer: Option<PathBuf>,
+}
+
+/// Files the RDF export writes under `rdf/`.
+use dita2graph_core::rdf::RDF_FILES;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Build {
-            input,
-            output,
-            store,
-            emit_graph_json,
-            mcp,
-            embedding_model,
-            embedding_tokenizer,
-        } => run_build(
-            input,
-            output,
-            store,
-            emit_graph_json,
-            mcp,
-            embedding_model,
-            embedding_tokenizer,
-        ),
+        Command::Build(args) => run_build(args),
         Command::Validate { bundle } => run_validate(bundle),
         Command::Query {
             store,
@@ -128,15 +130,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_build(
-    input: PathBuf,
-    output: PathBuf,
-    store: String,
-    emit_graph_json: String,
-    mcp: String,
-    embedding_model: Option<PathBuf>,
-    embedding_tokenizer: Option<PathBuf>,
-) -> Result<ExitCode> {
+fn run_build(args: BuildArgs) -> Result<ExitCode> {
+    let BuildArgs {
+        input,
+        output,
+        store,
+        emit_graph_json,
+        mcp,
+        emit_rdf,
+        rdf_base,
+        embedding_model,
+        embedding_tokenizer,
+    } = args;
     match store.as_str() {
         "none" | "sqlite" => {}
         other => {
@@ -148,6 +153,11 @@ fn run_build(
     }
     let emit_graph_json = parse_bool_arg(&emit_graph_json, "--emit-graph-json")?;
     let mcp = parse_bool_arg(&mcp, "--mcp")?;
+    let emit_rdf = parse_bool_arg(&emit_rdf, "--emit-rdf")?;
+    // A bad base fails the build before anything is written.
+    if emit_rdf && let Some(base) = &rdf_base {
+        dita2graph_core::rdf::check_base(base)?;
+    }
 
     let raw = fs::read_to_string(&input).with_context(|| format!("reading {}", input.display()))?;
     let mut nodes: Vec<NormalizedNode> =
@@ -171,9 +181,16 @@ fn run_build(
     // Single pass over `nodes` feeding two correlated outputs (§13.1):
     // the OKF graph and the RAG content index share the same in-memory
     // normalized model rather than each re-deriving it.
-    let generated_at = Utc::now();
+    let generated_at = build_time()?;
 
-    let summary = write_bundle(&nodes, &output, generated_at, emit_graph_json)?;
+    // graph.json and graph.db hold the same node/edge view: built once.
+    let graph = (emit_graph_json || store == "sqlite").then(|| graph_view(&nodes));
+    let summary = write_bundle_with(
+        &nodes,
+        &output,
+        generated_at,
+        graph.as_ref().filter(|_| emit_graph_json),
+    )?;
     println!(
         "wrote {} topics, {} maps, {} edges to {} ({} unchanged, skipped)",
         summary.topics_written,
@@ -198,7 +215,7 @@ fn run_build(
     );
 
     if store == "sqlite" {
-        let store_summary = write_sqlite_store(&nodes, &output)?;
+        let store_summary = write_sqlite_view(graph.as_ref().expect("built for sqlite"), &output)?;
         println!(
             "wrote {} node(s), {} edge(s) to {}",
             store_summary.nodes_written,
@@ -262,18 +279,89 @@ fn run_build(
         println!("wrote mcp config to {}", output.join("mcp").display());
     }
 
+    let rdf_dir = output.join("rdf");
+    if emit_rdf {
+        let rdf_summary = write_rdf(
+            &nodes,
+            &output,
+            rdf_base.as_deref(),
+            concat!("dita2graph-core/", env!("CARGO_PKG_VERSION")),
+            generated_at,
+        )?;
+        println!(
+            "wrote {} RDF triple(s) on {} to {}",
+            rdf_summary.triples,
+            rdf_summary.base,
+            rdf_dir.display()
+        );
+        if rdf_summary.placeholder_base {
+            diagnostics::emit(
+                PLACEHOLDER_RDF_BASE,
+                &format!(
+                    "no --rdf-base: the RDF export's IRIs use the placeholder {}, \
+                     which is not meant to be published",
+                    rdf_summary.base
+                ),
+            );
+        }
+    } else {
+        remove_stale_rdf(&rdf_dir)?;
+    }
+
     // A bundle that fails validation isn't a complete build (§2.5): run
     // the same okf-validator + secret-scan checks `validate` does on
-    // okf/, plus a secret scan over rag/ -- okf-validator only knows
-    // okf/'s format, so rag/ gets its own scan, not folded into
-    // validate_and_report (§6.4, §13.1).
+    // okf/, plus a secret scan over rag/ (and rdf/ when written) --
+    // okf-validator only knows okf/'s format, so the others get their
+    // own scan, not folded into validate_and_report (§6.4, §13.1).
     let okf_ok = validate_and_report(&output.join("okf"))?;
     let rag_ok = scan_rag_and_report(&output.join("rag"))?;
-    Ok(if okf_ok && rag_ok {
+    let rdf_ok = !emit_rdf || scan_and_report(&rdf_dir)?;
+    Ok(if okf_ok && rag_ok && rdf_ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
     })
+}
+
+/// The build's timestamp: now, or `SOURCE_DATE_EPOCH` (seconds since the
+/// Unix epoch, the reproducible-builds convention) when it is set, so a
+/// rebuild of the same sources gives the same files.
+fn build_time() -> Result<DateTime<Utc>> {
+    match std::env::var("SOURCE_DATE_EPOCH") {
+        Ok(value) if !value.trim().is_empty() => {
+            let seconds: i64 = value.trim().parse().with_context(|| {
+                format!("SOURCE_DATE_EPOCH: expected seconds since the epoch, got {value:?}")
+            })?;
+            DateTime::from_timestamp(seconds, 0)
+                .with_context(|| format!("SOURCE_DATE_EPOCH: {seconds} is out of range"))
+        }
+        _ => Ok(Utc::now()),
+    }
+}
+
+/// Removes the RDF files an earlier build wrote when this one doesn't
+/// ask for them, so `rdf/` never describes an older graph than `okf/`.
+/// Only the export's own files go; `rdf/` itself only when left empty.
+fn remove_stale_rdf(rdf_dir: &Path) -> Result<()> {
+    let mut removed = false;
+    for file in RDF_FILES {
+        let path = rdf_dir.join(file);
+        if path.is_file() {
+            fs::remove_file(&path).with_context(|| format!("removing stale {}", path.display()))?;
+            removed = true;
+        }
+    }
+    if removed {
+        if fs::read_dir(rdf_dir).is_ok_and(|mut entries| entries.next().is_none()) {
+            fs::remove_dir(rdf_dir)
+                .with_context(|| format!("removing empty {}", rdf_dir.display()))?;
+        }
+        println!(
+            "removed stale RDF export from {} (this build didn't request --emit-rdf)",
+            rdf_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Parses a `"true"`/`"false"` CLI value, matching the Ant property
@@ -428,15 +516,20 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -447,19 +540,27 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
                         relation: Relation::Requires,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::References,
                         target: "installing-product-prereqs".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -470,10 +571,16 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product-prereqs".into(),
                 topic_type: TopicType::Concept,
                 title: "Prerequisites".into(),
@@ -484,10 +591,75 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![],
             }),
         ]
+    }
+
+    /// `build` with the CLI defaults (no store, graph.json, no MCP config,
+    /// no RDF, no embeddings).
+    fn build_args(input: &Path, output: &Path) -> BuildArgs {
+        BuildArgs {
+            input: input.to_path_buf(),
+            output: output.to_path_buf(),
+            store: "none".into(),
+            emit_graph_json: "true".into(),
+            mcp: "false".into(),
+            emit_rdf: "false".into(),
+            rdf_base: None,
+            embedding_model: None,
+            embedding_tokenizer: None,
+        }
+    }
+
+    /// `--emit-rdf true` writes rdf/ on the given base; a later build
+    /// without it removes those files rather than leave an RDF graph
+    /// older than okf/.
+    #[test]
+    fn run_build_writes_rdf_on_request_and_removes_it_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+
+        let code = run_build(BuildArgs {
+            emit_rdf: "true".into(),
+            rdf_base: Some("https://docs.example.com/ug/".into()),
+            ..build_args(&input_path, &output)
+        })
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        let graph = fs::read_to_string(output.join("rdf/graph.ttl")).unwrap();
+        assert!(graph.contains("<https://docs.example.com/ug/node/installing-product>"));
+        for file in RDF_FILES {
+            assert!(output.join("rdf").join(file).is_file(), "{file}");
+        }
+
+        let code = run_build(build_args(&input_path, &output)).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(!output.join("rdf").exists());
+    }
+
+    #[test]
+    fn an_invalid_rdf_base_is_an_error_not_a_silent_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+        let result = run_build(BuildArgs {
+            emit_rdf: "true".into(),
+            rdf_base: Some("docs example".into()),
+            ..build_args(&input_path, &output)
+        });
+        assert!(result.is_err());
+        assert!(
+            !output.exists(),
+            "nothing is written before the base is checked"
+        );
     }
 
     /// `dita2graph-mcp`'s `BundleReader` treats `graph.db`'s mere
@@ -504,29 +676,15 @@ mod tests {
         fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
         let output = dir.path().join("out");
 
-        let code = run_build(
-            input_path.clone(),
-            output.clone(),
-            "sqlite".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            None,
-            None,
-        )
+        let code = run_build(BuildArgs {
+            store: "sqlite".into(),
+            ..build_args(&input_path, &output)
+        })
         .unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(output.join("graph.db").exists());
 
-        let code = run_build(
-            input_path,
-            output.clone(),
-            "none".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            None,
-            None,
-        )
-        .unwrap();
+        let code = run_build(build_args(&input_path, &output)).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(
             !output.join("graph.db").exists(),
@@ -547,16 +705,7 @@ mod tests {
         fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
         let output = dir.path().join("out");
 
-        let code = run_build(
-            input_path.clone(),
-            output.clone(),
-            "none".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            None,
-            None,
-        )
-        .unwrap();
+        let code = run_build(build_args(&input_path, &output)).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(output.join("build-state.json").exists());
 
@@ -564,16 +713,7 @@ mod tests {
         let mtime_before = fs::metadata(&concept_path).unwrap().modified().unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let code = run_build(
-            input_path,
-            output.clone(),
-            "none".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            None,
-            None,
-        )
-        .unwrap();
+        let code = run_build(build_args(&input_path, &output)).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let mtime_after = fs::metadata(&concept_path).unwrap().modified().unwrap();

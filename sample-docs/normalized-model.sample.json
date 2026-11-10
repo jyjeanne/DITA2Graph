@@ -4,6 +4,10 @@
     "id": "user-guide",
     "title": "User Guide",
     "sourceFile": "user-guide.ditamap",
+    "keyDefs": [
+      { "name": "config-concept", "target": "configuration", "sourceFile": "user-guide.ditamap" },
+      { "name": "install-task", "target": "installing-product", "sourceFile": "user-guide.ditamap" }
+    ],
     "links": [
       { "relation": "contains", "target": "configuration" },
       { "relation": "contains", "target": "installing-product" }
@@ -32,9 +36,10 @@
     "audience": [],
     "product": [],
     "keys": [],
+    "keyrefs": ["config-concept"],
     "sourceFile": "topics/installing-product-prereqs.dita",
     "links": [
-      { "relation": "requires", "target": "configuration" }
+      { "relation": "references", "target": "configuration" }
     ]
   },
   {
@@ -47,10 +52,11 @@
     "audience": ["admin"],
     "product": ["enterprise"],
     "keys": ["install-task"],
+    "keyrefs": ["config-concept"],
     "sourceFile": "topics/installing-product.dita",
     "links": [
-      { "relation": "requires", "target": "configuration" },
-      { "relation": "references", "target": "installing-product-prereqs" }
+      { "relation": "requires", "target": "installing-product-prereqs" },
+      { "relation": "references", "target": "configuration" }
     ]
   }
 ]

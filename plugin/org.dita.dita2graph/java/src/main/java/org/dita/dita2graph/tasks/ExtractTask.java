@@ -10,6 +10,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -19,10 +20,12 @@ import java.util.List;
  * {@link DitaModelExtractor}, and shells out to the {@code dita2graph-core}
  * Rust binary (§3.4) to write the OKF bundle.
  *
- * <p>{@code emitGraphJson} and {@code mcp} are forwarded to the Rust
- * core's {@code --emit-graph-json} and {@code --mcp} flags. {@code mcp}
- * writes an {@code mcp/mcp-server.toml} that {@code dita2graph-mcp
- * --config} can read (§5.4). {@code depth} ("max relationship traversal
+ * <p>{@code emitGraphJson}, {@code mcp} and {@code rdf} are forwarded to
+ * the Rust core's {@code --emit-graph-json}, {@code --mcp} and {@code
+ * --emit-rdf} flags, and a non-empty {@code rdfBase} to {@code
+ * --rdf-base}. {@code mcp} writes an {@code mcp/mcp-server.toml} that
+ * {@code dita2graph-mcp --config} can read (§5.4); {@code rdf} writes
+ * {@code rdf/} (docs/semantic-model.md). {@code depth} ("max relationship traversal
  * depth captured in the graph", §2.3) is parsed here and passed to
  * {@link DitaModelExtractor}'s {@code maxDepth}, limiting how many
  * levels of map containment its {@code contains} edges go, now that
@@ -38,6 +41,8 @@ public class ExtractTask extends Task {
     private String mcp;
     private String store;
     private String includeDrafts;
+    private String rdf;
+    private String rdfBase;
 
     public void setTempDir(String tempDir) {
         this.tempDir = tempDir;
@@ -65,6 +70,14 @@ public class ExtractTask extends Task {
 
     public void setIncludeDrafts(String includeDrafts) {
         this.includeDrafts = includeDrafts;
+    }
+
+    public void setRdf(String rdf) {
+        this.rdf = rdf;
+    }
+
+    public void setRdfBase(String rdfBase) {
+        this.rdfBase = rdfBase;
     }
 
     @Override
@@ -110,7 +123,21 @@ public class ExtractTask extends Task {
         String resolvedStore = (store == null || store.isEmpty()) ? "sqlite" : store;
         String resolvedEmitGraphJson = (emitGraphJson == null || emitGraphJson.isEmpty()) ? "true" : emitGraphJson;
         String resolvedMcp = (mcp == null || mcp.isEmpty()) ? "false" : mcp;
-        int exitCode = runCore(coreBin, modelFile, outputDir, resolvedStore, resolvedEmitGraphJson, resolvedMcp);
+        List<String> command = new ArrayList<>(List.of(
+                coreBin, "build",
+                "--input", modelFile.getAbsolutePath(),
+                "--output", outputDir,
+                "--store", resolvedStore,
+                "--emit-graph-json", resolvedEmitGraphJson,
+                "--mcp", resolvedMcp,
+                "--emit-rdf", (rdf == null || rdf.isEmpty()) ? "false" : rdf));
+        // An empty base (build.xml's default) means none: the core then
+        // uses its placeholder and logs DITA2GRAPH083W.
+        if (rdfBase != null && !rdfBase.trim().isEmpty()) {
+            command.add("--rdf-base");
+            command.add(rdfBase.trim());
+        }
+        int exitCode = runCore(coreBin, command);
         if (exitCode != 0) {
             throw new BuildException("dita2graph:extract: dita2graph-core exited with code " + exitCode
                     + " (§2.5: 0 success, 1 validation failure, 2 internal error)");
@@ -149,15 +176,8 @@ public class ExtractTask extends Task {
         return "dita2graph-core";
     }
 
-    private int runCore(String coreBin, File modelFile, String outputDir, String store, String emitGraphJson,
-            String mcp) throws BuildException {
-        ProcessBuilder pb = new ProcessBuilder(
-                coreBin, "build",
-                "--input", modelFile.getAbsolutePath(),
-                "--output", outputDir,
-                "--store", store,
-                "--emit-graph-json", emitGraphJson,
-                "--mcp", mcp);
+    private int runCore(String coreBin, List<String> command) throws BuildException {
+        ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(true);
         try {
             Process process = pb.start();

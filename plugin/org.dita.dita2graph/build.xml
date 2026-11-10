@@ -34,6 +34,9 @@
     <property name="args.dita2graph.emit-graph-json" value="true"/>
     <property name="args.dita2graph.store" value="sqlite"/>
     <property name="args.dita2graph.include-drafts" value="false"/>
+    <property name="args.dita2graph.rdf" value="false"/>
+    <!-- Empty: no base, the core uses its placeholder and says so (083W). -->
+    <property name="args.dita2graph.rdf.base" value=""/>
 
     <!-- Custom Ant task, defined by lib/dita2graph-core.jar:
            1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
@@ -57,7 +60,9 @@
         emitGraphJson="${args.dita2graph.emit-graph-json}"
         mcp="${args.dita2graph.mcp}"
         store="${args.dita2graph.store}"
-        includeDrafts="${args.dita2graph.include-drafts}"/>
+        includeDrafts="${args.dita2graph.include-drafts}"
+        rdf="${args.dita2graph.rdf}"
+        rdfBase="${args.dita2graph.rdf.base}"/>
   </target>
 
 </project>

@@ -12,6 +12,7 @@
 
 mod bundle;
 mod live;
+mod sparql;
 mod tools;
 
 use anyhow::{Context, Result, anyhow};
@@ -25,6 +26,9 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--sparql` (no value) offers query_graph; off by default.
+    let sparql = args.iter().any(|a| a == "--sparql");
+    let args: Vec<String> = args.into_iter().filter(|a| a != "--sparql").collect();
     let live_config = resolve_live_validation_config(&args);
     // resolve_bundle_root only understands "--config <path>" or a bare
     // positional path as args[0] -- strip the validate_live-specific
@@ -40,7 +44,8 @@ fn main() -> Result<()> {
     // against a real, sizeable bundle issues many tool calls, not one.
     let mut cache = bundle::BundleCache::new(bundle_root)
         .with_live_config(live_config)
-        .with_embedder(embedder);
+        .with_embedder(embedder)
+        .with_sparql(sparql);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -364,7 +369,7 @@ fn handle_message(request: &Value, cache: &mut bundle::BundleCache) -> Option<Va
             "serverInfo": { "name": "dita2graph-mcp", "version": env!("CARGO_PKG_VERSION") },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::list() })),
+        "tools/list" => Ok(json!({ "tools": tools::list(cache.sparql_enabled()) })),
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -407,7 +412,7 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
-        write_mcp_config, write_rag_index,
+        write_mcp_config, write_rag_index, write_rdf, write_sqlite_store,
     };
 
     #[test]
@@ -556,15 +561,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -575,13 +585,20 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -592,6 +609,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -609,6 +629,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -616,14 +637,19 @@ mod tests {
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "unrelated-topic".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -634,13 +660,20 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -651,10 +684,16 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "unrelated-topic".into(),
                 topic_type: TopicType::Concept,
                 title: "Unrelated Topic".into(),
@@ -665,6 +704,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/unrelated-topic.dita".into(),
                 links: vec![],
             }),
@@ -712,6 +754,428 @@ mod tests {
         assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
         assert!(names.contains(&"validate_live"));
+        assert!(names.contains(&"read_topic"));
+    }
+
+    /// `plugins-installing` reuses two fragments of the conref warehouse
+    /// `ID` (resources/conref-task.dita), the shape dita-ot/docs has: a
+    /// generated-from edge naming them, and a resolved body keeping them.
+    fn reuse_bundle_root(with_sqlite: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = vec![
+            NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
+                id: "plugins-installing".into(),
+                topic_type: TopicType::Task,
+                title: "Installing plug-ins".into(),
+                shortdesc: Some("Use the dita install subcommand to install plug-ins.".into()),
+                body: Some("At the command-line prompt, enter the following command: dita install".into()),
+                resolved_body: Some(
+                    "At the command-line prompt, enter the following command: dita install \
+                     [reused from resources/conref-task.dita#plug-in] the plug-in is an ID, a URL or a ZIP file \
+                     [end reused]"
+                        .into(),
+                ),
+                processing_role: None,
+                dita_class: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/plugins-installing.dita".into(),
+                links: vec![Link {
+                    relation: Relation::GeneratedFrom,
+                    target: "ID".into(),
+                    fragments: vec!["plug-in".into(), "plugin-integrate-all".into()],
+                }],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
+                id: "ID".into(),
+                topic_type: TopicType::Task,
+                title: "Conref file for tasks".into(),
+                shortdesc: None,
+                body: Some("the plug-in is an ID, a URL or a ZIP file".into()),
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "resources/conref-task.dita".into(),
+                links: vec![],
+            }),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        if with_sqlite {
+            write_sqlite_store(&nodes, dir.path()).unwrap();
+        }
+        dir
+    }
+
+    fn call_tool(dir: &tempfile::TempDir, name: &str, arguments: Value) -> String {
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A map with a URL key and a text key, a task that links to the URL
+    /// through the key and includes a sample file, and a topic that
+    /// references the task (shaped after dita-ot/docs' installing-via-homebrew).
+    fn declarations_bundle_root(with_sqlite: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "guide", "title": "Guide", "sourceFile": "guide.ditamap",
+              "keyDefs": [
+                { "name": "homebrew", "url": "https://brew.sh", "text": "Homebrew",
+                  "sourceFile": "resources/external-links.ditamap" },
+                { "name": "release", "text": "4.4.1", "sourceFile": "resources/keys.ditamap" },
+                { "name": "brew-task", "target": "brew", "sourceFile": "guide.ditamap" }
+              ],
+              "links": [{ "relation": "contains", "target": "brew" }, { "relation": "contains", "target": "install" }] },
+            { "type": "topic", "id": "brew", "topicType": "task", "title": "Installing via Homebrew",
+              "sourceFile": "topics/brew.dita", "keyrefs": ["homebrew", "release"],
+              "externalLinks": [{ "url": "https://brew.sh", "key": "homebrew" }],
+              "codeRefs": ["samples/Brewfile"], "links": [] },
+            { "type": "topic", "id": "install", "topicType": "concept", "title": "Installing",
+              "sourceFile": "topics/install.dita", "keyrefs": ["brew-task"],
+              "links": [{ "relation": "references", "target": "brew" }] },
+            { "type": "topic", "id": "links", "topicType": "topic", "title": "Reusable links",
+              "processingRole": "resource-only", "sourceFile": "reusables/links.dita",
+              "externalLinks": [{ "url": "https://brew.sh" }], "links": [] }
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        if with_sqlite {
+            write_sqlite_store(&nodes, dir.path()).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn keys_urls_and_sample_files_are_searchable_and_traversable() {
+        for with_sqlite in [false, true] {
+            let dir = declarations_bundle_root(with_sqlite);
+
+            let hits = call_tool(&dir, "search_topics", json!({ "query": "brew" }));
+            assert!(
+                hits.contains("homebrew = \"Homebrew\" (Key) [key:homebrew]"),
+                "{hits}"
+            );
+            assert!(
+                hits.contains("https://brew.sh (External Resource) [https://brew.sh]"),
+                "{hits}"
+            );
+
+            // Where a key is defined, and who uses it.
+            let key = call_tool(
+                &dir,
+                "find_related_topics",
+                json!({ "topicId": "key:homebrew" }),
+            );
+            assert!(
+                key.starts_with("Key key:homebrew, in resources/external-links.ditamap"),
+                "{key}"
+            );
+            assert!(key.contains("key-target -> https://brew.sh"), "{key}");
+            assert!(
+                key.contains("uses-key <- Installing via Homebrew (brew)"),
+                "{key}"
+            );
+
+            // Who links to a URL, directly or through a key, and the file
+            // that defines that key.
+            let impact = call_tool(
+                &dir,
+                "analyze_impact",
+                json!({ "topicId": "https://brew.sh", "depth": 1, "excerpts": false }),
+            );
+            assert!(
+                impact.contains(
+                    "--key-target--> https://brew.sh [defined in resources/external-links.ditamap]"
+                ),
+                "{impact}"
+            );
+            assert!(
+                impact.contains("Installing via Homebrew (brew) --links-to--> https://brew.sh"),
+                "{impact}"
+            );
+
+            // A topic's impact does not go through the keys that name it,
+            // nor reach the map through the keys it defines.
+            let impact = call_tool(
+                &dir,
+                "analyze_impact",
+                json!({ "topicId": "brew", "excerpts": false, "limit": 0 }),
+            );
+            assert!(
+                impact.contains(
+                    "would affect 2 concept(s) (depth 5). By relation: contains 1, references 1."
+                ),
+                "{impact}"
+            );
+
+            let files = call_tool(
+                &dir,
+                "find_related_topics",
+                json!({ "topicId": "file:samples/Brewfile" }),
+            );
+            assert!(
+                files.contains("includes-code <- Installing via Homebrew (brew)"),
+                "{files}"
+            );
+
+            // A reuse warehouse that holds the link is not a published page,
+            // and every tool says so.
+            let note = "[resource-only: not a published page]";
+            let impact = call_tool(
+                &dir,
+                "analyze_impact",
+                json!({ "topicId": "https://brew.sh", "depth": 1, "excerpts": false }),
+            );
+            assert!(
+                impact.contains(&format!(
+                    "Reusable links (links) {note} --links-to--> https://brew.sh"
+                )),
+                "{impact}"
+            );
+            assert!(
+                impact.contains("Installing via Homebrew (brew) --links-to-->"),
+                "a published topic carries no note: {impact}"
+            );
+            let url = call_tool(
+                &dir,
+                "find_related_topics",
+                json!({ "topicId": "https://brew.sh" }),
+            );
+            assert!(
+                url.contains(&format!("links-to <- Reusable links (links) {note}")),
+                "{url}"
+            );
+            let hits = call_tool(&dir, "search_topics", json!({ "query": "reusable" }));
+            assert!(
+                hits.contains(&format!("Reusable links (Topic) [links] {note}")),
+                "{hits}"
+            );
+            let text = call_tool(&dir, "read_topic", json!({ "topicId": "links" }));
+            assert!(
+                text.starts_with(&format!("Reusable links (Topic) [links] {note}\n")),
+                "{text}"
+            );
+
+            let text = call_tool(&dir, "read_topic", json!({ "topicId": "brew" }));
+            assert!(
+                text.contains("External links:\n  - https://brew.sh\n"),
+                "{text}"
+            );
+            assert!(
+                text.contains("  - key:homebrew -> https://brew.sh = \"Homebrew\" (resources/external-links.ditamap)\n"),
+                "{text}"
+            );
+            assert!(
+                text.contains("  - key:release = \"4.4.1\" (resources/keys.ditamap)\n"),
+                "{text}"
+            );
+            assert!(
+                text.contains("Sample files included (coderef):\n  - file:samples/Brewfile\n"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn analyze_impact_reaches_a_glossary_keys_users_and_counts_only_concepts() {
+        // `uses` shows the term through the key (abbreviated-form): no
+        // link to the glossentry, only uses-key -> key:api -> api.
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "guide", "title": "Guide", "sourceFile": "guide.ditamap",
+              "keyDefs": [{ "name": "api", "target": "api", "sourceFile": "glossary.ditamap" }],
+              "links": [] },
+            { "type": "topic", "id": "api", "topicType": "glossentry", "title": "API",
+              "sourceFile": "glossary/api.dita", "links": [] },
+            { "type": "topic", "id": "uses", "topicType": "concept", "title": "Uses the term",
+              "sourceFile": "topics/uses.dita", "keyrefs": ["api"], "links": [] },
+            { "type": "topic", "id": "links", "topicType": "concept", "title": "Links to the term",
+              "sourceFile": "topics/links.dita", "keyrefs": ["api"],
+              "links": [{ "relation": "references", "target": "api" }] }
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+
+        let impact = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "api", "excerpts": false }),
+        );
+        assert!(
+            impact.starts_with(
+                "changing `api` would affect 2 concept(s) (depth 5). By relation: references 1, \
+                 uses-key 1. By level: 1: 1, 2: 1. 1 key, URL or file node(s) on the way are listed too, not counted."
+            ),
+            "{impact}"
+        );
+        assert!(
+            impact.contains("Uses the term (uses) --uses-key--> key:api"),
+            "{impact}"
+        );
+        assert!(
+            impact.contains("--key-target--> api [defined in glossary.ditamap]"),
+            "{impact}"
+        );
+
+        // A huge limit pages, it does not overflow (and take the server down).
+        let paged = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "api", "offset": 1, "limit": u64::MAX, "excerpts": false }),
+        );
+        assert!(
+            paged.contains("Links to the term") || paged.contains("Uses the term"),
+            "{paged}"
+        );
+    }
+
+    #[test]
+    fn query_graph_is_offered_only_with_sparql_and_reads_the_rdf_export() {
+        let names = |sparql: bool| -> Vec<String> {
+            let response = handle_message(
+                &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+                &mut bundle::BundleCache::new(PathBuf::from(".")).with_sparql(sparql),
+            )
+            .unwrap();
+            response["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(!names(false).contains(&"query_graph".to_string()));
+        assert!(names(true).contains(&"query_graph".to_string()));
+
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "guide", "title": "Guide", "sourceFile": "guide.ditamap",
+              "links": [{ "relation": "contains", "target": "brew" }] },
+            { "type": "topic", "id": "brew", "topicType": "task", "title": "Installing via Homebrew",
+              "sourceFile": "topics/brew.dita",
+              "externalLinks": [{ "url": "https://brew.sh" }], "links": [] }
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        let query = |sparql: bool| -> Value {
+            handle_message(
+                &json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "query_graph", "arguments": {
+                        "query": "SELECT ?topic WHERE { ?topic d2g:linksTo <https://brew.sh> }" } }
+                }),
+                &mut bundle::BundleCache::new(dir.path().to_path_buf()).with_sparql(sparql),
+            )
+            .unwrap()
+        };
+        let text = |response: &Value| {
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        let disabled = query(false);
+        assert_eq!(disabled["result"]["isError"], true);
+        assert!(text(&disabled).contains("--sparql"), "{disabled}");
+        let no_export = query(true);
+        assert_eq!(no_export["result"]["isError"], true);
+        assert!(text(&no_export).contains("no RDF export"), "{no_export}");
+
+        write_rdf(&nodes, dir.path(), None, "test", chrono::Utc::now()).unwrap();
+        let answer = query(true);
+        assert_eq!(answer["result"]["isError"], false, "{answer}");
+        assert_eq!(
+            text(&answer),
+            "1 result(s), showing 1-1.\n?topic\nnode:brew"
+        );
+    }
+
+    #[test]
+    fn read_topic_returns_the_full_text_with_reused_fragments_in_place() {
+        let dir = reuse_bundle_root(false);
+        let text = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "plugins-installing" }),
+        );
+        assert!(text.starts_with("Installing plug-ins (Task) [plugins-installing]\nSource: topics/plugins-installing.dita"));
+        assert!(
+            text.contains("Use the dita install subcommand"),
+            "summary first: {text}"
+        );
+        assert!(
+            text.contains("[reused from resources/conref-task.dita#plug-in] the plug-in is an ID, a URL or a ZIP file [end reused]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Conref file for tasks (ID, resources/conref-task.dita): plug-in, plugin-integrate-all"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn read_topic_falls_back_to_the_plain_text_and_truncates_at_max_chars() {
+        let dir = reuse_bundle_root(false);
+        let text = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "ID", "maxChars": 10 }),
+        );
+        assert!(text.contains("\nthe plug-i\n"), "{text}");
+        assert!(text.contains("(truncated at 10 of 41 characters"), "{text}");
+        assert!(
+            !text.contains("Reused content"),
+            "ID reuses nothing: {text}"
+        );
+    }
+
+    #[test]
+    fn generated_from_fragments_show_in_related_topics_and_impact_from_json_and_sqlite() {
+        for with_sqlite in [false, true] {
+            let dir = reuse_bundle_root(with_sqlite);
+            let related = call_tool(
+                &dir,
+                "find_related_topics",
+                json!({ "topicId": "plugins-installing" }),
+            );
+            assert!(
+                related.contains("generated-from -> Conref file for tasks (ID) [fragments: plug-in, plugin-integrate-all]"),
+                "sqlite={with_sqlite}: {related}"
+            );
+            let impact = call_tool(&dir, "analyze_impact", json!({ "topicId": "ID" }));
+            assert!(
+                impact
+                    .contains("--generated-from--> ID [fragments: plug-in, plugin-integrate-all]"),
+                "sqlite={with_sqlite}: {impact}"
+            );
+        }
     }
 
     #[test]
@@ -929,6 +1393,9 @@ mod tests {
         let nodes: Vec<NormalizedNode> = (0..20)
             .map(|i| {
                 NormalizedNode::Topic(NormalizedTopic {
+                    keyrefs: vec![],
+                    external_links: vec![],
+                    code_refs: vec![],
                     id: format!("topic-{i}"),
                     topic_type: TopicType::Concept,
                     title: format!("Topic {i}"),
@@ -939,6 +1406,9 @@ mod tests {
                     keys: vec![],
                     uicontrols: vec![],
                     cmd_uicontrols: vec![],
+                    resolved_body: None,
+                    processing_role: None,
+                    dita_class: None,
                     source_file: format!("topics/topic-{i}.dita"),
                     links: vec![],
                 })
@@ -1008,6 +1478,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "install-notes".into(),
                 topic_type: TopicType::Task,
                 title: "Install Notes".into(),
@@ -1018,10 +1491,16 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/install-notes.dita".into(),
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "weather-notes".into(),
                 topic_type: TopicType::Concept,
                 title: "Weather Notes".into(),
@@ -1032,6 +1511,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/weather-notes.dita".into(),
                 links: vec![],
             }),
@@ -1156,6 +1638,120 @@ mod tests {
         // rag/ (§13.1), so it gets no excerpt line -- just confirm the
         // overall report still lists it without crashing on the lookup.
         assert!(text.contains("user-guide"), "{text}");
+    }
+
+    /// A conref warehouse reused by 50 topics (fragment `a` by the even
+    /// ones, `b` by the odd ones) and contained by the map: 51 dependents,
+    /// more than one page.
+    fn warehouse_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let topic = |id: String, links: Vec<Link>| {
+            NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
+                id: id.clone(),
+                topic_type: TopicType::Task,
+                title: format!("Title of {id}"),
+                shortdesc: None,
+                body: Some(format!("Body of {id}.")),
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: format!("topics/{id}.dita"),
+                links,
+            })
+        };
+        let mut nodes = vec![
+            NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
+                id: "manual".into(),
+                title: "Manual".into(),
+                source_file: "manual.ditamap".into(),
+                links: vec![Link {
+                    relation: Relation::Contains,
+                    target: "warehouse".into(),
+                    fragments: Vec::new(),
+                }],
+            }),
+            topic("warehouse".into(), vec![]),
+        ];
+        for i in 0..50 {
+            let fragment = if i % 2 == 0 { "a" } else { "b" };
+            nodes.push(topic(
+                format!("reuser-{i:02}"),
+                vec![Link {
+                    relation: Relation::GeneratedFrom,
+                    target: "warehouse".into(),
+                    fragments: vec![fragment.into()],
+                }],
+            ));
+        }
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn analyze_impact_gives_totals_first_and_pages_the_entries() {
+        let dir = warehouse_bundle_root();
+        let first = call_tool(&dir, "analyze_impact", json!({ "topicId": "warehouse" }));
+        assert!(
+            first.starts_with(
+                "changing `warehouse` would affect 51 concept(s) (depth 5). By relation: contains 1, generated-from 50. By level: 1: 51."
+            ),
+            "{first}"
+        );
+        assert_eq!(
+            first.matches("--generated-from--> warehouse").count()
+                + first.matches("--contains--> warehouse").count(),
+            40
+        );
+        assert!(
+            first.contains("(showing 1-40 of 51 -- pass offset=40 for the next page"),
+            "{first}"
+        );
+
+        let second = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "offset": 40 }),
+        );
+        assert_eq!(second.matches("--> warehouse").count(), 11, "{second}");
+        assert!(!second.contains("(showing"), "last page: {second}");
+
+        let counts = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "limit": 0 }),
+        );
+        assert!(!counts.contains("-->"), "counts only: {counts}");
+    }
+
+    #[test]
+    fn analyze_impact_fragment_keeps_only_the_topics_reusing_that_fragment() {
+        let dir = warehouse_bundle_root();
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "fragment": "a", "depth": 1, "excerpts": false }),
+        );
+        assert!(
+            text.starts_with(
+                "changing `warehouse` would affect 25 concept(s) (depth 1, fragment a). By relation: generated-from 25."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("reuser-00") && !text.contains("reuser-01 "),
+            "{text}"
+        );
+        assert!(!text.contains("Body of"), "excerpts=false: {text}");
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! yet.
 //!
 //! Exactly mirrors `graph.json`'s own fields (`id`/`type` per node,
-//! `from`/`to`/`relation` per edge) and nothing more -- no title, no
+//! `from`/`to`/`relation`/`fragments` per edge) and nothing more -- no title, no
 //! generated-at metadata, neither of which `graph.json` carries either
 //! (`BundleReader`/`run_query` both already get a title, when they need
 //! one, from the `okf/` concept file itself, not from the graph index).
@@ -39,6 +39,15 @@ pub struct StoreSummary {
 /// build must not survive, and starting from a clean file is the
 /// simplest way to guarantee that until real incremental rebuild exists.
 pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result<StoreSummary> {
+    write_sqlite_view(&crate::graph_view::graph_view(nodes), output_dir)
+}
+
+/// [`write_sqlite_store`] from a node/edge view the caller already built
+/// (the one `graph.json` is written from).
+pub fn write_sqlite_view(
+    graph: &crate::graph_view::GraphView,
+    output_dir: &Path,
+) -> Result<StoreSummary> {
     let db_path = output_dir.join("graph.db");
     if db_path.exists() {
         std::fs::remove_file(&db_path)
@@ -47,8 +56,8 @@ pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result
     let mut conn =
         Connection::open(&db_path).with_context(|| format!("creating {}", db_path.display()))?;
     conn.execute_batch(
-        "CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT NOT NULL);
-         CREATE TABLE edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL);
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, source_file TEXT, processing_role TEXT);
+         CREATE TABLE edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL, fragments TEXT);
          CREATE INDEX idx_edges_from ON edges(from_id, relation);
          CREATE INDEX idx_edges_to ON edges(to_id, relation);",
     )
@@ -62,31 +71,46 @@ pub fn write_sqlite_store(nodes: &[NormalizedNode], output_dir: &Path) -> Result
         .transaction()
         .context("starting graph.db write transaction")?;
     {
-        // `OR REPLACE`, not a plain `INSERT`: a normalized-model input
-        // with two nodes sharing an id is exactly as valid here as it is
-        // for `graph.json`/`okf/` (`okf.rs::write_bundle` just has the
-        // second node's `.md` file overwrite the first's at the same
-        // path -- last node wins, no error). A bare `INSERT` would hit
-        // `id`'s `PRIMARY KEY` and turn that into a hard `build` failure
-        // that only happens when `--store sqlite` is given, diverging
-        // from the default path for the same input.
+        // A normalized-model input with two nodes sharing an id is as
+        // valid here as for `graph.json`/`okf/`: `okf.rs::write_bundle`
+        // has the second node's `.md` file overwrite the first's, and
+        // `graph_view` keeps that last node too, so the view holds each
+        // id once. `OR REPLACE` stays as the same rule for a view built
+        // any other way: a bare `INSERT` would hit `id`'s `PRIMARY KEY`
+        // and fail the build only when `--store sqlite` is given.
         let mut insert_node = tx
-            .prepare("INSERT OR REPLACE INTO nodes (id, type) VALUES (?1, ?2)")
+            .prepare(
+                "INSERT OR REPLACE INTO nodes (id, type, title, source_file, processing_role) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
             .context("preparing node insert")?;
         let mut insert_edge = tx
-            .prepare("INSERT INTO edges (from_id, to_id, relation) VALUES (?1, ?2, ?3)")
+            .prepare(
+                "INSERT INTO edges (from_id, to_id, relation, fragments) VALUES (?1, ?2, ?3, ?4)",
+            )
             .context("preparing edge insert")?;
-        for node in nodes {
+        // The same nodes and edges as graph.json, keys/URLs/files included.
+        for node in &graph.nodes {
             insert_node
-                .execute(params![node.id(), node.okf_type()])
-                .with_context(|| format!("inserting node `{}`", node.id()))?;
+                .execute(params![
+                    node.id,
+                    node.type_,
+                    node.title,
+                    node.source_file,
+                    node.processing_role
+                ])
+                .with_context(|| format!("inserting node `{}`", node.id))?;
             summary.nodes_written += 1;
-            for link in node.links() {
-                insert_edge
-                    .execute(params![node.id(), link.target, link.relation.as_str()])
-                    .with_context(|| format!("inserting edge from `{}`", node.id()))?;
-                summary.edges_written += 1;
-            }
+        }
+        for edge in &graph.edges {
+            let fragments = if edge.fragments.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&edge.fragments).context("serializing edge fragments")?)
+            };
+            insert_edge
+                .execute(params![edge.from, edge.to, edge.relation, fragments])
+                .with_context(|| format!("inserting edge from `{}`", edge.from))?;
+            summary.edges_written += 1;
         }
     }
     tx.commit().context("committing graph.db")?;
@@ -128,11 +152,11 @@ fn row_to_pair(row: &rusqlite::Row) -> rusqlite::Result<(String, String)> {
 }
 
 /// `(id, type)`, as dumped by [`read_sqlite_store`].
-pub type StoreNode = (String, String);
-/// `(from, to, relation)`, as dumped by [`read_sqlite_store`].
-pub type StoreEdge = (String, String, String);
+pub type StoreNode = crate::graph_view::ViewNode;
+/// `(from, to, relation, fragments)`, as dumped by [`read_sqlite_store`].
+pub type StoreEdge = (String, String, String, Vec<String>);
 
-/// Every node (`id`, `type`) and edge (`from`, `to`, `relation`) in
+/// Every node (`id`, `type`) and edge (`from`, `to`, `relation`, `fragments`) in
 /// `db_path` -- the same full nodes+edges view `graph.json` itself
 /// provides, for a caller that wants to load a bundle straight from
 /// `graph.db` instead of parsing `graph.json`, skipping the JSON parse
@@ -147,24 +171,62 @@ pub fn read_sqlite_store(db_path: &Path) -> Result<(Vec<StoreNode>, Vec<StoreEdg
     let conn =
         Connection::open(db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
-    let mut node_stmt = conn
-        .prepare("SELECT id, type FROM nodes")
-        .context("preparing node dump")?;
+    // A graph.db written before keys, URLs and files were nodes has no
+    // title/source_file columns, and one written before processing roles
+    // has no processing_role: read it as it is.
+    let has = |columns: &str| {
+        conn.prepare(&format!("SELECT {columns} FROM nodes LIMIT 0"))
+            .is_ok()
+    };
+    let query = if has("processing_role") {
+        "SELECT id, type, title, source_file, processing_role FROM nodes"
+    } else if has("title, source_file") {
+        "SELECT id, type, title, source_file, NULL FROM nodes"
+    } else {
+        "SELECT id, type, NULL, NULL, NULL FROM nodes"
+    };
+    let mut node_stmt = conn.prepare(query).context("preparing node dump")?;
     let nodes = node_stmt
-        .query_map([], row_to_pair)
+        .query_map([], |row| {
+            Ok(crate::graph_view::ViewNode {
+                id: row.get(0)?,
+                type_: row.get(1)?,
+                title: row.get(2)?,
+                source_file: row.get(3)?,
+                processing_role: row.get(4)?,
+            })
+        })
         .context("reading graph.db nodes")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("collecting graph.db nodes")?;
     drop(node_stmt);
 
+    // A graph.db written before the fragments column existed fails here,
+    // and BundleReader::open then falls back to graph.json.
     let mut edge_stmt = conn
-        .prepare("SELECT from_id, to_id, relation FROM edges")
+        .prepare("SELECT from_id, to_id, relation, fragments FROM edges")
         .context("preparing edge dump")?;
-    let edges = edge_stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    let rows = edge_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
         .context("reading graph.db edges")?
         .collect::<rusqlite::Result<Vec<_>>>()
         .context("collecting graph.db edges")?;
+    let mut edges = Vec::with_capacity(rows.len());
+    for (from, to, relation, fragments) in rows {
+        let fragments = match fragments {
+            Some(json) => serde_json::from_str(&json)
+                .with_context(|| format!("parsing fragments of edge {from} -> {to}"))?,
+            None => Vec::new(),
+        };
+        edges.push((from, to, relation, fragments));
+    }
 
     Ok((nodes, edges))
 }
@@ -177,15 +239,20 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -196,19 +263,27 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
                         relation: Relation::Requires,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::References,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -219,6 +294,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -284,6 +362,9 @@ mod tests {
         // Rebuild from a model where installing-product no longer exists
         // at all -- a real "topic deleted since the last build" case.
         let smaller = vec![NormalizedNode::Topic(NormalizedTopic {
+            keyrefs: vec![],
+            external_links: vec![],
+            code_refs: vec![],
             id: "configuration".into(),
             topic_type: TopicType::Concept,
             title: "Configuration Overview".into(),
@@ -294,6 +375,9 @@ mod tests {
             keys: vec![],
             uicontrols: vec![],
             cmd_uicontrols: vec![],
+            resolved_body: None,
+            processing_role: None,
+            dita_class: None,
             source_file: "topics/configuration.dita".into(),
             links: vec![],
         })];
@@ -319,20 +403,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "dup".into(),
                 title: "First".into(),
                 source_file: "a.ditamap".into(),
                 links: vec![],
             }),
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "dup".into(),
                 title: "Second".into(),
                 source_file: "b.ditamap".into(),
                 links: vec![],
             }),
         ];
+        // The view graph.json and graph.db share keeps the first of two
+        // nodes with one id, so only one row is ever written.
         let summary = write_sqlite_store(&nodes, dir.path()).unwrap();
-        assert_eq!(summary.nodes_written, 2);
+        assert_eq!(summary.nodes_written, 1);
 
         let conn = Connection::open(dir.path().join("graph.db")).unwrap();
         let count: i64 = conn
@@ -347,12 +435,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_from_fragments_round_trip_through_graph_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.links.push(Link {
+                relation: Relation::GeneratedFrom,
+                target: "configuration".into(),
+                fragments: vec!["warning-note".into(), "li@37".into()],
+            });
+        }
+        write_sqlite_store(&nodes, dir.path()).unwrap();
+
+        let (_, edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        let generated_from = edges
+            .iter()
+            .find(|(_, _, relation, _)| relation == "generated-from")
+            .expect("the generated-from edge");
+        assert_eq!(
+            generated_from.3,
+            vec!["warning-note".to_string(), "li@37".to_string()]
+        );
+    }
+
+    #[test]
     fn read_sqlite_store_dumps_every_node_and_edge() {
         let dir = tempfile::tempdir().unwrap();
         write_sqlite_store(&sample_nodes(), dir.path()).unwrap();
 
-        let (mut nodes, mut edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        let (nodes, edges) = read_sqlite_store(&dir.path().join("graph.db")).unwrap();
+        let mut nodes: Vec<(String, String)> = nodes.into_iter().map(|n| (n.id, n.type_)).collect();
         nodes.sort();
+        assert!(
+            edges
+                .iter()
+                .all(|(_, _, _, fragments)| fragments.is_empty())
+        );
+        let mut edges: Vec<_> = edges
+            .into_iter()
+            .map(|(from, to, relation, _)| (from, to, relation))
+            .collect();
         edges.sort();
         assert_eq!(
             nodes,

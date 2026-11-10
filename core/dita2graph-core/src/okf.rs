@@ -12,11 +12,11 @@
 //! `okf_validator::validate_bundle`, which *is* reused as-is (§3, §6.4)
 //! since it operates on raw parsed frontmatter, not the typed model.
 
-use crate::model::{NormalizedNode, Relation};
+use crate::model::{Link, NormalizedNode, Relation};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -84,6 +84,19 @@ pub fn write_bundle(
     generated_at: DateTime<Utc>,
     emit_graph_json: bool,
 ) -> Result<BundleSummary> {
+    let graph = emit_graph_json.then(|| crate::graph_view::graph_view(nodes));
+    write_bundle_with(nodes, output_dir, generated_at, graph.as_ref())
+}
+
+/// [`write_bundle`] with the node/edge view already built, so a build
+/// that also writes `graph.db` builds it once; `graph.json` is written
+/// when `graph` is given.
+pub fn write_bundle_with(
+    nodes: &[NormalizedNode],
+    output_dir: &Path,
+    generated_at: DateTime<Utc>,
+    graph: Option<&crate::graph_view::GraphView>,
+) -> Result<BundleSummary> {
     let bundle_dir = output_dir.join("okf");
     fs::create_dir_all(bundle_dir.join("topics")).context("creating okf/topics")?;
     fs::create_dir_all(bundle_dir.join("maps")).context("creating okf/maps")?;
@@ -118,8 +131,8 @@ pub fn write_bundle(
 
     write_okf_toml(&bundle_dir)?;
     write_index(&bundle_dir, nodes, generated_at)?;
-    if emit_graph_json {
-        write_graph_json(output_dir, nodes)?;
+    if let Some(graph) = graph {
+        write_graph_json(output_dir, graph)?;
     }
 
     Ok(summary)
@@ -176,41 +189,130 @@ fn render_concept(
     let mut body = String::new();
     if let Some(desc) = &description {
         body.push_str("# Summary\n\n");
-        body.push_str(desc);
+        body.push_str(&escape_link_syntax(desc));
         body.push_str("\n\n");
     }
     if let NormalizedNode::Topic(t) = node
         && let Some(content) = &t.body
     {
         body.push_str("# Content\n\n");
-        body.push_str(content);
+        body.push_str(&escape_link_syntax(content));
         body.push_str("\n\n");
     }
 
     // Group links by relation, preserving first-seen order within a
     // relation, so each relation the node actually has gets exactly one
     // section (§4.4's "# Requires" / "# Contains" pattern).
-    let mut by_relation: Vec<(Relation, Vec<&str>)> = Vec::new();
+    let mut by_relation: Vec<(Relation, Vec<&Link>)> = Vec::new();
     for link in node.links() {
         if let Some(entry) = by_relation.iter_mut().find(|(r, _)| *r == link.relation) {
-            entry.1.push(&link.target);
+            entry.1.push(link);
         } else {
-            by_relation.push((link.relation, vec![&link.target]));
+            by_relation.push((link.relation, vec![link]));
         }
     }
 
-    for (relation, targets) in by_relation {
+    // One markdown link per target and concept (okf_validator flags a
+    // second one as redundant): a target under two headings -- a child
+    // the topic also references, a copy-to copy's source it also reuses
+    // -- is linked under the first and named under the next.
+    let mut linked: HashSet<&str> = HashSet::new();
+    for (relation, links) in by_relation {
         body.push_str(&format!("# {}\n\n", relation.section_heading()));
-        for target in targets {
+        for link in links {
+            let target = link.target.as_str();
             let (target_dir, target_title) =
                 index.get(target).copied().unwrap_or(("topics", target));
-            let link = relative_link(node.bundle_dir(), target_dir, target);
-            body.push_str(&format!("- [{target_title}]({link})\n"));
+            if linked.insert(target) {
+                let href = relative_link(node.bundle_dir(), target_dir, target);
+                body.push_str(&format!("- [{}]({href})", escape_link_syntax(target_title)));
+            } else {
+                body.push_str(&format!(
+                    "- {} (`{target}`, linked above)",
+                    escape_link_syntax(target_title)
+                ));
+            }
+            // Which elements of the source are reused (generated-from):
+            // plain text after the link, so okf_validator still sees one
+            // ordinary markdown link per target.
+            if !link.fragments.is_empty() {
+                body.push_str(&format!(" (fragments: {})", link.fragments.join(", ")));
+            }
+            body.push('\n');
         }
         body.push('\n');
     }
+    render_declarations(node, &mut body);
 
     Ok(format!("---\n{yaml}---\n\n{}", body.trim_end()))
+}
+
+/// The sections for what a node declares besides its links: the map's key
+/// definitions, a topic's keys, external links and sample files. Keys and
+/// files are plain text, not links: they have no concept file to point at
+/// (okf_validator would flag a dangling link), and a key naming a topic
+/// the map also contains would be a redundant one. URLs are markdown
+/// links, which okf_validator leaves alone.
+fn render_declarations(node: &NormalizedNode, body: &mut String) {
+    match node {
+        NormalizedNode::Map(map) if !map.key_defs.is_empty() => {
+            body.push_str("# Key Definitions\n\n");
+            for key in &map.key_defs {
+                body.push_str(&format!("- `{}`", key.qualified_name()));
+                if let Some(target) = &key.target {
+                    body.push_str(&format!(" -> topic `{target}`"));
+                } else if let Some(url) = &key.url {
+                    body.push_str(&format!(" -> <{url}>"));
+                } else if let Some(file) = &key.file {
+                    body.push_str(&format!(" -> file `{file}`"));
+                }
+                if let Some(text) = &key.text {
+                    body.push_str(&format!(" \"{}\"", escape_link_syntax(text)));
+                }
+                body.push_str(&format!(" (defined in `{}`)\n", key.source_file));
+            }
+            body.push('\n');
+        }
+        NormalizedNode::Topic(topic) => {
+            if !topic.keyrefs.is_empty() {
+                body.push_str("# Keys Used\n\n");
+                for key in &topic.keyrefs {
+                    body.push_str(&format!("- `{key}`\n"));
+                }
+                body.push('\n');
+            }
+            if !topic.external_links.is_empty() {
+                body.push_str("# External Links\n\n");
+                for link in &topic.external_links {
+                    body.push_str(&format!("- <{}>", link.url));
+                    if let Some(key) = &link.key {
+                        body.push_str(&format!(" (key `{key}`)"));
+                    }
+                    body.push('\n');
+                }
+                body.push('\n');
+            }
+            if !topic.code_refs.is_empty() {
+                body.push_str("# Code Files\n\n");
+                for path in &topic.code_refs {
+                    body.push_str(&format!("- `{path}`\n"));
+                }
+                body.push('\n');
+            }
+        }
+        NormalizedNode::Map(_) => {}
+    }
+}
+
+/// Plain text made safe to embed in markdown: a `](` the text happens to
+/// contain -- a topic documenting markdown itself, with `[a link](topic.md)`
+/// in an example -- would otherwise read as a link, which okf_validator
+/// then rejects as dangling (dita-ot/docs' `Markdown-DITA-syntax`, once
+/// nested topics' text was kept). Applied to every piece of free text a
+/// concept or `index.md` carries: summary, content, titles, key text.
+/// `]\(` renders the same text and is no link.
+fn escape_link_syntax(text: &str) -> String {
+    text.replace("](", "]\\(")
 }
 
 /// A markdown link from a concept in `from_dir` (`"topics"`/`"maps"`) to
@@ -251,7 +353,11 @@ fn write_index(
 
     body.push_str("## Maps\n\n");
     for node in nodes.iter().filter(|n| matches!(n, NormalizedNode::Map(_))) {
-        body.push_str(&format!("- [{}](maps/{}.md)\n", node.title(), node.id()));
+        body.push_str(&format!(
+            "- [{}](maps/{}.md)\n",
+            escape_link_syntax(node.title()),
+            node.id()
+        ));
     }
     body.push('\n');
 
@@ -260,7 +366,11 @@ fn write_index(
         .iter()
         .filter(|n| matches!(n, NormalizedNode::Topic(_)))
     {
-        body.push_str(&format!("- [{}](topics/{}.md)\n", node.title(), node.id()));
+        body.push_str(&format!(
+            "- [{}](topics/{}.md)\n",
+            escape_link_syntax(node.title()),
+            node.id()
+        ));
     }
     body.push('\n');
 
@@ -275,46 +385,7 @@ fn write_index(
 // Tracked in docs/dev/phase-0-findings.md; re-add once upstream handles
 // it, rather than shipping a bundle that fails our own validation gate.
 
-#[derive(Serialize)]
-struct GraphJson {
-    nodes: Vec<GraphNode>,
-    edges: Vec<GraphEdge>,
-}
-
-#[derive(Serialize)]
-struct GraphNode {
-    id: String,
-    #[serde(rename = "type")]
-    type_: String,
-}
-
-#[derive(Serialize)]
-struct GraphEdge {
-    from: String,
-    to: String,
-    relation: String,
-}
-
-fn write_graph_json(output_dir: &Path, nodes: &[NormalizedNode]) -> Result<()> {
-    let graph = GraphJson {
-        nodes: nodes
-            .iter()
-            .map(|n| GraphNode {
-                id: n.id().to_string(),
-                type_: n.okf_type().to_string(),
-            })
-            .collect(),
-        edges: nodes
-            .iter()
-            .flat_map(|n| {
-                n.links().iter().map(move |l| GraphEdge {
-                    from: n.id().to_string(),
-                    to: l.target.clone(),
-                    relation: l.relation.as_str().to_string(),
-                })
-            })
-            .collect(),
-    };
+fn write_graph_json(output_dir: &Path, graph: &crate::graph_view::GraphView) -> Result<()> {
     let json = serde_json::to_string_pretty(&graph).context("serializing graph.json")?;
     fs::write(output_dir.join("graph.json"), json).context("writing graph.json")
 }
@@ -328,6 +399,7 @@ mod tests {
     fn sample_nodes() -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
@@ -335,14 +407,19 @@ mod tests {
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -355,19 +432,27 @@ mod tests {
                 keys: vec!["install-task".into()],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
                         relation: Relation::Requires,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product-prereqs".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "installing-product-prereqs".into(),
                 topic_type: TopicType::Topic,
                 title: "Installing Product: Prerequisites".into(),
@@ -378,13 +463,20 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![Link {
                     relation: Relation::References,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -395,6 +487,9 @@ mod tests {
                 keys: vec!["config-concept".into()],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -415,6 +510,119 @@ mod tests {
         assert!(
             !report.has_errors(),
             "expected a conformant bundle, got issues: {:#?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn markdown_link_syntax_in_topic_text_is_not_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.body = Some("Write [a link](topic.md) to link a topic.".into());
+        }
+        // A key's text quoting a link, and a target's title: where they
+        // are cited (the map's key list, the link text, index.md). The
+        // title's own frontmatter keeps it verbatim -- it is data, and
+        // okf_validator reads frontmatter too, so a title quoting a `.md`
+        // link would still be flagged there.
+        if let NormalizedNode::Topic(t) = &mut nodes[3] {
+            t.title = "The [x](y) syntax".into();
+        }
+        if let NormalizedNode::Map(m) = &mut nodes[0] {
+            m.key_defs = vec![crate::model::KeyDef {
+                name: "md".into(),
+                scope: None,
+                target: None,
+                url: None,
+                file: None,
+                text: Some("[a link](topic.md)".into()),
+                source_file: "keys.ditamap".into(),
+            }];
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
+
+        let concept =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(
+            concept.contains("Write [a link]\\(topic.md) to link a topic."),
+            "{concept}"
+        );
+        assert!(
+            concept.contains("- [The [x]\\(y) syntax](configuration.md)"),
+            "{concept}"
+        );
+        let map = fs::read_to_string(dir.path().join("okf/maps/user-guide.md")).unwrap();
+        assert!(map.contains("`md` \"[a link]\\(topic.md)\""), "{map}");
+        let index = fs::read_to_string(dir.path().join("okf/index.md")).unwrap();
+        assert!(
+            index.contains("- [The [x]\\(y) syntax](topics/configuration.md)"),
+            "{index}"
+        );
+        let report = validate_bundle(&dir.path().join("okf")).unwrap();
+        assert!(!report.has_errors(), "{:#?}", report.issues);
+    }
+
+    #[test]
+    fn generated_from_names_its_fragments_after_the_link_and_in_graph_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.links.push(Link {
+                relation: Relation::GeneratedFrom,
+                target: "configuration".into(),
+                fragments: vec!["warning-note".into(), "li@37".into()],
+            });
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
+
+        let concept =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        // The topic already links configuration under # Requires: one
+        // markdown link per target, the second mention is named only.
+        assert!(
+            concept.contains(
+                "# Generated From\n\n- Configuration Overview (`configuration`, linked above) (fragments: warning-note, li@37)"
+            ),
+            "{concept}"
+        );
+        assert_eq!(
+            concept.matches("](configuration.md)").count(),
+            1,
+            "{concept}"
+        );
+        let graph: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("graph.json")).unwrap())
+                .unwrap();
+        let edge = graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "generated-from")
+            .unwrap();
+        assert_eq!(
+            edge["fragments"],
+            serde_json::json!(["warning-note", "li@37"])
+        );
+        // Every other edge stays as before: no empty "fragments" key.
+        assert!(
+            graph["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["relation"] != "generated-from")
+                .all(|e| e.get("fragments").is_none())
+        );
+        let report = validate_bundle(&dir.path().join("okf")).unwrap();
+        assert!(!report.has_errors(), "{:#?}", report.issues);
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|i| !i.message.contains("redundant link")),
+            "{:#?}",
             report.issues
         );
     }

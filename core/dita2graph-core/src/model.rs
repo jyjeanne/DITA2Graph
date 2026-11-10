@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// `docs/plugin-specification.md` §3.2 exactly (`{"type": "topic", ...}`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
+// Nearly every node is a topic (a corpus has a handful of maps), so
+// boxing topics to shrink the map variant would cost one allocation per
+// node to save memory on almost none.
+#[allow(clippy::large_enum_variant)]
 pub enum NormalizedNode {
     Topic(NormalizedTopic),
     Map(NormalizedMap),
@@ -78,6 +82,31 @@ pub struct NormalizedTopic {
     /// element in DITA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// `body` as a reader of the published topic sees it: every fragment
+    /// pulled in by `conref`/`conkeyref` kept in place, between
+    /// `[reused from <file>#<id>]` and `[end reused]` markers. Only set
+    /// when the topic reuses something. Never rendered into the OKF
+    /// concept (whose `# Content` stays deduplicated) -- it feeds the RAG
+    /// chunk's `resolvedText`, which `read_topic` returns in full.
+    #[serde(
+        default,
+        rename = "resolvedBody",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved_body: Option<String>,
+    /// `resource-only` when the map uses the topic only as a resource
+    /// (a reuse warehouse, a key target) and never publishes it in the
+    /// table of contents; `None` for a normal topic.
+    #[serde(
+        default,
+        rename = "processingRole",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub processing_role: Option<String>,
+    /// The root element's DITA `@class` (`- topic/topic concept/concept `
+    /// trimmed), which names specializations the topic type folds away.
+    #[serde(default, rename = "ditaClass", skip_serializing_if = "Option::is_none")]
+    pub dita_class: Option<String>,
     #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]
@@ -94,10 +123,35 @@ pub struct NormalizedTopic {
     /// task step "invokes".
     #[serde(default, rename = "cmdUicontrols")]
     pub cmd_uicontrols: Vec<String>,
+    /// Distinct names of the keys the topic uses: `@keyref` on any
+    /// element, and `@conkeyref` when the topic really reuses the key's
+    /// target. A name may be scope-qualified (`scope.key`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyrefs: Vec<String>,
+    /// The `http(s)` URLs the topic links to, each once.
+    #[serde(
+        default,
+        rename = "externalLinks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub external_links: Vec<ExternalLink>,
+    /// Paths of the sample files the topic includes with `<coderef>`,
+    /// as DITA-OT's job lists them (relative to the source root).
+    #[serde(default, rename = "codeRefs", skip_serializing_if = "Vec::is_empty")]
+    pub code_refs: Vec<String>,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// A link from a topic to a URL outside the corpus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalLink {
+    pub url: String,
+    /// The key the link went through, when it used one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,8 +160,49 @@ pub struct NormalizedMap {
     pub title: String,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
+    /// The effective key definitions of the map and its submaps, in map
+    /// order (the first definition of a key in its scope wins).
+    #[serde(default, rename = "keyDefs", skip_serializing_if = "Vec::is_empty")]
+    pub key_defs: Vec<KeyDef>,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// One key definition. At most one of `target`, `url` and `file` is set;
+/// a key with none of them is a text key (a variable) whose value is
+/// `text`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyDef {
+    pub name: String,
+    /// Dotted key scope; `None` for the root scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Id of the topic the key names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// URL of the external resource the key names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Path of the local non-topic file the key names (an image, a PDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The key's text (keyword, link text or navtitle) when it names no topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The map file that declares the key: the submap, when it is one.
+    #[serde(rename = "sourceFile")]
+    pub source_file: String,
+}
+
+impl KeyDef {
+    /// The name a topic's `@keyref` uses for this key: `scope.name`, or
+    /// the bare name in the root scope.
+    pub fn qualified_name(&self) -> String {
+        match &self.scope {
+            Some(scope) => format!("{scope}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// DITA topic type (§1.3 glossary). `Topic` is the fallback for a plain
@@ -121,7 +216,12 @@ pub enum TopicType {
     Task,
     Reference,
     Glossentry,
+    Troubleshooting,
     Topic,
+    /// A table-of-contents heading with no topic of its own (a
+    /// `topichead`, a navtitle-only bookmap `chapter`): a node so the
+    /// graph keeps the outline, and the container of its children.
+    Topichead,
 }
 
 impl TopicType {
@@ -132,7 +232,9 @@ impl TopicType {
             TopicType::Task => "Task",
             TopicType::Reference => "Reference",
             TopicType::Glossentry => "Glossary Entry",
+            TopicType::Troubleshooting => "Troubleshooting",
             TopicType::Topic => "Topic",
+            TopicType::Topichead => "Topic Head",
         }
     }
 }
@@ -141,6 +243,11 @@ impl TopicType {
 pub struct Link {
     pub relation: Relation,
     pub target: String,
+    /// On `generated-from` only: the ids of the reused elements in the
+    /// target topic (`plug-in`, or `li@37` when the element has no id),
+    /// as the Java extractor resolved them from DITA-OT's `xtrc` traces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fragments: Vec<String>,
 }
 
 /// The DITA relation taxonomy (§4.3).
@@ -153,6 +260,8 @@ pub enum Relation {
     AppliesTo,
     Requires,
     GeneratedFrom,
+    /// From a `copy-to` copy to the topic it copies.
+    CopyOf,
 }
 
 impl Relation {
@@ -167,6 +276,7 @@ impl Relation {
             Relation::AppliesTo => "applies-to",
             Relation::Requires => "requires",
             Relation::GeneratedFrom => "generated-from",
+            Relation::CopyOf => "copy-of",
         }
     }
 
@@ -180,6 +290,7 @@ impl Relation {
             Relation::AppliesTo => "Applies To",
             Relation::Requires => "Requires",
             Relation::GeneratedFrom => "Generated From",
+            Relation::CopyOf => "Copy Of",
         }
     }
 
@@ -231,6 +342,54 @@ mod tests {
             ),
             NormalizedNode::Map(_) => panic!("expected a topic"),
         }
+    }
+
+    #[test]
+    fn topichead_heading_node_reads_as_a_topic_head() {
+        let json = r#"{
+            "type": "topic",
+            "id": "topichead--glossary",
+            "topicType": "topichead",
+            "title": "Glossary",
+            "sourceFile": "UserManual.ditamap#topichead--glossary",
+            "links": [{ "relation": "contains", "target": "anchor" }]
+        }"#;
+        let node: NormalizedNode = serde_json::from_str(json).unwrap();
+        assert_eq!(node.okf_type(), "Topic Head");
+        assert_eq!(node.bundle_dir(), "topics");
+    }
+
+    #[test]
+    fn generated_from_fragments_and_resolved_body_match_the_java_wire_format() {
+        let json = r#"{
+            "type": "topic",
+            "id": "plugins-installing",
+            "topicType": "task",
+            "title": "Installing plug-ins",
+            "body": "At the command-line prompt, enter the following command:",
+            "resolvedBody": "At the prompt: [reused from resources/conref-task.dita#plug-in] the plug-in [end reused]",
+            "sourceFile": "topics/plugins-installing.dita",
+            "links": [
+                { "relation": "generated-from", "target": "ID", "fragments": ["plug-in", "plugin-integrate-all"] },
+                { "relation": "requires", "target": "configuration" }
+            ]
+        }"#;
+        let node: NormalizedNode = serde_json::from_str(json).unwrap();
+        let NormalizedNode::Topic(t) = &node else {
+            panic!("expected a topic")
+        };
+        assert!(t.resolved_body.as_deref().unwrap().contains("#plug-in]"));
+        assert_eq!(
+            t.links[0].fragments,
+            vec!["plug-in", "plugin-integrate-all"]
+        );
+        assert!(
+            t.links[1].fragments.is_empty(),
+            "fragments default to empty"
+        );
+        // And back out: no empty "fragments" key on ordinary links.
+        let out = serde_json::to_string(&node).unwrap();
+        assert_eq!(out.matches("\"fragments\"").count(), 1, "{out}");
     }
 
     #[test]

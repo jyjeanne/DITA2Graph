@@ -34,6 +34,25 @@ pub struct GraphNode {
     pub id: String,
     #[serde(rename = "type")]
     pub type_: String,
+    /// Set on the nodes that have no concept file -- a key, an external
+    /// URL, a sample file (`dita2graph_core::graph_view`) -- and only them.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// On those same nodes: the map file that defines a key, or the file.
+    #[serde(default, rename = "sourceFile")]
+    pub source_file: Option<String>,
+    /// `resource-only` on a topic the map uses only as a resource (a reuse
+    /// warehouse, a key target), which is not a page of the publication.
+    #[serde(default, rename = "processingRole")]
+    pub processing_role: Option<String>,
+}
+
+impl GraphNode {
+    /// A key, an external URL or a sample file: a node the graph declares
+    /// without a concept file of its own.
+    pub fn is_declared(&self) -> bool {
+        dita2graph_core::graph_view::is_declared_type(&self.type_)
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -41,6 +60,10 @@ pub struct GraphEdge {
     pub from: String,
     pub to: String,
     pub relation: String,
+    /// The reused elements a `generated-from` edge names; empty on every
+    /// other edge, and on bundles built before fragments were recorded.
+    #[serde(default)]
+    pub fragments: Vec<String>,
 }
 
 /// One record from `rag/chunks.jsonl` (§13.1) -- the content-search
@@ -52,6 +75,10 @@ pub struct RagChunk {
     pub title: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// `text` with reused fragments put back in place (`read_topic`);
+    /// absent when the topic reuses nothing.
+    #[serde(default, rename = "resolvedText")]
+    pub resolved_text: Option<String>,
     #[serde(rename = "topicType")]
     pub topic_type: String,
 }
@@ -109,6 +136,8 @@ pub struct BundleReader {
     /// call when an embedder is configured, so it gets the identical
     /// cache-hit-is-a-refcount-bump treatment.
     embeddings_cache: RefCell<Option<Rc<EmbeddingsMap>>>,
+    /// `rdf/graph.ttl` loaded for `query_graph`, on its first query.
+    sparql_cache: RefCell<Option<Rc<crate::sparql::SparqlGraph>>>,
 }
 
 impl BundleReader {
@@ -144,11 +173,27 @@ impl BundleReader {
                 Ok((raw_nodes, raw_edges)) => {
                     let nodes = raw_nodes
                         .into_iter()
-                        .map(|(id, type_)| (id.clone(), GraphNode { id, type_ }))
+                        .map(|n| {
+                            (
+                                n.id.clone(),
+                                GraphNode {
+                                    id: n.id,
+                                    type_: n.type_,
+                                    title: n.title,
+                                    source_file: n.source_file,
+                                    processing_role: n.processing_role,
+                                },
+                            )
+                        })
                         .collect();
                     let edges = raw_edges
                         .into_iter()
-                        .map(|(from, to, relation)| GraphEdge { from, to, relation })
+                        .map(|(from, to, relation, fragments)| GraphEdge {
+                            from,
+                            to,
+                            relation,
+                            fragments,
+                        })
                         .collect();
                     (nodes, edges)
                 }
@@ -169,6 +214,7 @@ impl BundleReader {
             edges,
             concept_cache: RefCell::new(HashMap::new()),
             rag_chunks_cache: RefCell::new(None),
+            sparql_cache: RefCell::new(None),
             embeddings_cache: RefCell::new(None),
         })
     }
@@ -194,6 +240,10 @@ impl BundleReader {
 
     pub fn all_nodes(&self) -> impl Iterator<Item = &GraphNode> {
         self.nodes.values()
+    }
+
+    pub fn node(&self, id: &str) -> Option<&GraphNode> {
+        self.nodes.get(id)
     }
 
     pub fn edges_from(&self, id: &str, relation: Option<&str>) -> Vec<&GraphEdge> {
@@ -353,7 +403,29 @@ impl BundleReader {
         Ok(map)
     }
 
+    /// The bundle's RDF export (`rdf/graph.ttl`) in a SPARQL store, loaded
+    /// on the first call and kept for this reader's lifetime.
+    pub fn sparql_graph(&self) -> Result<Rc<crate::sparql::SparqlGraph>> {
+        if let Some(graph) = self.sparql_cache.borrow().as_ref() {
+            return Ok(Rc::clone(graph));
+        }
+        let path = self.root.join("rdf").join("graph.ttl");
+        if !path.is_file() {
+            anyhow::bail!(
+                "this bundle has no RDF export ({} is missing): build it with \
+                 args.dita2graph.rdf=true (dita2graph-core build --emit-rdf true)",
+                path.display()
+            );
+        }
+        let graph = Rc::new(crate::sparql::SparqlGraph::load(&path)?);
+        *self.sparql_cache.borrow_mut() = Some(Rc::clone(&graph));
+        Ok(graph)
+    }
+
     pub fn title(&self, id: &str) -> Result<String> {
+        if let Some(title) = self.nodes.get(id).and_then(|n| n.title.clone()) {
+            return Ok(title);
+        }
         let (frontmatter, _) = self.read_concept(id)?;
         Ok(frontmatter
             .get("title")
@@ -383,7 +455,12 @@ impl BundleReader {
 /// only watched `graph.json`/`rag/chunks.jsonl` could miss a `graph.db`
 /// rewrite (or removal) entirely and keep `BundleReader::open`'s choice
 /// of source frozen at whatever it was on the previous load.
-type BundleFingerprint = (Option<SystemTime>, Option<SystemTime>, Option<SystemTime>);
+type BundleFingerprint = (
+    Option<SystemTime>,
+    Option<SystemTime>,
+    Option<SystemTime>,
+    Option<SystemTime>,
+);
 
 /// The process-lifetime handle `main.rs` holds across every JSON-RPC
 /// request, instead of calling `BundleReader::open` fresh per
@@ -440,6 +517,8 @@ pub struct BundleCache {
     /// before this existed, exactly as it already does when a bundle has
     /// no `rag/embeddings.jsonl` regardless of this config.
     embedder: Option<Rc<dita2graph_core::Embedder>>,
+    /// Whether `query_graph` is offered (`--sparql`); off by default.
+    sparql: bool,
 }
 
 impl BundleCache {
@@ -449,6 +528,7 @@ impl BundleCache {
             loaded: None,
             live: crate::live::LiveValidationConfig::default(),
             embedder: None,
+            sparql: false,
         }
     }
 
@@ -476,6 +556,16 @@ impl BundleCache {
         self
     }
 
+    /// Enables `query_graph` (`dita2graph-mcp --sparql`).
+    pub fn with_sparql(mut self, enabled: bool) -> Self {
+        self.sparql = enabled;
+        self
+    }
+
+    pub fn sparql_enabled(&self) -> bool {
+        self.sparql
+    }
+
     pub fn embedder(&self) -> Option<Rc<dita2graph_core::Embedder>> {
         self.embedder.clone()
     }
@@ -498,6 +588,7 @@ impl BundleCache {
             mtime_of("graph.json"),
             mtime_of("rag/chunks.jsonl"),
             mtime_of("graph.db"),
+            mtime_of("rdf/graph.ttl"),
         )
     }
 
@@ -552,15 +643,20 @@ mod tests {
     fn one_topic_nodes(topic_id: &str, title: &str) -> Vec<NormalizedNode> {
         vec![
             NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: topic_id.into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: topic_id.into(),
                 topic_type: TopicType::Concept,
                 title: title.into(),
@@ -571,6 +667,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: format!("topics/{topic_id}.dita"),
                 links: vec![],
             }),
@@ -899,6 +998,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "first--shared-tail".into(),
                 topic_type: TopicType::Concept,
                 title: "First".into(),
@@ -909,10 +1011,16 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/first.dita".into(),
                 links: vec![],
             }),
             NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
                 id: "second--shared-tail".into(),
                 topic_type: TopicType::Concept,
                 title: "Second".into(),
@@ -923,6 +1031,9 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
                 source_file: "topics/second.dita".into(),
                 links: vec![],
             }),

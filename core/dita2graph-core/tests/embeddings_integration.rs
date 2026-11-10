@@ -96,6 +96,9 @@ fn embed_errors_on_empty_text() {
 
 fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
     vec![NormalizedNode::Topic(NormalizedTopic {
+        keyrefs: vec![],
+        external_links: vec![],
+        code_refs: vec![],
         id: id.into(),
         topic_type: TopicType::Concept,
         title: id.into(),
@@ -106,6 +109,9 @@ fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
         keys: vec![],
         uicontrols: vec![],
         cmd_uicontrols: vec![],
+        resolved_body: None,
+        processing_role: None,
+        dita_class: None,
         source_file: format!("topics/{id}.dita"),
         links: vec![],
     })]

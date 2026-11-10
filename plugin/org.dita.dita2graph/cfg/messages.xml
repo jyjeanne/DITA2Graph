@@ -25,8 +25,20 @@
     <reason>Topic has no resolvable type mapping (unknown/custom topic type).</reason>
     <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (§4.1).</response>
   </message>
+  <message id="DITA2GRAPH071I" type="info">
+    <reason>A copy-to copy carries the same id as its source topic.</reason>
+    <response>No action needed: the source keeps its id and the copy's graph node gets a suffixed one, linked to the source by generated-from.</response>
+  </message>
+  <message id="DITA2GRAPH072I" type="info">
+    <reason>The source file of a topic could not be read on its own to find its coderef and conkeyref elements, which preprocessing removes.</reason>
+    <response>No action needed for the build: the topic keeps every other relation. Its includes-code and conkeyref key uses are missing from the graph; a source that needs its DTD to parse (an entity it defines) is the usual cause.</response>
+  </message>
   <message id="DITA2GRAPH060W" type="warn">
     <reason>A &lt;navref&gt; map-composition element was found but is not resolved by DITA-OT for this transtype and is not independently parsed by this plugin.</reason>
     <response>The referenced navigation map's content is excluded from the graph. Restructure the source to use topicref/mapref instead if that content should appear.</response>
+  </message>
+  <message id="DITA2GRAPH083W" type="warn">
+    <reason>The RDF export has no base IRI: its node IRIs use the placeholder https://dita2graph.invalid/&lt;map id&gt;/.</reason>
+    <response>Set --args.dita2graph.rdf.base to a namespace you control before publishing rdf/graph.ttl or loading it next to other graphs.</response>
   </message>
 </messages>
