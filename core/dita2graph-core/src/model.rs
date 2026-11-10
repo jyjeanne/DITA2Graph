@@ -78,6 +78,18 @@ pub struct NormalizedTopic {
     /// element in DITA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// `body` as a reader of the published topic sees it: every fragment
+    /// pulled in by `conref`/`conkeyref` kept in place, between
+    /// `[reused from <file>#<id>]` and `[end reused]` markers. Only set
+    /// when the topic reuses something. Never rendered into the OKF
+    /// concept (whose `# Content` stays deduplicated) -- it feeds the RAG
+    /// chunk's `resolvedText`, which `read_topic` returns in full.
+    #[serde(
+        default,
+        rename = "resolvedBody",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved_body: Option<String>,
     #[serde(default)]
     pub audience: Vec<String>,
     #[serde(default)]
@@ -122,6 +134,10 @@ pub enum TopicType {
     Reference,
     Glossentry,
     Topic,
+    /// A table-of-contents heading with no topic of its own (a
+    /// `topichead`, a navtitle-only bookmap `chapter`): a node so the
+    /// graph keeps the outline, and the container of its children.
+    Topichead,
 }
 
 impl TopicType {
@@ -133,6 +149,7 @@ impl TopicType {
             TopicType::Reference => "Reference",
             TopicType::Glossentry => "Glossary Entry",
             TopicType::Topic => "Topic",
+            TopicType::Topichead => "Topic Head",
         }
     }
 }
@@ -141,6 +158,11 @@ impl TopicType {
 pub struct Link {
     pub relation: Relation,
     pub target: String,
+    /// On `generated-from` only: the ids of the reused elements in the
+    /// target topic (`plug-in`, or `li@37` when the element has no id),
+    /// as the Java extractor resolved them from DITA-OT's `xtrc` traces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fragments: Vec<String>,
 }
 
 /// The DITA relation taxonomy (§4.3).
@@ -231,6 +253,54 @@ mod tests {
             ),
             NormalizedNode::Map(_) => panic!("expected a topic"),
         }
+    }
+
+    #[test]
+    fn topichead_heading_node_reads_as_a_topic_head() {
+        let json = r#"{
+            "type": "topic",
+            "id": "topichead--glossary",
+            "topicType": "topichead",
+            "title": "Glossary",
+            "sourceFile": "UserManual.ditamap#topichead--glossary",
+            "links": [{ "relation": "contains", "target": "anchor" }]
+        }"#;
+        let node: NormalizedNode = serde_json::from_str(json).unwrap();
+        assert_eq!(node.okf_type(), "Topic Head");
+        assert_eq!(node.bundle_dir(), "topics");
+    }
+
+    #[test]
+    fn generated_from_fragments_and_resolved_body_match_the_java_wire_format() {
+        let json = r#"{
+            "type": "topic",
+            "id": "plugins-installing",
+            "topicType": "task",
+            "title": "Installing plug-ins",
+            "body": "At the command-line prompt, enter the following command:",
+            "resolvedBody": "At the prompt: [reused from resources/conref-task.dita#plug-in] the plug-in [end reused]",
+            "sourceFile": "topics/plugins-installing.dita",
+            "links": [
+                { "relation": "generated-from", "target": "ID", "fragments": ["plug-in", "plugin-integrate-all"] },
+                { "relation": "requires", "target": "configuration" }
+            ]
+        }"#;
+        let node: NormalizedNode = serde_json::from_str(json).unwrap();
+        let NormalizedNode::Topic(t) = &node else {
+            panic!("expected a topic")
+        };
+        assert!(t.resolved_body.as_deref().unwrap().contains("#plug-in]"));
+        assert_eq!(
+            t.links[0].fragments,
+            vec!["plug-in", "plugin-integrate-all"]
+        );
+        assert!(
+            t.links[1].fragments.is_empty(),
+            "fragments default to empty"
+        );
+        // And back out: no empty "fragments" key on ordinary links.
+        let out = serde_json::to_string(&node).unwrap();
+        assert_eq!(out.matches("\"fragments\"").count(), 1, "{out}");
     }
 
     #[test]

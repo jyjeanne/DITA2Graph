@@ -1,5 +1,7 @@
 package org.dita.dita2graph.tasks;
 
+import java.util.List;
+
 /**
  * One edge of the DITA relation taxonomy (docs/plugin-specification.md
  * §4.3): {@code relation} is {@code contains}, {@code references}, or
@@ -14,17 +16,31 @@ package org.dita.dita2graph.tasks;
  * heuristic inference (matching {@code uicontrol} text or {@code
  * product} metadata across topics) and are computed downstream in the
  * Rust core (`relations.rs`) instead, never here.
+ *
+ * <p>{@code fragments} is only ever set on {@code generated-from}: the ids
+ * of the reused elements in the target topic ({@code plug-in}, or {@code
+ * li@37} when the element has no id). Omitted from JSON when empty.
  */
 final class Link {
     final String relation;
     final String target;
+    final List<String> fragments;
 
     Link(String relation, String target) {
+        this(relation, target, List.of());
+    }
+
+    Link(String relation, String target, List<String> fragments) {
         this.relation = relation;
         this.target = target;
+        this.fragments = fragments;
     }
 
     String toJson() {
-        return "{\"relation\":" + Json.string(relation) + ",\"target\":" + Json.string(target) + "}";
+        String json = "{\"relation\":" + Json.string(relation) + ",\"target\":" + Json.string(target);
+        if (!fragments.isEmpty()) {
+            json += ",\"fragments\":" + Json.stringArray(fragments);
+        }
+        return json + "}";
     }
 }

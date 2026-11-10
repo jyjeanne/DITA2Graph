@@ -256,7 +256,7 @@ Key parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `args.dita2graph.depth` | `unlimited` | Max levels of *map containment* captured as `contains` edges — level 1 is a top-level `<topicref>`, level 2 is one nested inside that, and so on (`<topichead>`/`<topicgroup>`/an href-less `<topicref>` don't consume a level, since they never become a graph node themselves). **Implemented**: parsed and enforced entirely in `ExtractTask`/`DitaModelExtractor` (§3.3) — the Rust core never sees or needs it, since the map walk that builds `contains` edges happens before the normalized model is even handed off. A topic beyond the limit is still extracted as its own node; only its `contains` edge from its parent is omitted, the same graceful degradation as an unresolved topicref target |
+| `args.dita2graph.depth` | `unlimited` | Max levels of *map containment* captured as `contains` edges — level 1 is a top-level `<topicref>`, level 2 is one nested inside that, and so on (a `<topicgroup>` or an untitled href-less `<topicref>` doesn't consume a level, since it never becomes a graph node; a `<topichead>` or a navtitle-only bookmap `<chapter>` does, since it becomes a `Topic Head` node). **Implemented**: parsed and enforced entirely in `ExtractTask`/`DitaModelExtractor` (§3.3) — the Rust core never sees or needs it, since the map walk that builds `contains` edges happens before the normalized model is even handed off. A topic beyond the limit is still extracted as its own node; only its `contains` edge from its parent is omitted, the same graceful degradation as an unresolved topicref target |
 | `args.dita2graph.mcp` | `false` | Whether to also write `mcp/mcp-server.toml` (§2.4, §5.4) alongside the bundle. **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --mcp`, verified against a live DITA-OT 4.4 run — `dita2graph-mcp --config <path>` reads the written file, resolves `graph.okf` (a relative path) back to the bundle root, and answers real `tools/list`/`tools/call` requests against it. Note: the file declares only a server name/transport and the `graph.okf` path — it deliberately doesn't declare a `resources` section, since `dita2graph-mcp` doesn't implement the `resources/*` JSON-RPC methods §5.1 describes (only `tools/list`/`tools/call`, §5.2); see §5.1's note and finding 12 |
 | `args.dita2graph.emit-graph-json` | `true` | Whether to also emit the derived `graph.json` flattened view alongside the OKF bundle (the bundle itself is always the markdown+YAML format defined by OKF v0.2 — this is not a format choice, see §4.1). **Implemented**: forwarded end to end from the CLI through `ExtractTask` to `dita2graph-core build --emit-graph-json`, verified against a live DITA-OT 4.4 run |
 | `args.dita2graph.store` | `sqlite` | Backing store for the generated query index: `sqlite` \| `rocksdb` \| `none` |
@@ -353,6 +353,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH050E` | Error | A generated OKF concept matches a high-confidence secret pattern (AWS access key, PEM private key, GitHub/Slack token) — build fails, not a warning (§6.4). |
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
   | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
+  | `DITA2GRAPH071I` | Info | A `copy-to` copy carries its source topic's id — expected, not a warning. The source keeps its id, the copy's node gets the suffixed one, is the node its topicref contains, and derives from the source through `generated-from` (finding 19). |
 
 - **Exit codes**: `0` success; `1` validation failure (bad DITA input,
   failed `okf-validator` check — recoverable by fixing source content);
@@ -620,6 +621,7 @@ onto OKF frontmatter:
 | DITA source | OKF frontmatter field |
 |---|---|
 | Topic type (`concept`/`task`/`reference`/`glossentry`) | `type` (e.g. `Concept`, `Task`, `Reference`, `Glossary Entry`) |
+| Titled map entry without a topic (`topichead`, navtitle-only bookmap `chapter`) | `type: Topic Head` (title = navtitle, `resource` = `<map>#<heading id>`, unique per concept) |
 | `<title>` | `title` |
 | `<shortdesc>`/`<abstract>` | `description` |
 | Source `.dita` file path (relative, never absolute — §6.3) | `resource` |
@@ -840,10 +842,11 @@ hasn't blocked real use so far. See finding 12.
 ```
 search_topics(query)
 search_content(query, topicId?, relation?, depth?)
+read_topic(topicId, maxChars?)
 find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
-analyze_impact(topicId, depth?)
+analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?)
 generate_summary(topicId)
 validate_bundle()
 validate_live(topicId)
@@ -912,7 +915,16 @@ does. Each affected concept that has a `rag/chunks.jsonl` entry also
 gets a short text excerpt under it (truncated to 140 characters,
 newlines flattened) — a raw excerpt handed to the calling agent, not a
 server-generated summary (this tool doesn't call an LLM); the agent's
-own read of the excerpts is the actual summarization. All four of
+own read of the excerpts is the actual summarization. The answer leads
+with totals (affected concepts by relation and by level), then pages the
+entries: `limit` (default 40; `0` returns the totals alone), `offset`,
+and `excerpts=false` to drop the excerpts. `relation` follows only one
+relation, and `fragment` keeps only the direct dependents that reuse one
+element of `topicId` (its id, as `find_related_topics` shows it on
+`generated-from`). Found live on the Oxygen XML user guide
+(`docs/dev/phase-0-findings.md` finding 18): unpaged, the most reused
+conref warehouse returned 613 lines, which Claude Code moved to a file
+an MCP-only agent could not read. All four of
 §13.1's pieces are implemented: query routing, its combined keyword-and-
 semantic ranking, and impact analysis (both halves).
 
@@ -924,6 +936,23 @@ concept file's *rendered* markdown, which has its own `# Summary`/
 `requires`/`contains`/`applies-to` relations. Same live-session finding
 as above: title and a one-sentence `shortdesc` were the closest
 anything got to "what does this topic actually say" before this.
+
+`read_topic(topicId, maxChars?)` returns one topic's whole text: its
+summary and body as a reader of the published page sees them, with
+every fragment it pulls in by `conref`/`conkeyref` kept in place between
+`[reused from <file>#<fragment>]` and `[end reused]` markers (the chunk's
+`resolvedText`, §13.1), truncated after `maxChars` (default 20,000) with a
+note, then the reused fragments listed by source topic. The other tools
+only ever return 140-to-300-character excerpts, and canonical-node
+deduplication removes reused blocks from a topic's own text, so before
+this tool an agent could not read a sentence that lives in a conref
+warehouse. Found by the token/latency benchmark (`dita2graph-demo/bench`):
+on content questions, an agent made 13 to 26 excerpt calls without
+reaching the answer that one read of the source file gave. A
+`generated-from` edge also names its fragments (`[fragments: plug-in,
+plugin-integrate-all]` in `find_related_topics` and `analyze_impact`),
+so "which part of this topic is reused, and from where" has a direct
+answer.
 
 `validate_bundle()` re-runs `okf-validator` conformance checks (§2.5,
 §6.4, §10) on demand and returns pass/fail plus any violations — useful
@@ -1816,9 +1845,13 @@ is now walked recursively, not just the map's direct `<topicref>`
 children. A `contains` edge attaches to the *nearest real containing
 topic* — a nested `<topicref>` belongs to its parent `<topicref>`'s own
 target, matching real DITA map semantics (a chapter containing
-sections, not a flat list); `<topichead>`/`<topicgroup>`/a bare
-href-less `<topicref>` have no topic of their own, so `contains` skips
-through them to the nearest real container. Verified against a live
+sections, not a flat list); `<topicgroup>`/a bare untitled href-less
+`<topicref>` have no topic of their own, so `contains` skips through
+them to the nearest real container. (Since finding 18, topicrefs are
+recognized by `@class`, so bookmap and glossary specializations count,
+and a titled entry without a topic -- `<topichead>`, a navtitle-only
+`<chapter>` -- becomes a `Topic Head` node that contains its children.)
+Verified against a live
 DITA-OT 4.4 run with a genuinely nested map
 (`sample-docs-nested/`, gated in CI's `buildKnowledgeGraphNested`), and
 that same run surfaced a second, more consequential bug the nesting fix

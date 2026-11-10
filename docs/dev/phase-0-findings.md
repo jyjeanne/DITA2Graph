@@ -839,3 +839,152 @@ What's left for a complete MVP (§11), now that extraction itself works:
     already use), not the Gradle-wrapped task, specifically because this
     assertion needs to see an actual log line, not just a build
     artifact. Gated in CI (`.github/workflows/integration.yml`).
+
+17. **What did a token/latency benchmark of Claude Code with and without
+    the MCP server (`dita2graph-demo/bench`, 8 questions x 3 runs on
+    `dita-ot/docs` 4.4.1) show the graph was missing, and can each gap be
+    closed from DITA-OT's own resolved output rather than by
+    reimplementing DITA semantics?** Four gaps, all closed that way. Each
+    mechanism below was confirmed in a kept temp directory of a real
+    DITA-OT 4.4.1 run (`--clean.temp=no`), not assumed:
+
+    - **Relationship tables were invisible.** DITA-OT's maplink step
+      writes reltable links into each topic's `<related-links>`, the
+      block the extractor skipped wholesale to avoid mistaking hierarchy
+      navigation for author intent. The two kinds are distinguishable:
+      hierarchy links carry `role="parent"`/`"child"`/`"sibling"`/...,
+      reltable links carry `role="friend"` (and their `linkpool`'s
+      `xtrf` names the map that holds the reltable). Hierarchy roles are
+      still skipped; everything else becomes `references` (§4.3 lists
+      related-links under it), unless the prose already links the same
+      pair.
+    - **Reused fragments had no name.** A conref'd element loses its
+      `@id` in the reusing topic, but keeps its `xtrc` (element,
+      occurrence, line and column in the source file), and the source
+      topic's own resolved copy carries that same `xtrc` next to the
+      `@id`. `generated-from` now names its fragments
+      (`plugins-installing` -> `ID`: `plug-in`, `plugin-integrate-all`),
+      falling back to `element@line` from the `xtrc` when there is no id.
+    - **Reused text was unreachable.** Canonical-node deduplication
+      (rightly) keeps reused blocks out of a topic's own body, and every
+      MCP tool returned 140-to-300-character excerpts, so a sentence
+      living in a conref warehouse could not be read at all: the Java
+      version (`17`, a keyword in a paragraph conkeyref'd from
+      `reusable-components.dita`) never reached the agent. The same walk
+      now also builds `resolvedBody`, every fragment kept between
+      `[reused from <file>#<id>]` and `[end reused]` markers, written to
+      the RAG chunk as `resolvedText` and served whole by the new
+      `read_topic` tool. Ranking and embeddings keep the deduplicated text.
+    - **Resource-only topics sat in the table of contents.** DITA-OT
+      cascades `processing-role="resource-only"` onto every topicref it
+      covers before this plugin runs, so the topicref's own attribute is
+      enough to skip its `contains` edge. The conref warehouses (`ID`,
+      reusable components, error-message key target) are no longer
+      children of the map, and stay nodes as reuse sources.
+
+    **Result** on `dita-ot/docs`: 536 -> 646 edges; `references` 18 -> 133
+    (reltable), `contains` 220 -> 215, the map's direct children 10 -> 7
+    (exactly its table of contents), unchanged validation (bundle and RAG
+    index OK; the 28 extra unresolved-link warnings all point at
+    `parameters/*.dita` and `extension-points/*.dita`, which the corpus's
+    own Gradle build generates). Three new Java tests, seven new Rust
+    tests (four in the core crate, three in the MCP server).
+
+18. **Why did the graph of a second, larger corpus (the Oxygen XML user
+    guide, `oxygenxml/userguide`, a bookmap of 2,757 `.dita` files) miss
+    two of its 25 chapters and its whole glossary, and why did one
+    `analyze_impact` call sink an agent?** Both surfaced in the
+    `dita2graph-demo/bench` Oxygen campaign (questions o4 and o8).
+
+    - **Map elements were matched by name.** DITA-OT renames most bookmap
+      `<chapter>`s to `<topicref>` in the resolved map, but leaves two
+      kinds as they are (confirmed in a kept temp directory,
+      `--clean.temp=no`): a chapter pointing straight at a topic
+      (Add-ons) and a navtitle-only chapter (Glossary), whose
+      children are `<glossref>`s. `walkMapChildren` switched on
+      `topicref`/`topichead`/`topicgroup` and skipped all of them. It now
+      recognizes a topicref by `@class` (` map/topicref `), so every
+      specialization counts (bookmap `chapter`/`part`/`appendix`/
+      `notices`/`frontmatter`/`backmatter`, `glossref`, `keydef`,
+      `topichead`, `topicgroup`), and falls back to element names only
+      when `@class` is absent (hand-written fixtures). A topicref whose
+      `format` is not `dita` (a `ditavalref`, a local PDF) is skipped
+      through, like an external one.
+    - **Headings had nowhere to live.** An href-less entry with a
+      navtitle (`<topichead>`, the navtitle-only Glossary chapter) is what
+      a reader sees in the table of contents. It now becomes a node of
+      type `Topic Head` (id `topichead--<slug>`), contained by its parent
+      and containing its children, and consumes a depth level. Its
+      `resource` is `<map>#<id>`: the OKF validator treats `resource` as
+      a concept's identity, and the bare map path already belongs to the
+      map node (the first rebuild failed on exactly that). `validate_live`
+      strips the fragment. A `<topicgroup>` (DITA-OT wraps resolved
+      submaps in one) or an untitled href-less topicref stays transparent.
+      A bookmap's title is read from `booktitle/mainbooktitle`.
+    - **One impact analysis was too large to read.** On the reused phrase
+      of question o8 (`reusables-preferences-pages`), `analyze_impact`
+      returned 613 lines; Claude Code saved the result to a file the
+      MCP-only agent could not open, and it fell back on up to 160 small
+      calls. The tool now leads with totals (by relation and by level),
+      pages its entries (`limit`, default 40, `0` for counts only;
+      `offset`), can drop the excerpts, and takes a `fragment` to keep
+      only the topics reusing one element of the source topic.
+
+    **Result** on the Oxygen guide (`editor-sa.ditaval`): 2,041 -> 2,045
+    nodes (four `Topic Head`s: Glossary and three WebHelp search
+    headings), 9,922 -> 9,968 edges; the map now contains its 25
+    chapters plus the copyright notice, and Glossary contains its 40
+    entries. `analyze_impact` on `reusables-preferences-pages` with
+    `limit=0` answers in one 204-character line (1,637 concepts within
+    depth 5); with `relation=generated-from`, `fragment=
+    open-the-preferences-page` and `depth=1` it counts 217 topics, the
+    number DITA-OT itself resolves (215 published pages plus two conref
+    warehouses outside the table of contents), without mixing in the
+    sibling phrase `Open-the-preferences-page`. Rerun on Opus, the
+    MCP-only configuration went from 93 % to 100 % quality and from 3.7x
+    to 5.1x fewer tokens than reading the raw sources; on o8 alone, from
+    158 to 17 tool calls. Bundle and RAG index validate. The
+    `dita-ot/docs` graph is unchanged (its map has no titled heading).
+    One new Java test (bookmap), two updated (the nested fixture's
+    `topichead` is now a node), one new Rust test in the core crate, two
+    in the MCP server; CI's nested-map assertion updated to match.
+
+    Still open, found by the same rerun: a topic referenced with
+    `chunk="to-content"` (`simple-dita-ot-plugin`) keeps neither title
+    nor text in the graph, since DITA-OT moves its content into the topic
+    that absorbs it.
+
+19. **Why did 154 topics of the Oxygen XML user guide have no parent in
+    the table of contents, and why did 133 others have two?** Found while
+    reviewing the RDF/SHACL specification: a SHACL shape "a published
+    topic has a parent" would have flagged 235 topics on the current
+    graph. Most were `copy-to` copies. Confirmed in a kept temp directory
+    of a DITA-OT 4.4.1 run on a three-topic `copy-to` fixture:
+
+    - **The resolved topicref keeps `href` on the source.** DITA-OT
+      writes `<topicref href="topics/shared.dita"
+      copy-to="topics/shared-2.dita">` and the copy as its own job.xml
+      file. The extractor followed `href`: the source got both TOC
+      entries, the copy none.
+    - **The copy shares its source's `src` in job.xml.** The `src` →
+      path table used for `xtrf` traces kept whichever file came last, so
+      a source and its copy looked like one reused the other's whole
+      content, in a direction that depended on job.xml's order.
+    - **The copy could take the clean id.** Duplicate ids went to the
+      first file read; on the Oxygen guide the copy came first, so
+      `create-new-project` named `create-new-project-2.dita` and the
+      real topic became `create-new-project--topics-create-new-project.dita`.
+
+    **Fix** in `DitaModelExtractor`: a topicref with a `copy-to` whose
+    file is in job.xml contains the copy; sources are parsed before their
+    copies, so the source keeps its id and the copy gets the suffixed one
+    (`DITA2GRAPH071I`, info, instead of `DITA2GRAPH070W`); the `src` →
+    path tables prefer the source, so every copy now has one
+    `generated-from` edge to its source. One new Java test.
+
+    **Result** on the Oxygen guide: 158 copies recognized, 0
+    `DITA2GRAPH070W` (all the duplicates were copies), topics without a
+    parent 235 → 81 (34 reuse warehouses, 46 `chunk="to-content"` topics,
+    one real duplicate id), topics with two parents 133 → 0; same node
+    and edge counts (2,045 and 9,968). `dita-ot/docs` has no `copy-to`
+    and is unchanged.

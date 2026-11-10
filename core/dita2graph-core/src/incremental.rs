@@ -201,6 +201,7 @@ mod tests {
             keys: vec![],
             uicontrols: vec![],
             cmd_uicontrols: vec![],
+            resolved_body: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -212,6 +213,7 @@ mod tests {
             t.links.push(Link {
                 relation: Relation::Requires,
                 target: target.into(),
+                fragments: Vec::new(),
             });
         }
         node

@@ -27,7 +27,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
-| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested `topicref`/`topichead`/`topicgroup` map structures at any depth, not just the top level, excludes DITA-OT's auto-generated `related-links` navigation from cross-reference extraction, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16) |
+| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16) |
 | `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all five, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
@@ -84,7 +84,7 @@ flowchart TD
     D --> H["RAG content index<br/>rag/chunks.jsonl, rag/metadata.json"]
     G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
     H --> I
-    I --> J["MCP tools<br/>search_topics · search_content · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle · validate_live"]
+    I --> J["MCP tools<br/>search_topics · search_content · read_topic · find_related_topics<br/>trace_dependencies · analyze_impact · validate_bundle · validate_live"]
     J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
 
     classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
@@ -104,8 +104,10 @@ ways to put it to work:
 ### 1. Impact analysis before touching a doc set
 
 `analyze_impact(topicId)` runs a reverse, transitive graph traversal —
-"everything that depends on this topic" — with a text excerpt per
-affected concept. Ask Claude Code "what breaks if I deprecate the
+"everything that depends on this topic" — totals first (by relation and
+by level), then a page of affected concepts with a text excerpt each,
+narrowed if needed to one relation or to the topics reusing one
+fragment. Ask Claude Code "what breaks if I deprecate the
 `authentication` concept?" and it gets a deterministic answer from real
 `requires`/`applies-to` edges instead of a guess. This is the standout
 case because it's something plain-text RAG can't do at all — there's no
@@ -264,10 +266,11 @@ Once registered, an agent can call:
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
-| `find_related_topics(topicId, relation?)` | Direct relations from a topic |
+| `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, then the reused fragments by source topic |
+| `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |
-| `analyze_impact(topicId, depth?)` | Reverse, transitive traversal — everything that would be affected by changing this topic, with content excerpts (§13.1) |
+| `analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?)` | Reverse, transitive traversal — everything that would be affected by changing this topic: totals by relation and level, then paged entries with content excerpts; `fragment` keeps the topics reusing one element (§13.1) |
 | `generate_summary(topicId)` | Title + description for a topic or map |
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
 | `validate_live(topicId)` | Runs [DitaCraft](https://github.com/jyjeanne/ditacraft)'s live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules, cross-reference, circular-reference, subject-scheme profiling) against the topic's *current* on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp) below |

@@ -12,7 +12,7 @@
 //! `okf_validator::validate_bundle`, which *is* reused as-is (§3, §6.4)
 //! since it operates on raw parsed frontmatter, not the typed model.
 
-use crate::model::{NormalizedNode, Relation};
+use crate::model::{Link, NormalizedNode, Relation};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -190,22 +190,30 @@ fn render_concept(
     // Group links by relation, preserving first-seen order within a
     // relation, so each relation the node actually has gets exactly one
     // section (§4.4's "# Requires" / "# Contains" pattern).
-    let mut by_relation: Vec<(Relation, Vec<&str>)> = Vec::new();
+    let mut by_relation: Vec<(Relation, Vec<&Link>)> = Vec::new();
     for link in node.links() {
         if let Some(entry) = by_relation.iter_mut().find(|(r, _)| *r == link.relation) {
-            entry.1.push(&link.target);
+            entry.1.push(link);
         } else {
-            by_relation.push((link.relation, vec![&link.target]));
+            by_relation.push((link.relation, vec![link]));
         }
     }
 
-    for (relation, targets) in by_relation {
+    for (relation, links) in by_relation {
         body.push_str(&format!("# {}\n\n", relation.section_heading()));
-        for target in targets {
+        for link in links {
+            let target = link.target.as_str();
             let (target_dir, target_title) =
                 index.get(target).copied().unwrap_or(("topics", target));
-            let link = relative_link(node.bundle_dir(), target_dir, target);
-            body.push_str(&format!("- [{target_title}]({link})\n"));
+            let href = relative_link(node.bundle_dir(), target_dir, target);
+            body.push_str(&format!("- [{target_title}]({href})"));
+            // Which elements of the source are reused (generated-from):
+            // plain text after the link, so okf_validator still sees one
+            // ordinary markdown link per target.
+            if !link.fragments.is_empty() {
+                body.push_str(&format!(" (fragments: {})", link.fragments.join(", ")));
+            }
+            body.push('\n');
         }
         body.push('\n');
     }
@@ -293,6 +301,8 @@ struct GraphEdge {
     from: String,
     to: String,
     relation: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fragments: Vec<String>,
 }
 
 fn write_graph_json(output_dir: &Path, nodes: &[NormalizedNode]) -> Result<()> {
@@ -311,6 +321,7 @@ fn write_graph_json(output_dir: &Path, nodes: &[NormalizedNode]) -> Result<()> {
                     from: n.id().to_string(),
                     to: l.target.clone(),
                     relation: l.relation.as_str().to_string(),
+                    fragments: l.fragments.clone(),
                 })
             })
             .collect(),
@@ -335,10 +346,12 @@ mod tests {
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
@@ -355,15 +368,18 @@ mod tests {
                 keys: vec!["install-task".into()],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
                         relation: Relation::Requires,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product-prereqs".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
@@ -378,10 +394,12 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![Link {
                     relation: Relation::References,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -395,6 +413,7 @@ mod tests {
                 keys: vec!["config-concept".into()],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -417,6 +436,54 @@ mod tests {
             "expected a conformant bundle, got issues: {:#?}",
             report.issues
         );
+    }
+
+    #[test]
+    fn generated_from_names_its_fragments_after_the_link_and_in_graph_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.links.push(Link {
+                relation: Relation::GeneratedFrom,
+                target: "configuration".into(),
+                fragments: vec!["warning-note".into(), "li@37".into()],
+            });
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
+
+        let concept =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(
+            concept.contains(
+                "# Generated From\n\n- [Configuration Overview](configuration.md) (fragments: warning-note, li@37)"
+            ),
+            "{concept}"
+        );
+        let graph: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join("graph.json")).unwrap())
+                .unwrap();
+        let edge = graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["relation"] == "generated-from")
+            .unwrap();
+        assert_eq!(
+            edge["fragments"],
+            serde_json::json!(["warning-note", "li@37"])
+        );
+        // Every other edge stays as before: no empty "fragments" key.
+        assert!(
+            graph["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["relation"] != "generated-from")
+                .all(|e| e.get("fragments").is_none())
+        );
+        let report = validate_bundle(&dir.path().join("okf")).unwrap();
+        assert!(!report.has_errors(), "{:#?}", report.issues);
     }
 
     #[test]

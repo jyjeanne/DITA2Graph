@@ -50,7 +50,8 @@ Ant target-naming conventions, missing CLI `<param>` declarations, and
 more).
 
 Map extraction walks `topicref`/`topichead`/`topicgroup` nesting at any
-depth (finding 11), excludes DITA-OT's auto-generated `related-links`
+depth (finding 11), recognizes bookmap and glossary specializations by
+`@class` with titled headings as `Topic Head` nodes (finding 18), excludes DITA-OT's auto-generated `related-links`
 navigation from cross-reference extraction, and supports `mapref`/
 `anchorref` submap composition with zero extra code — DITA-OT's own
 preprocessing already flattens it into the same map tree (finding 14).
@@ -547,7 +548,16 @@ state, most-complete first:
    Windows machine; `file_uri_from_path_str` now strips the verbatim
    prefix and builds `file:///C:/...` URIs (unit-tested with Windows
    inputs on every platform).
-7. **Other extended capabilities** (§13.2, least scoped): multi-map/
+7. **Benchmark-driven graph and MCP fixes** — ✅ done. A token/latency
+   benchmark of Claude Code on the raw DITA sources vs. through this
+   MCP server (`dita2graph-demo/bench`, 8 questions x 3 runs on
+   `dita-ot/docs`) showed the MCP 1.9x cheaper in tokens overall but
+   weaker on content and reuse questions. Four fixes, each read from
+   DITA-OT's own resolved output (`docs/dev/phase-0-findings.md`
+   finding 17): `read_topic` (full text, reused fragments in place),
+   fragment ids on `generated-from`, relationship-table links as
+   `references`, and no `contains` edge for resource-only topicrefs.
+8. **Other extended capabilities** (§13.2, least scoped): multi-map/
    multi-product graph federation, graph versioning/diffing across doc
    releases, and a rendered-output (PDF/HTML5) variant that annotates
    pages with links back into the graph.

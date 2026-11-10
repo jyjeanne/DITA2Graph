@@ -117,6 +117,7 @@ pub fn infer_related_to(nodes: &mut [NormalizedNode]) -> usize {
             t.links.push(Link {
                 relation: Relation::RelatedTo,
                 target: to,
+                fragments: Vec::new(),
             });
         }
     }
@@ -211,6 +212,7 @@ pub fn infer_applies_to(nodes: &mut [NormalizedNode]) -> usize {
             t.links.push(Link {
                 relation: Relation::AppliesTo,
                 target: reference_id,
+                fragments: Vec::new(),
             });
         }
     }
@@ -242,6 +244,7 @@ mod tests {
             keys: vec![],
             uicontrols: vec![],
             cmd_uicontrols: vec![],
+            resolved_body: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -259,6 +262,7 @@ mod tests {
             keys: vec![],
             uicontrols: vec![],
             cmd_uicontrols: cmd_uicontrols.iter().map(|s| s.to_string()).collect(),
+            resolved_body: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -276,6 +280,7 @@ mod tests {
             keys: vec![],
             uicontrols: uicontrols.iter().map(|s| s.to_string()).collect(),
             cmd_uicontrols: vec![],
+            resolved_body: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -319,6 +324,7 @@ mod tests {
             t.links.push(Link {
                 relation: Relation::Requires,
                 target: "b".into(),
+                fragments: Vec::new(),
             });
         }
         assert_eq!(
@@ -338,6 +344,7 @@ mod tests {
             t.links.push(Link {
                 relation: Relation::References,
                 target: "a".into(),
+                fragments: Vec::new(),
             });
         }
         assert_eq!(infer_related_to(&mut nodes), 0);
@@ -497,6 +504,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec!["Save".into()],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/save-task.dita".into(),
                 links: vec![],
             }),
@@ -523,6 +531,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec!["Save".into()],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/some-concept.dita".into(),
                 links: vec![],
             }),
@@ -540,6 +549,7 @@ mod tests {
             t.links.push(Link {
                 relation: Relation::References,
                 target: "ui-reference".into(),
+                fragments: Vec::new(),
             });
         }
         assert_eq!(

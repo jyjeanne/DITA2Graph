@@ -284,20 +284,23 @@ classDiagram
 
 What happens between DITA-OT resolving a map and the normalized model
 being handed off to the Rust core — including `args.dita2graph.depth`
-enforcement, `related-links` exclusion, `xtrf`-derived `generated-from`
-provenance, and `<navref>` detection (`docs/dev/phase-0-findings.md`
-findings 11, 14, 15, 16).
+enforcement, `related-links` filtering (hierarchy navigation skipped,
+relationship-table links kept), `xtrf`-derived `generated-from`
+provenance with its fragment ids, and `<navref>` detection
+(`docs/dev/phase-0-findings.md` findings 11, 14, 15, 16, 17).
 
 ```mermaid
 flowchart TD
     Start([Start: dita --format dita2graph]) --> Resolve["DITA-OT preprocess2 / build-init<br/>resolves keys, keyrefs, conref/conkeyref,<br/>topicref hierarchy, applies DITAVAL filtering"]
-    Resolve --> Walk["ExtractTask walks resolved job data:<br/>topicref / topichead / topicgroup,<br/>at any nesting depth"]
+    Resolve --> Walk["ExtractTask walks resolved job data:<br/>every topicref specialization by @class<br/>(bookmap chapters, glossrefs, topicheads),<br/>at any nesting depth"]
     Walk --> DepthCheck{"Containment level<br/>within args.dita2graph.depth?"}
     DepthCheck -- "no: node still extracted,<br/>only its contains edge is omitted" --> Metadata
-    DepthCheck -- yes --> ContainsEdge["Emit contains edge<br/>from parent map/topic"]
+    DepthCheck -- yes --> ResourceOnly{"processing-role<br/>resource-only?"}
+    ResourceOnly -- "yes: no contains edge" --> Metadata
+    ResourceOnly -- no --> ContainsEdge["Emit contains edge<br/>from parent map/topic"]
     ContainsEdge --> Metadata["Extract topic metadata:<br/>title, shortdesc, body, audience, product,<br/>keys, uicontrols, cmdUicontrols"]
-    Metadata --> ExcludeNav["Exclude DITA-OT's auto-generated<br/>related-links navigation"]
-    ExcludeNav --> Provenance["Derive generated-from edges from xtrf<br/>(conref/conkeyref reuse vs. keyref substitution)"]
+    Metadata --> ExcludeNav["related-links: skip hierarchy navigation<br/>(role parent/child/sibling...),<br/>keep reltable links (role friend) as references"]
+    ExcludeNav --> Provenance["Derive generated-from edges from xtrf<br/>(conref/conkeyref reuse vs. keyref substitution),<br/>naming fragments via xtrc; build resolvedBody"]
     Provenance --> NavrefCheck{"&lt;navref&gt; present?"}
     NavrefCheck -- yes --> WarnNavref["Log DITA2GRAPH warning<br/>(detected, not resolved — finding 16)"]
     NavrefCheck -- no --> Emit

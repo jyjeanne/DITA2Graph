@@ -26,6 +26,13 @@ struct Chunk<'a> {
     title: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// `text` with the topic's reused fragments put back in place, between
+    /// `[reused from …]`/`[end reused]` markers -- what `read_topic` returns.
+    /// Only present when the topic reuses something; search ranking and
+    /// embeddings keep using the deduplicated `text`, so a shared warning
+    /// still counts once, in its source topic.
+    #[serde(rename = "resolvedText", skip_serializing_if = "Option::is_none")]
+    resolved_text: Option<String>,
     #[serde(rename = "topicType")]
     topic_type: &'static str,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
@@ -77,10 +84,15 @@ pub fn write_rag_index(
             continue;
         };
         let text = chunk_text(topic.shortdesc.as_deref(), topic.body.as_deref());
+        let resolved_text = topic
+            .resolved_body
+            .as_deref()
+            .and_then(|resolved| chunk_text(topic.shortdesc.as_deref(), Some(resolved)));
         let chunk = Chunk {
             id: &topic.id,
             title: &topic.title,
             text,
+            resolved_text,
             topic_type: topic.topic_type.okf_type(),
             audience: &topic.audience,
             product: &topic.product,
@@ -134,6 +146,7 @@ mod tests {
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -147,6 +160,7 @@ mod tests {
                 keys: vec!["install-task".into()],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![],
             }),
@@ -161,6 +175,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -221,6 +236,43 @@ mod tests {
             .find(|v: &serde_json::Value| v["id"] == "configuration")
             .unwrap();
         assert!(configuration.get("text").is_none());
+    }
+
+    #[test]
+    fn resolved_text_is_written_only_for_topics_that_reuse_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.resolved_body = Some(
+                "[reused from resources/conref-task.dita#install] Run dita install. [end reused] Done."
+                    .into(),
+            );
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_rag_index(&nodes, dir.path(), generated_at).unwrap();
+
+        let chunks: Vec<serde_json::Value> =
+            fs::read_to_string(dir.path().join("rag/chunks.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        let reuser = chunks
+            .iter()
+            .find(|c| c["id"] == "installing-product")
+            .unwrap();
+        let resolved = reuser["resolvedText"].as_str().unwrap();
+        assert!(
+            resolved.starts_with("Steps to install the product"),
+            "shortdesc first: {resolved}"
+        );
+        assert!(
+            resolved.contains("[reused from resources/conref-task.dita#install] Run dita install.")
+        );
+        // Ranking and embeddings keep the deduplicated text.
+        assert!(!reuser["text"].as_str().unwrap().contains("[reused from"));
+        let other = chunks.iter().find(|c| c["id"] == "configuration").unwrap();
+        assert!(other.get("resolvedText").is_none());
     }
 
     #[test]

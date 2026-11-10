@@ -25,6 +25,13 @@ final class TopicNode {
      * as {@link #shortdesc}.
      */
     String body;
+    /**
+     * The body as a reader of the published topic sees it: {@link #body}
+     * plus every fragment pulled in by conref/conkeyref, each between
+     * {@code [reused from <file>#<id>]} and {@code [end reused]}. Only set
+     * when the body reuses something; omitted from JSON otherwise.
+     */
+    String resolvedBody;
     final List<String> audience = new ArrayList<>();
     final List<String> product = new ArrayList<>();
     final List<String> keys = new ArrayList<>();
@@ -56,6 +63,9 @@ final class TopicNode {
         }
         if (body != null && !body.isEmpty()) {
             sb.append(",\"body\":").append(Json.string(body));
+        }
+        if (resolvedBody != null && !resolvedBody.isEmpty()) {
+            sb.append(",\"resolvedBody\":").append(Json.string(resolvedBody));
         }
         sb.append(",\"audience\":").append(Json.stringArray(audience));
         sb.append(",\"product\":").append(Json.stringArray(product));

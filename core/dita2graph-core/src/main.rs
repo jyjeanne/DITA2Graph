@@ -434,6 +434,7 @@ mod tests {
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -447,15 +448,18 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
                         relation: Relation::Requires,
                         target: "configuration".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::References,
                         target: "installing-product-prereqs".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
@@ -470,6 +474,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -484,6 +489,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![],
             }),

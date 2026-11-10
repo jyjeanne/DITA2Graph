@@ -106,6 +106,7 @@ fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
         keys: vec![],
         uicontrols: vec![],
         cmd_uicontrols: vec![],
+        resolved_body: None,
         source_file: format!("topics/{id}.dita"),
         links: vec![],
     })]

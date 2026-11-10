@@ -11,6 +11,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -48,8 +49,24 @@ import java.util.function.Consumer;
  *   <li>an {@code <xref>}/{@code <link>} carrying a {@code keyref}
  *       attribute -&gt; {@code requires} (using a key rather than a bare
  *       {@code href} signals an intentional, named dependency);
- *   <li>any other local {@code <xref>}/{@code <link>} -&gt; {@code references}.
+ *   <li>any other local {@code <xref>}/{@code <link>} -&gt; {@code references};
+ *   <li>a {@code <link>} in {@code <related-links>} that is not map
+ *       hierarchy navigation -&gt; {@code references}. DITA-OT's maplink
+ *       step writes both kinds into the same block: hierarchy links carry
+ *       {@code role="parent"}/{@code "child"}/{@code "sibling"}/... and
+ *       are skipped (the {@code contains} edges already say it), while
+ *       relationship-table links carry {@code role="friend"} (confirmed
+ *       against a live DITA-OT 4.4.1 run on dita-ot/docs) and are real,
+ *       author-declared relations. They only become an edge when no
+ *       inline link already connects the same pair, so a target is never
+ *       listed under two headings of one concept.
  * </ul>
+ * A {@code <topicref>} with {@code processing-role="resource-only"} (a
+ * conref warehouse, a key-definition target) is not part of the
+ * navigation: it gets no {@code contains} edge. DITA-OT cascades the
+ * attribute onto every topicref it applies to before this class runs, so
+ * the topicref's own attribute is enough. The topic itself is still a
+ * node, since it is a real source of reused content.
  * {@code <mapref>}/{@code anchorref} submap composition needs no extra
  * code here at all: DITA-OT's own preprocessing flattens a
  * {@code <mapref>}-included submap's {@code <topicref>} tree directly
@@ -110,6 +127,18 @@ import java.util.function.Consumer;
  * remove a self-contained chunk of it the way a whole excluded {@code
  * <p>}/{@code <step>} does.
  *
+ * <p>Each {@code generated-from} edge also names the reused fragments:
+ * the {@code @id} of each conref'd element in its source topic. DITA-OT
+ * drops that {@code @id} from the pulled-in copy but keeps its {@code
+ * xtrc} (element name, occurrence and position in the source file), and
+ * the source topic's own resolved copy carries the same {@code xtrc} next
+ * to the {@code @id}, so the id is looked up, not guessed. A fragment with
+ * no id to find falls back to {@code element@line} from its {@code xtrc}.
+ * The same walk also builds {@code resolvedBody}: the body text with every
+ * reused fragment kept, between {@code [reused from <file>#<id>]} and
+ * {@code [end reused]} markers -- what a reader of the published topic
+ * sees, for tools that must show a topic's full text.
+ *
  * <p>A topic's graph node id normally comes straight from its own {@code
  * id} attribute -- but two different topics sharing the same {@code id}
  * (confirmed against a real, large third-party corpus: 33 separate
@@ -142,6 +171,28 @@ final class DitaModelExtractor {
     private final Consumer<String> warn;
     private final Consumer<String> info;
 
+    /** Prefix of a heading's key in {@link RawContainment}: no resolved path starts with it. */
+    private static final String HEADING_KEY = "#heading-";
+    /** Table-of-contents headings found while walking the map, by key, in document order. */
+    private final Map<String, TopicNode> headings = new LinkedHashMap<>();
+    private final Map<String, Integer> headingIdCounts = new HashMap<>();
+    /** {@code src} URI -> temp path of every job.xml file, to place a heading in its own map. */
+    private Map<String, String> srcToPath = Map.of();
+    /** Temp paths of every "dita" job.xml file, to tell whether a {@code copy-to} copy was written. */
+    private Set<String> jobDitaPaths = Set.of();
+    /**
+     * Temp paths of the {@code copy-to} copies the map places in its table
+     * of contents. DITA-OT leaves the topicref's {@code href} on the source
+     * topic and writes the copy as its own job.xml file, with the *same*
+     * {@code src} as the source (confirmed in a kept temp directory of a
+     * DITA-OT 4.4.1 run, a {@code copy-to} fixture): without knowing
+     * which file is the copy, the TOC entry pointed at the source (two
+     * parents, the copy none) and the shared {@code src} mapped to
+     * whichever file came last, so one of the two looked like it reused
+     * the other's whole content.
+     */
+    private final Set<String> copyPaths = new HashSet<>();
+
     DitaModelExtractor(File tempDir, boolean includeDrafts, Consumer<String> warn, Consumer<String> info) {
         this(tempDir, includeDrafts, Integer.MAX_VALUE, warn, info);
     }
@@ -168,13 +219,25 @@ final class DitaModelExtractor {
         final String sourceTopicPath;
         final String href;
         final boolean hasKeyref;
+        /** From a {@code <related-links>} block (a relationship table or an authored related link), not the prose. */
+        final boolean related;
 
-        RawLink(String sourceTopicPath, String href, boolean hasKeyref) {
+        RawLink(String sourceTopicPath, String href, boolean hasKeyref, boolean related) {
             this.sourceTopicPath = sourceTopicPath;
             this.href = href;
             this.hasKeyref = hasKeyref;
+            this.related = related;
         }
     }
+
+    /**
+     * {@code role} values DITA-OT's maplink step gives the navigation links
+     * it derives from the map hierarchy and collection types. Anything else
+     * in {@code <related-links>} -- {@code role="friend"} from a
+     * relationship table, or a link the author wrote -- is a real relation.
+     */
+    private static final Set<String> HIERARCHY_ROLES = Set.of(
+            "parent", "child", "sibling", "next", "previous", "ancestor", "descendant", "cousin");
 
     /**
      * One "this topic pulled content in from that file" record, found by
@@ -188,12 +251,41 @@ final class DitaModelExtractor {
     private static final class RawGeneratedFrom {
         final String sourceTopicPath;
         final String generatedFromPath;
+        /** {@code xtrc} of each reused fragment's root element, in document order. */
+        final Set<String> fragmentTraces = new LinkedHashSet<>();
 
         RawGeneratedFrom(String sourceTopicPath, String generatedFromPath) {
             this.sourceTopicPath = sourceTopicPath;
             this.generatedFromPath = generatedFromPath;
         }
     }
+
+    /**
+     * Per-topic state of the combined body-text/generated-from walk
+     * ({@link #walkGeneratedFromAndBodyText}): the deduplicated body, the
+     * resolved body with placeholder markers, and the reuse records found.
+     */
+    private static final class BodyWalk {
+        final String ownPath;
+        final Map<String, String> ditaSrcToPath;
+        final Element bodyRoot;
+        final StringBuilder ownText = new StringBuilder();
+        final StringBuilder resolvedText = new StringBuilder();
+        /** {fromPath, xtrc} per marker, indexed by the number in its placeholder. */
+        final List<String[]> markers = new ArrayList<>();
+        final Map<String, RawGeneratedFrom> bySource = new LinkedHashMap<>();
+
+        BodyWalk(String ownPath, Map<String, String> ditaSrcToPath, Element bodyRoot) {
+            this.ownPath = ownPath;
+            this.ditaSrcToPath = ditaSrcToPath;
+            this.bodyRoot = bodyRoot;
+        }
+    }
+
+    /** Opens a reused fragment in {@link BodyWalk#resolvedText}; the number indexes {@link BodyWalk#markers}. */
+    private static final char MARK_OPEN = '\u0001';
+    /** Closes the reused fragment opened by the matching {@link #MARK_OPEN}. */
+    private static final char MARK_CLOSE = '\u0002';
 
     /**
      * One "container contains this topicref's target" record collected
@@ -237,29 +329,56 @@ final class DitaModelExtractor {
         Element mapRoot = mapDoc.getDocumentElement();
         MapNode mapNode = new MapNode();
         mapNode.id = attr(mapRoot, "id", stem(mapFile.path));
-        mapNode.title = childText(mapRoot, "title", mapNode.id);
+        mapNode.title = childText(mapRoot, "title", "");
+        if (mapNode.title.isEmpty()) {
+            // A bookmap's title is booktitle/mainbooktitle, not title.
+            for (Element booktitle : directChildren(mapRoot, "booktitle")) {
+                mapNode.title = childText(booktitle, "mainbooktitle", "").replaceAll("\\s+", " ");
+            }
+        }
+        if (mapNode.title.isEmpty()) {
+            mapNode.title = mapNode.id;
+        }
         mapNode.sourceFile = mapFile.path;
 
+        headings.clear();
+        headingIdCounts.clear();
+        copyPaths.clear();
+        jobDitaPaths = new HashSet<>();
+        for (JobFile file : files) {
+            if ("dita".equals(file.format)) {
+                jobDitaPaths.add(file.path);
+            }
+        }
         List<RawContainment> containments = new ArrayList<>();
         Map<String, List<String>> keysByPath = new HashMap<>();
+        // Only headings read srcToPath, during the walk, to find their
+        // map; maps are never copy-to copies, so the copies the walk is
+        // about to find cannot change the entries they need.
+        srcToPath = srcToPathPreferringSources(files, null);
         walkMapChildren(mapRoot, mapFile.path, null, 1, containments, keysByPath);
 
         // Every resolved element DITA-OT writes carries an xtrf attribute
         // tracing its true source file (as an absolute file: URI,
         // matching a JobFile's own src verbatim) -- used below to detect
         // conref/conkeyref-pulled content for generated-from (finding 15).
-        Map<String, String> ditaSrcToPath = new HashMap<>();
-        for (JobFile file : files) {
-            if ("dita".equals(file.format) && !file.src.isEmpty()) {
-                ditaSrcToPath.put(file.src, file.path);
-            }
-        }
+        // A copy-to copy shares its source's src, which must keep mapping
+        // to the source: the copy's content then reads as derived from
+        // the source (generated-from), never the other way round.
+        Map<String, String> ditaSrcToPath = srcToPathPreferringSources(files, "dita");
 
         // Pass 2: parse every topic file for its own metadata, deferring
         // link resolution (target ids may not be known yet).
         Map<String, TopicNode> topicsByPath = new LinkedHashMap<>();
         List<RawLink> rawLinks = new ArrayList<>();
         List<RawGeneratedFrom> rawGeneratedFrom = new ArrayList<>();
+        // path -> (xtrc -> @id) of each topic's own elements: resolves a
+        // reused fragment's xtrc back to its id in the source topic, once
+        // every topic has been parsed (pass 3).
+        Map<String, Map<String, String>> fragmentIdsByPath = new HashMap<>();
+        // Topics whose body holds reused fragments, kept until pass 3 can
+        // name those fragments in resolvedBody.
+        Map<String, BodyWalk> bodyWalksWithReuse = new LinkedHashMap<>();
         // Duplicate-topic-id guard (confirmed against a real, large
         // third-party corpus, dita-ot/docs: 33 separate topics sharing
         // the literal id "ID" -- an unfilled authoring-template
@@ -272,10 +391,19 @@ final class DitaModelExtractor {
         // currently owns it>` so a collision's warning can name both
         // files, not just announce that *a* collision happened.
         Map<String, String> topicIdOwners = new HashMap<>();
+        for (TopicNode heading : headings.values()) {
+            topicIdOwners.put(heading.id, heading.sourceFile);
+        }
+        // Sources before their copy-to copies, whatever job.xml's order:
+        // the source keeps its own id, the copy gets the suffixed one.
+        List<JobFile> ditaFiles = new ArrayList<>();
         for (JobFile file : files) {
-            if (!"dita".equals(file.format)) {
-                continue;
+            if ("dita".equals(file.format)) {
+                ditaFiles.add(file);
             }
+        }
+        ditaFiles.sort(Comparator.comparing(f -> copyPaths.contains(f.path)));
+        for (JobFile file : ditaFiles) {
             Document topicDoc = parse(builder, new File(tempDir, file.path));
             Element root = topicDoc.getDocumentElement();
 
@@ -291,10 +419,17 @@ final class DitaModelExtractor {
                     suffix++;
                 }
                 topic.id = disambiguated;
-                warn.accept("DITA2GRAPH070W: " + file.path + " has the same id (\"" + original
-                        + "\") as " + existingOwner + " -- using \"" + disambiguated
-                        + "\" for this topic's graph node instead of silently overwriting "
-                        + existingOwner + "'s OKF concept file");
+                if (copyPaths.contains(file.path)) {
+                    // Expected: a copy-to copy carries its source's id.
+                    info.accept("DITA2GRAPH071I: " + file.path + " is a copy-to copy of a topic with id \""
+                            + original + "\" (" + existingOwner + ") -- using \"" + disambiguated
+                            + "\" for the copy's graph node");
+                } else {
+                    warn.accept("DITA2GRAPH070W: " + file.path + " has the same id (\"" + original
+                            + "\") as " + existingOwner + " -- using \"" + disambiguated
+                            + "\" for this topic's graph node instead of silently overwriting "
+                            + existingOwner + "'s OKF concept file");
+                }
             }
             topic.topicType = mapTopicType(root.getTagName());
             if ("topic".equals(topic.topicType) && !root.getTagName().equals("topic")) {
@@ -331,31 +466,35 @@ final class DitaModelExtractor {
             }
             topic.cmdUicontrols.addAll(collectDistinctText(cmdUicontrolElements));
 
+            fragmentIdsByPath.put(file.path, ownFragmentIds(root, file.path, ditaSrcToPath));
+
             // generated-from (finding 15) and body-text extraction
             // (canonical-node dedup, docs/dev/canonical-node-dedup-spec.md)
             // in one combined walk of the topic instead of two separate
             // full-topic scans -- both need the same xtrf-mismatch check
             // at every element, so they share a single traversal rather
             // than paying for it twice per topic.
-            Set<String> generatedFromSeen = new HashSet<>();
-            String body = extractBodyAndGeneratedFrom(
-                    root, topic.topicType, file.path, ditaSrcToPath, generatedFromSeen, rawGeneratedFrom);
+            BodyWalk walk = extractBodyAndGeneratedFrom(root, topic.topicType, file.path, ditaSrcToPath);
+            rawGeneratedFrom.addAll(walk.bySource.values());
+            String body = normalizeSpace(walk.ownText);
             topic.body = body.isEmpty() ? null : body;
+            if (!walk.markers.isEmpty()) {
+                bodyWalksWithReuse.put(file.path, walk);
+            }
 
             for (Element xref : descendants(root, "xref", "link")) {
-                if (isInsideRelatedLinks(xref)) {
-                    // DITA-OT's own preprocessing auto-generates a
-                    // <related-links> block of parent/child/sibling
-                    // navigation <link> elements from the map hierarchy
-                    // itself (confirmed directly: a genuinely nested
-                    // topicref/topichead/topicgroup map produces these
-                    // in every affected topic's resolved output, even
-                    // though sample-docs/'s flat map never triggers it
-                    // at all). These are auto-generated TOC navigation,
-                    // not authored cross-references -- extracting them
-                    // as "references"/"requires" edges would mislabel
-                    // generated navigation as author intent, the exact
-                    // "guessy" inference this extractor otherwise avoids.
+                boolean related = isInsideRelatedLinks(xref);
+                if (related && HIERARCHY_ROLES.contains(xref.getAttribute("role"))) {
+                    // DITA-OT's own preprocessing auto-generates
+                    // parent/child/sibling navigation <link> elements
+                    // from the map hierarchy itself (confirmed directly:
+                    // a genuinely nested topicref/topichead/topicgroup
+                    // map produces these in every affected topic's
+                    // resolved output). These are TOC navigation the
+                    // contains edges already capture, not authored
+                    // cross-references -- extracting them as
+                    // "references" would mislabel generated navigation
+                    // as author intent.
                     continue;
                 }
                 String href = xref.getAttribute("href");
@@ -367,7 +506,7 @@ final class DitaModelExtractor {
                     continue; // same-topic fragment reference
                 }
                 boolean hasKeyref = !xref.getAttribute("keyref").isEmpty();
-                rawLinks.add(new RawLink(file.path, resolve(file.path, fragmentless), hasKeyref));
+                rawLinks.add(new RawLink(file.path, resolve(file.path, fragmentless), hasKeyref, related));
             }
 
             topicsByPath.put(file.path, topic);
@@ -376,7 +515,9 @@ final class DitaModelExtractor {
         // Pass 3: resolve map topicrefs and topic-body links now that
         // every topic's real id is known.
         for (RawContainment containment : containments) {
-            TopicNode target = topicsByPath.get(containment.targetPath);
+            TopicNode target = containment.targetPath.startsWith(HEADING_KEY)
+                    ? headings.get(containment.targetPath)
+                    : topicsByPath.get(containment.targetPath);
             if (target == null) {
                 warn.accept("DITA2GRAPH010W: unresolved topicref target " + containment.targetPath
                         + " in " + mapFile.path);
@@ -386,7 +527,9 @@ final class DitaModelExtractor {
                 mapNode.links.add(new Link("contains", target.id));
                 continue;
             }
-            TopicNode container = topicsByPath.get(containment.containerPath);
+            TopicNode container = containment.containerPath.startsWith(HEADING_KEY)
+                    ? headings.get(containment.containerPath)
+                    : topicsByPath.get(containment.containerPath);
             if (container == null) {
                 // The containing topicref's own target never resolved;
                 // already warned about that when its own RawContainment
@@ -409,21 +552,42 @@ final class DitaModelExtractor {
         // (source, relation, target), same "one edge per distinct
         // source" discipline `generated-from` below already follows.
         Set<String> seenLinks = new HashSet<>();
-        for (RawLink raw : rawLinks) {
-            TopicNode source = topicsByPath.get(raw.sourceTopicPath);
-            TopicNode target = topicsByPath.get(raw.href);
-            if (source == null || target == null) {
-                warn.accept("DITA2GRAPH010W: unresolved link target " + raw.href + " in " + raw.sourceTopicPath);
-                continue;
+        // source path + target id of every pair the prose already links:
+        // a related link to the same target adds nothing but a second
+        // heading listing it (okf_validator's "redundant link" warning).
+        Set<String> linkedPairs = new HashSet<>();
+        for (boolean relatedPass : new boolean[] {false, true}) {
+            for (RawLink raw : rawLinks) {
+                if (raw.related != relatedPass) {
+                    continue;
+                }
+                TopicNode source = topicsByPath.get(raw.sourceTopicPath);
+                TopicNode target = topicsByPath.get(raw.href);
+                if (source == null || target == null) {
+                    warn.accept("DITA2GRAPH010W: unresolved link target " + raw.href + " in " + raw.sourceTopicPath);
+                    continue;
+                }
+                if (source == target) {
+                    continue;
+                }
+                String pair = raw.sourceTopicPath + ' ' + target.id;
+                if (raw.related) {
+                    // spec §4.3: references = xref + related-links. A
+                    // related link is a "see also", never a prerequisite,
+                    // whatever keyref put it there.
+                    if (!linkedPairs.add(pair)) {
+                        continue;
+                    }
+                    source.links.add(new Link("references", target.id));
+                    continue;
+                }
+                String relation = raw.hasKeyref ? "requires" : "references";
+                if (!seenLinks.add(raw.sourceTopicPath + ' ' + relation + ' ' + target.id)) {
+                    continue;
+                }
+                linkedPairs.add(pair);
+                source.links.add(new Link(relation, target.id));
             }
-            if (source == target) {
-                continue;
-            }
-            String relation = raw.hasKeyref ? "requires" : "references";
-            if (!seenLinks.add(raw.sourceTopicPath + ' ' + relation + ' ' + target.id)) {
-                continue;
-            }
-            source.links.add(new Link(relation, target.id));
         }
         for (RawGeneratedFrom raw : rawGeneratedFrom) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
@@ -436,7 +600,20 @@ final class DitaModelExtractor {
             if (source == null || target == null || source == target) {
                 continue;
             }
-            source.links.add(new Link("generated-from", target.id));
+            List<String> fragments = new ArrayList<>();
+            for (String trace : raw.fragmentTraces) {
+                String fragment = fragmentId(raw.generatedFromPath, trace, fragmentIdsByPath);
+                if (!fragments.contains(fragment)) {
+                    fragments.add(fragment);
+                }
+            }
+            source.links.add(new Link("generated-from", target.id, fragments));
+        }
+        for (Map.Entry<String, BodyWalk> entry : bodyWalksWithReuse.entrySet()) {
+            String resolved = renderResolvedBody(entry.getValue(), fragmentIdsByPath);
+            if (!resolved.isEmpty()) {
+                topicsByPath.get(entry.getKey()).resolvedBody = resolved;
+            }
         }
 
         List<Object> nodes = new ArrayList<>();
@@ -448,6 +625,7 @@ final class DitaModelExtractor {
             }
             nodes.add(topic);
         }
+        nodes.addAll(headings.values());
         return nodes;
     }
 
@@ -463,6 +641,26 @@ final class DitaModelExtractor {
             return plain;
         }
         throw new IllegalStateException("no .job.xml/job.xml found under " + tempDir);
+    }
+
+    /**
+     * {@code src} URI -> temp path of job.xml's files ({@code format} only,
+     * when given). A {@code copy-to} copy shares its source's {@code src};
+     * the source wins, and the copy is only used when its source is not
+     * in the job at all.
+     */
+    private Map<String, String> srcToPathPreferringSources(List<JobFile> files, String format) {
+        Map<String, String> map = new HashMap<>();
+        for (boolean copies : new boolean[] {true, false}) {
+            for (JobFile file : files) {
+                if (file.src.isEmpty() || (format != null && !format.equals(file.format))
+                        || copyPaths.contains(file.path) != copies) {
+                    continue;
+                }
+                map.put(file.src, file.path);
+            }
+        }
+        return map;
     }
 
     private List<JobFile> parseJobXml(File jobXml) throws Exception {
@@ -510,17 +708,29 @@ final class DitaModelExtractor {
 
     /**
      * Recursively walks {@code parent}'s element children looking for
-     * {@code <topicref>}/{@code <topichead>}/{@code <topicgroup>},
-     * collecting one {@link RawContainment} per {@code topicref} that
-     * has an {@code href} and descending into every one of the three
-     * (arbitrarily deep, up to {@link #maxDepth}) so nested map
-     * structures are captured, not just the top level. {@code
-     * containerPath} is the resolved path of the nearest containing
-     * real topic so far ({@code null} means "the map itself" -- true
-     * only before the first real topicref is seen); {@code
-     * topichead}/{@code topicgroup}/an href-less {@code topicref} have
-     * no topic of their own, so their children keep the *same* {@code
-     * containerPath} and {@code level}, skipping through them.
+     * every {@code topicref}, recognized by its {@code @class} ({@code
+     * - map/topicref }) so that specializations count too: a bookmap's
+     * {@code <chapter>}/{@code <part>}/{@code <appendix>}/{@code
+     * <notices>}, a {@code <glossref>}, as well as {@code <topichead>}
+     * and {@code <topicgroup>}. Matching by element name alone missed the
+     * chapters DITA-OT leaves as they are in a resolved bookmap (one
+     * pointing straight at a topic, one with only a navtitle) and every
+     * glossref -- 2 of the 25 chapters of the Oxygen XML user guide and
+     * its whole glossary (dita2graph-demo/bench, question o4). Without a
+     * {@code @class} (hand-written fixtures), the element name decides.
+     *
+     * <p>One {@link RawContainment} per topicref with an {@code href},
+     * descending into every one (arbitrarily deep, up to {@link
+     * #maxDepth}). {@code containerPath} is the resolved path of the
+     * nearest container so far ({@code null} means "the map itself"),
+     * or the key of a heading. A topicref without {@code href} but with a
+     * navtitle -- a {@code topichead}, a navtitle-only {@code chapter} --
+     * is a heading of the table of contents: it becomes a node of type
+     * {@code topichead} that contains its children, so the graph keeps
+     * the outline a reader sees. A {@code topicgroup} (DITA-OT also wraps
+     * every resolved submap in one) or an href-less topicref with no
+     * navtitle has nothing to show: its children keep the *same* {@code
+     * containerPath} and {@code level}, skipping through it.
      */
     private void walkMapChildren(Element parent, String mapPath, String containerPath, int level,
             List<RawContainment> containments, Map<String, List<String>> keysByPath) {
@@ -531,11 +741,21 @@ final class DitaModelExtractor {
                 continue;
             }
             Element child = (Element) n;
-            switch (child.getNodeName()) {
+            String kind = isNavref(child) ? "navref" : isTopicref(child) ? "topicref" : "";
+            switch (kind) {
                 case "topicref": {
                     String href = child.getAttribute("href");
                     if (href.isEmpty()) {
-                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        String heading = isTopicgroup(child)
+                                || "resource-only".equals(child.getAttribute("processing-role"))
+                                ? "" : navtitle(child);
+                        if (heading.isEmpty()) {
+                            walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        } else if (level <= maxDepth) {
+                            String key = addHeading(heading, child, mapPath);
+                            containments.add(new RawContainment(containerPath, key));
+                            walkMapChildren(child, mapPath, key, level + 1, containments, keysByPath);
+                        }
                         break;
                     }
                     if (isExternal(href, child.getAttribute("scope"))) {
@@ -564,6 +784,13 @@ final class DitaModelExtractor {
                         walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
                         break;
                     }
+                    String format = child.getAttribute("format");
+                    if (!format.isEmpty() && !"dita".equals(format)) {
+                        // Not a topic (a ditavalref's .ditaval, a local
+                        // PDF...): nothing to contain, same as external.
+                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        break;
+                    }
                     if (level > maxDepth) {
                         // Beyond args.dita2graph.depth (§2.3): the topic
                         // itself is still extracted as a node (Pass 2
@@ -572,18 +799,30 @@ final class DitaModelExtractor {
                         break;
                     }
                     String targetPath = resolve(mapPath, href);
-                    containments.add(new RawContainment(containerPath, targetPath));
+                    String copyTo = child.getAttribute("copy-to");
+                    if (!copyTo.isEmpty() && jobDitaPaths.contains(resolve(mapPath, copyTo))) {
+                        // The TOC entry is the copy DITA-OT wrote, not the
+                        // source its href still names (see copyPaths).
+                        targetPath = resolve(mapPath, copyTo);
+                        copyPaths.add(targetPath);
+                    }
                     String keys = child.getAttribute("keys");
                     if (!keys.isEmpty()) {
                         keysByPath.put(targetPath, List.of(keys.trim().split("\\s+")));
                     }
+                    if ("resource-only".equals(child.getAttribute("processing-role"))) {
+                        // Not navigation (a conref warehouse, a key
+                        // target): no contains edge, and no new container
+                        // level for its children, which DITA-OT has
+                        // already marked resource-only too unless they
+                        // explicitly opt back in.
+                        walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
+                        break;
+                    }
+                    containments.add(new RawContainment(containerPath, targetPath));
                     walkMapChildren(child, mapPath, targetPath, level + 1, containments, keysByPath);
                     break;
                 }
-                case "topichead":
-                case "topicgroup":
-                    walkMapChildren(child, mapPath, containerPath, level, containments, keysByPath);
-                    break;
                 case "navref": {
                     // Unlike <mapref>/anchorref (finding 14), DITA-OT
                     // never resolves <navref> for this transtype at all
@@ -639,6 +878,64 @@ final class DitaModelExtractor {
     private static boolean isExternal(String href, String scope) {
         return href.startsWith("http://") || href.startsWith("https://")
                 || "external".equals(scope) || "peer".equals(scope);
+    }
+
+    /** A topicref or one of its specializations (chapter, glossref, topichead...), by {@code @class}. */
+    private static boolean isTopicref(Element el) {
+        String cls = el.getAttribute("class");
+        if (!cls.isEmpty()) {
+            return cls.contains(" map/topicref ");
+        }
+        return Set.of("topicref", "topichead", "topicgroup", "chapter", "part", "appendix", "glossref", "notices")
+                .contains(el.getNodeName());
+    }
+
+    /** A topicgroup (including DITA-OT's resolved-submap wrapper): never a heading. */
+    private static boolean isTopicgroup(Element el) {
+        String cls = el.getAttribute("class");
+        return cls.isEmpty() ? "topicgroup".equals(el.getNodeName()) : cls.contains(" mapgroup-d/topicgroup ");
+    }
+
+    private static boolean isNavref(Element el) {
+        String cls = el.getAttribute("class");
+        return cls.isEmpty() ? "navref".equals(el.getNodeName()) : cls.contains(" map/navref ");
+    }
+
+    /** {@code @navtitle}, else {@code topicmeta/navtitle}, whitespace-normalized; empty when neither. */
+    private static String navtitle(Element el) {
+        String attr = el.getAttribute("navtitle").trim();
+        if (!attr.isEmpty()) {
+            return attr.replaceAll("\\s+", " ");
+        }
+        for (Element topicmeta : directChildren(el, "topicmeta")) {
+            for (Element navtitle : directChildren(topicmeta, "navtitle")) {
+                return navtitle.getTextContent().trim().replaceAll("\\s+", " ");
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Registers a table-of-contents heading as a node of type {@code
+     * topichead} (id {@code topichead--<slug>}, made unique with a
+     * suffix) and returns the key its {@link RawContainment} records use.
+     * Its source file is the map that declares it (from its {@code xtrf}
+     * when DITA-OT recorded one) plus {@code #<id>}: the OKF bundle's
+     * {@code resource} is a concept's identity, and the map node and
+     * every other heading of that map already point at the bare file.
+     */
+    private String addHeading(String title, Element el, String mapPath) {
+        String slug = title.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        String base = "topichead--" + (slug.isEmpty() ? "heading" : slug);
+        int count = headingIdCounts.merge(base, 1, Integer::sum);
+        TopicNode heading = new TopicNode();
+        heading.id = count == 1 ? base : base + "-" + count;
+        heading.topicType = "topichead";
+        heading.title = title;
+        heading.sourceFile = srcToPath.getOrDefault(el.getAttribute("xtrf"), mapPath) + "#" + heading.id;
+        String key = HEADING_KEY + headings.size();
+        headings.put(key, heading);
+        return key;
     }
 
     /** Whether {@code el} has a {@code <related-links>} ancestor (see the caller). */
@@ -781,18 +1078,100 @@ final class DitaModelExtractor {
      * steps) creates. A foreign {@link #INLINE_ELEMENTS} element is
      * never excluded from (2), even though it's still recorded for (1) --
      * see that field's own docs.
+     *
+     * <p>(3) is the resolved body: every text node of the body, reused or
+     * not, with placeholder markers around each outermost reused fragment
+     * that {@link #renderResolvedBody} turns into readable ones in pass 3.
      */
-    private static String extractBodyAndGeneratedFrom(Element root, String topicType, String ownPath,
-            Map<String, String> ditaSrcToPath, Set<String> generatedFromSeen, List<RawGeneratedFrom> rawGeneratedFrom) {
+    private static BodyWalk extractBodyAndGeneratedFrom(Element root, String topicType, String ownPath,
+            Map<String, String> ditaSrcToPath) {
         Element bodyRoot = null;
         for (Element child : directChildren(root, bodyElementTag(topicType))) {
             bodyRoot = child;
             break;
         }
-        StringBuilder bodyText = new StringBuilder();
-        walkGeneratedFromAndBodyText(root, ownPath, ditaSrcToPath, bodyRoot, false, false,
-                generatedFromSeen, rawGeneratedFrom, bodyText);
-        return bodyText.toString().trim().replaceAll("\\s+", " ");
+        BodyWalk walk = new BodyWalk(ownPath, ditaSrcToPath, bodyRoot);
+        walkGeneratedFromAndBodyText(walk, root, false, false, null);
+        return walk;
+    }
+
+    /**
+     * {@code xtrc} -&gt; {@code @id} for every element of this topic's own
+     * content (its {@code xtrf} is the topic's own file) that has an id:
+     * the conref targets other topics may pull in.
+     */
+    private static Map<String, String> ownFragmentIds(Element root, String ownPath, Map<String, String> ditaSrcToPath) {
+        Map<String, String> ids = new HashMap<>();
+        List<Element> elements = new ArrayList<>();
+        elements.add(root);
+        NodeList all = root.getElementsByTagName("*");
+        for (int i = 0; i < all.getLength(); i++) {
+            elements.add((Element) all.item(i));
+        }
+        for (Element el : elements) {
+            String id = el.getAttribute("id");
+            String xtrc = el.getAttribute("xtrc");
+            if (!id.isEmpty() && !xtrc.isEmpty() && ownPath.equals(ditaSrcToPath.get(el.getAttribute("xtrf")))) {
+                ids.putIfAbsent(xtrc, id);
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * The id of the reused element traced by {@code xtrc} in the topic at
+     * {@code sourcePath}, or {@code element@line} from the trace itself
+     * ({@code "li:3;37:32"} -&gt; {@code "li@37"}) when that topic has no
+     * id for it.
+     */
+    private static String fragmentId(String sourcePath, String xtrc, Map<String, Map<String, String>> fragmentIdsByPath) {
+        Map<String, String> ids = fragmentIdsByPath.get(sourcePath);
+        String id = ids == null ? null : ids.get(xtrc);
+        if (id != null) {
+            return id;
+        }
+        int colon = xtrc.indexOf(':');
+        int semicolon = xtrc.indexOf(';');
+        if (colon > 0 && semicolon > colon) {
+            int lineEnd = xtrc.indexOf(':', semicolon);
+            String line = xtrc.substring(semicolon + 1, lineEnd > semicolon ? lineEnd : xtrc.length());
+            return xtrc.substring(0, colon) + "@" + line;
+        }
+        return xtrc;
+    }
+
+    /**
+     * {@link BodyWalk#resolvedText} with its placeholders replaced by
+     * {@code [reused from <file>#<fragment>]} ... {@code [end reused]},
+     * whitespace collapsed like the plain body.
+     */
+    private static String renderResolvedBody(BodyWalk walk, Map<String, Map<String, String>> fragmentIdsByPath) {
+        String raw = walk.resolvedText.toString();
+        StringBuilder out = new StringBuilder(raw.length() + 64 * walk.markers.size());
+        int i = 0;
+        while (i < raw.length()) {
+            char c = raw.charAt(i);
+            if (c == MARK_OPEN) {
+                int end = raw.indexOf(MARK_OPEN, i + 1);
+                String[] marker = walk.markers.get(Integer.parseInt(raw.substring(i + 1, end)));
+                String label = marker[1].isEmpty()
+                        ? marker[0]
+                        : marker[0] + "#" + fragmentId(marker[0], marker[1], fragmentIdsByPath);
+                out.append(" [reused from ").append(label).append("] ");
+                i = end + 1;
+            } else if (c == MARK_CLOSE) {
+                out.append(" [end reused] ");
+                i++;
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+        return normalizeSpace(out);
+    }
+
+    private static String normalizeSpace(CharSequence text) {
+        return text.toString().trim().replaceAll("\\s+", " ");
     }
 
     /**
@@ -820,40 +1199,66 @@ final class DitaModelExtractor {
      *                           nested inside an already-excluded
      *                           subtree, however unlikely, must still be
      *                           detected).
+     * @param foreignAncestorSource
+     *                           the source path of the nearest reused
+     *                           ancestor, or {@code null}: an element
+     *                           reused from a different source than that
+     *                           (or with no reused ancestor at all) is the
+     *                           root of a fragment, whose {@code xtrc} names
+     *                           it on the {@code generated-from} edge.
      */
-    private static void walkGeneratedFromAndBodyText(Element el, String ownPath, Map<String, String> ditaSrcToPath,
-            Element bodyRoot, boolean insideBody, boolean textExcludedByAncestor,
-            Set<String> generatedFromSeen, List<RawGeneratedFrom> rawGeneratedFrom, StringBuilder bodyText) {
+    private static void walkGeneratedFromAndBodyText(BodyWalk walk, Element el, boolean insideBody,
+            boolean textExcludedByAncestor, String foreignAncestorSource) {
         if (isInsideRelatedLinks(el) || "related-links".equals(el.getNodeName())) {
             return;
         }
-        boolean nowInsideBody = insideBody || el == bodyRoot;
+        boolean nowInsideBody = insideBody || el == walk.bodyRoot;
 
-        boolean foreign = false;
+        String fromPath = null;
         String xtrf = el.getAttribute("xtrf");
         if (!xtrf.isEmpty()) {
-            String fromPath = ditaSrcToPath.get(xtrf);
-            if (fromPath != null && !fromPath.equals(ownPath)) {
-                foreign = true;
-                if (generatedFromSeen.add(fromPath)) {
-                    rawGeneratedFrom.add(new RawGeneratedFrom(ownPath, fromPath));
-                }
+            String path = walk.ditaSrcToPath.get(xtrf);
+            if (path != null && !path.equals(walk.ownPath)) {
+                fromPath = path;
             }
+        }
+        boolean foreign = fromPath != null;
+        boolean fragmentRoot = foreign && !fromPath.equals(foreignAncestorSource);
+        if (fragmentRoot) {
+            RawGeneratedFrom raw = walk.bySource.computeIfAbsent(fromPath, p -> new RawGeneratedFrom(walk.ownPath, p));
+            String xtrc = el.getAttribute("xtrc");
+            if (!xtrc.isEmpty()) {
+                raw.fragmentTraces.add(xtrc);
+            }
+        }
+        // Markers only around the outermost fragment: one nested in it
+        // (a conref inside conref'd content) is already within them.
+        boolean marked = nowInsideBody && fragmentRoot && foreignAncestorSource == null;
+        if (marked) {
+            walk.resolvedText.append(' ').append(MARK_OPEN).append(walk.markers.size()).append(MARK_OPEN).append(' ');
+            walk.markers.add(new String[] {fromPath, el.getAttribute("xtrc")});
         }
 
         boolean excludeThisElementText = foreign && !INLINE_ELEMENTS.contains(el.getNodeName());
         boolean textExcluded = textExcludedByAncestor || excludeThisElementText;
+        String childForeignSource = foreign ? fromPath : foreignAncestorSource;
 
         NodeList children = el.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             Node n = children.item(i);
             if (n.getNodeType() == Node.ELEMENT_NODE) {
-                walkGeneratedFromAndBodyText((Element) n, ownPath, ditaSrcToPath, bodyRoot, nowInsideBody,
-                        textExcluded, generatedFromSeen, rawGeneratedFrom, bodyText);
-            } else if (nowInsideBody && !textExcluded
+                walkGeneratedFromAndBodyText(walk, (Element) n, nowInsideBody, textExcluded, childForeignSource);
+            } else if (nowInsideBody
                     && (n.getNodeType() == Node.TEXT_NODE || n.getNodeType() == Node.CDATA_SECTION_NODE)) {
-                bodyText.append(n.getTextContent());
+                String text = n.getTextContent();
+                walk.resolvedText.append(text);
+                if (!textExcluded) {
+                    walk.ownText.append(text);
+                }
             }
+        }
+        if (marked) {
+            walk.resolvedText.append(' ').append(MARK_CLOSE).append(' ');
         }
     }
 

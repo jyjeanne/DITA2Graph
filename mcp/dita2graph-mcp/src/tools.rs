@@ -21,8 +21,20 @@ pub fn list() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "read_topic",
+            "description": "The full text of one topic, as a reader of the published page sees it: summary and body, with every fragment it reuses by conref/conkeyref kept in place between [reused from <file>#<fragment>] and [end reused] markers, then the list of reused fragments by source topic. Use this whenever the answer is in what a topic says -- the other tools only return short excerpts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topicId": { "type": "string", "description": "Concept id (find it with search_topics or search_content)" },
+                    "maxChars": { "type": "integer", "description": "Truncate the text after this many characters (default 20000)" },
+                },
+                "required": ["topicId"],
+            },
+        }),
+        json!({
             "name": "find_related_topics",
-            "description": "List concepts related to the given topic id, optionally filtered to one relation (contains/references/related-to/applies-to/requires/generated-from, §4.3).",
+            "description": "List concepts related to the given topic id, optionally filtered to one relation (contains/references/related-to/applies-to/requires/generated-from, §4.3). A generated-from relation also names the reused fragments (element ids in the source topic).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -34,7 +46,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "explain_task",
-            "description": "Title, description, a body excerpt, and requires/contains/applies-to relations for a topic id.",
+            "description": "Title, description, a body excerpt, and requires/contains/applies-to relations for a topic id. For the topic's full text, use read_topic.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "topicId": { "type": "string" } },
@@ -55,7 +67,7 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "search_content",
-            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Ranked by keyword frequency, plus cosine similarity against rag/embeddings.jsonl when this server was started with an embedding model configured -- a strong semantic match can surface even with no shared words, not just literal term overlap. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle.",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Ranked by keyword frequency, plus cosine similarity against rag/embeddings.jsonl when this server was started with an embedding model configured -- a strong semantic match can surface even with no shared words, not just literal term overlap. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle. Excerpts are 200 characters: call read_topic on a hit to read it in full.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -69,12 +81,17 @@ pub fn list() -> Vec<Value> {
         }),
         json!({
             "name": "analyze_impact",
-            "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers), not just its direct links, with a text excerpt from rag/chunks.jsonl under each affected concept when one exists (§13.1).",
+            "description": "Find every concept that would be affected by changing a topic id: a reverse graph traversal over all relations (dependents, containing maps, requires/keyref referrers, topics reusing its content), not just its direct links, closest first, with a text excerpt under each affected concept. The first line gives the total count, by relation and by level, so 'how many' needs no paging. Results are paginated (40 entries by default: pass offset for the next page). To find the topics that reuse one fragment of a conref source, pass fragment=<fragment id> with depth=1.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "topicId": { "type": "string" },
                     "depth": { "type": "integer", "description": "Max traversal depth (default 5)" },
+                    "relation": { "type": "string", "description": "Optional: follow only this relation (e.g. generated-from, references, contains)" },
+                    "fragment": { "type": "string", "description": "Optional: keep only the direct dependents that reuse this fragment of topicId (its element id, as shown by find_related_topics)" },
+                    "limit": { "type": "integer", "description": "Entries per page (default 40; 0 = counts only)" },
+                    "offset": { "type": "integer", "description": "Index of the first entry to return (default 0)" },
+                    "excerpts": { "type": "boolean", "description": "Include a text excerpt under each entry (default true)" },
                 },
                 "required": ["topicId"],
             },
@@ -131,6 +148,7 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
     match name {
         "search_topics" => search_topics(bundle, arguments),
         "search_content" => search_content(bundle, arguments, embedder.as_deref()),
+        "read_topic" => read_topic(bundle, arguments),
         "find_related_topics" => find_related_topics(bundle, arguments),
         "explain_task" => explain_task(bundle, arguments),
         "trace_dependencies" => trace_dependencies(bundle, arguments),
@@ -371,6 +389,92 @@ fn forward_reachable(
     visited
 }
 
+/// Default `maxChars` for [`read_topic`]: a long reference topic stays
+/// readable in one call, while a pathological one can't flood the client.
+const READ_TOPIC_MAX_CHARS: usize = 20_000;
+
+/// One topic's whole text, reused fragments included. Found by the
+/// token/latency benchmark (dita2graph-demo/bench, q1/q2): with only
+/// `explain_task`'s 300-character excerpt and `search_content`'s
+/// 200-character ones, an agent made 13 to 26 calls without ever seeing
+/// the sentence it needed, while one `Read` of the source file sufficed.
+/// Reads the chunk's `resolvedText` (fragments in place, between markers)
+/// and falls back to its deduplicated `text` for a topic that reuses
+/// nothing, or for a bundle built before `resolvedText` existed.
+fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
+    let topic_id = arg_str(arguments, "topicId")?;
+    let max_chars = arguments
+        .get("maxChars")
+        .and_then(|v| v.as_u64())
+        .map_or(READ_TOPIC_MAX_CHARS, |v| v as usize);
+    let (frontmatter, _) = bundle.read_concept(topic_id)?;
+    let field = |key: &str| {
+        frontmatter
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let title = field("title").unwrap_or_else(|| topic_id.to_string());
+    let mut out = format!(
+        "{title} ({}) [{topic_id}]\nSource: {}\n",
+        field("type").unwrap_or_else(|| "?".into()),
+        field("resource").unwrap_or_else(|| "?".into())
+    );
+
+    let chunks = bundle.rag_chunks().unwrap_or_default();
+    let text = chunks
+        .iter()
+        .find(|c| c.id == topic_id)
+        .and_then(|c| c.resolved_text.as_deref().or(c.text.as_deref()));
+    match text {
+        Some(text) => {
+            let total = text.chars().count();
+            out.push('\n');
+            out.extend(text.chars().take(max_chars));
+            if total > max_chars {
+                out.push_str(&format!(
+                    "\n\n(truncated at {max_chars} of {total} characters -- pass a larger maxChars to read the rest)"
+                ));
+            }
+            out.push('\n');
+        }
+        None => out.push_str("\n(no body text for this topic)\n"),
+    }
+
+    let reused = bundle.edges_from(topic_id, Some("generated-from"));
+    if !reused.is_empty() {
+        out.push_str("\nReused content (conref/conkeyref), by source topic:\n");
+        for edge in reused {
+            let source_title = bundle.title(&edge.to).unwrap_or_else(|_| edge.to.clone());
+            let resource = bundle
+                .read_concept(&edge.to)
+                .ok()
+                .and_then(|(fm, _)| {
+                    fm.get("resource")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            out.push_str(&format!("  - {source_title} ({}, {resource})", edge.to));
+            if !edge.fragments.is_empty() {
+                out.push_str(&format!(": {}", edge.fragments.join(", ")));
+            }
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// ` [fragments: a, b]` for an edge that names the reused elements
+/// (generated-from), empty otherwise.
+fn fragments_suffix(edge: &crate::bundle::GraphEdge) -> String {
+    if edge.fragments.is_empty() {
+        String::new()
+    } else {
+        format!(" [fragments: {}]", edge.fragments.join(", "))
+    }
+}
+
 fn find_related_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let topic_id = arg_str(arguments, "topicId")?;
     let relation = arguments.get("relation").and_then(|v| v.as_str());
@@ -382,7 +486,13 @@ fn find_related_topics(bundle: &BundleReader, arguments: &Value) -> Result<Strin
         .iter()
         .map(|e| {
             let title = bundle.title(&e.to).unwrap_or_else(|_| e.to.clone());
-            format!("{} -> {} ({})", e.relation, title, e.to)
+            format!(
+                "{} -> {} ({}){}",
+                e.relation,
+                title,
+                e.to,
+                fragments_suffix(e)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n"))
@@ -479,40 +589,55 @@ fn trace_dependencies(bundle: &BundleReader, arguments: &Value) -> Result<String
 /// implemented as a raw excerpt handed to the calling agent rather than
 /// a server-generated summary (this tool doesn't call an LLM); the
 /// agent's own read of the excerpts is the summary.
+///
+/// Paginated, with the totals up front: on the Oxygen XML user guide
+/// (2,040 topics), the unpaginated result for its most reused conref
+/// warehouse ran to 613 entries, more than an MCP client displays inline.
+/// Claude Code saved it to a file the agent had no tool to read, and the
+/// answer stopped at a lower bound (dita2graph-demo/bench, question o8).
+/// The first line now gives the total, by relation and by level, which
+/// answers "how many" on its own; `relation`/`fragment` narrow the
+/// traversal ("who reuses fragment X" is `relation`-free, `fragment`=X,
+/// `depth`=1); `limit`/`offset` page through the rest.
 fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let topic_id = arg_str(arguments, "topicId")?.to_string();
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let relation = arguments.get("relation").and_then(|v| v.as_str());
+    let fragment = arguments.get("fragment").and_then(|v| v.as_str());
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map_or(IMPACT_PAGE, |v| v as usize);
+    let offset = arguments
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let with_excerpts = arguments
+        .get("excerpts")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
-    // Best-effort enrichment: a missing or malformed rag/ shouldn't break
-    // the graph traversal, which is this tool's primary job.
-    let chunks = bundle.rag_chunks().unwrap_or_default();
-    let excerpt_by_id: std::collections::HashMap<&str, String> = chunks
-        .iter()
-        .filter_map(|c| c.text.as_deref().map(|t| (c.id.as_str(), excerpt(t, 140))))
-        .collect();
-
+    // Breadth-first, level by level, so a page holds the closest
+    // dependents first. Each hit: (level, the edge, the id it points at).
     let mut visited = std::collections::HashSet::new();
     let mut frontier = vec![topic_id.clone()];
-    let mut lines = Vec::new();
+    let mut hits: Vec<(usize, &crate::bundle::GraphEdge, String)> = Vec::new();
     visited.insert(topic_id.clone());
-
     for level in 1..=depth {
         let mut next = Vec::new();
         for id in &frontier {
-            for edge in bundle.edges_to(id, None) {
+            for edge in bundle.edges_to(id, relation) {
+                // `fragment` only narrows the direct dependents: the
+                // fragment ids belong to `topicId`'s own content.
+                if level == 1
+                    && let Some(fragment) = fragment
+                    && !(edge.relation == "generated-from"
+                        && edge.fragments.iter().any(|f| f == fragment))
+                {
+                    continue;
+                }
                 if visited.insert(edge.from.clone()) {
-                    let title = bundle
-                        .title(&edge.from)
-                        .unwrap_or_else(|_| edge.from.clone());
-                    let indent = "  ".repeat(level - 1);
-                    let mut line = format!(
-                        "{indent}{title} ({}) --{}--> {id}",
-                        edge.from, edge.relation
-                    );
-                    if let Some(excerpt) = excerpt_by_id.get(edge.from.as_str()) {
-                        line.push_str(&format!("\n{indent}  {excerpt}"));
-                    }
-                    lines.push(line);
+                    hits.push((level, edge, id.clone()));
                     next.push(edge.from.clone());
                 }
             }
@@ -523,17 +648,89 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         frontier = next;
     }
 
-    if lines.is_empty() {
+    let mut scope = vec![format!("depth {depth}")];
+    if let Some(relation) = relation {
+        scope.push(format!("relation {relation}"));
+    }
+    if let Some(fragment) = fragment {
+        scope.push(format!("fragment {fragment}"));
+    }
+    let scope = scope.join(", ");
+    if hits.is_empty() {
         return Ok(format!(
-            "nothing depends on `{topic_id}` (no incoming edges found)"
+            "nothing depends on `{topic_id}` ({scope}: no incoming edges found)"
         ));
     }
-    Ok(format!(
-        "changing `{topic_id}` would affect {} concept(s):\n{}",
-        lines.len(),
-        lines.join("\n")
-    ))
+
+    let total = hits.len();
+    let mut by_relation: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut by_level: std::collections::BTreeMap<usize, usize> = Default::default();
+    for (level, edge, _) in &hits {
+        *by_relation.entry(edge.relation.as_str()).or_default() += 1;
+        *by_level.entry(*level).or_default() += 1;
+    }
+    let join = |parts: Vec<String>| parts.join(", ");
+    let mut out = format!(
+        "changing `{topic_id}` would affect {total} concept(s) ({scope}). By relation: {}. By level: {}.",
+        join(
+            by_relation
+                .iter()
+                .map(|(r, n)| format!("{r} {n}"))
+                .collect()
+        ),
+        join(by_level.iter().map(|(l, n)| format!("{l}: {n}")).collect())
+    );
+    if limit == 0 {
+        return Ok(out);
+    }
+    if offset >= total {
+        out.push_str(&format!(
+            "\n(offset {offset} is past the last of the {total} entries)"
+        ));
+        return Ok(out);
+    }
+
+    // Best-effort enrichment: a missing or malformed rag/ shouldn't break
+    // the graph traversal, which is this tool's primary job.
+    let chunks = if with_excerpts {
+        bundle.rag_chunks().unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let excerpt_by_id: std::collections::HashMap<&str, String> = chunks
+        .iter()
+        .filter_map(|c| c.text.as_deref().map(|t| (c.id.as_str(), excerpt(t, 140))))
+        .collect();
+
+    let end = (offset + limit).min(total);
+    for (level, edge, id) in &hits[offset..end] {
+        let title = bundle
+            .title(&edge.from)
+            .unwrap_or_else(|_| edge.from.clone());
+        let indent = "  ".repeat(level - 1);
+        out.push_str(&format!(
+            "\n{indent}{title} ({}) --{}--> {id}{}",
+            edge.from,
+            edge.relation,
+            fragments_suffix(edge)
+        ));
+        if let Some(excerpt) = excerpt_by_id.get(edge.from.as_str()) {
+            out.push_str(&format!("\n{indent}  {excerpt}"));
+        }
+    }
+    if end < total {
+        out.push_str(&format!(
+            "\n\n(showing {}-{end} of {total} -- pass offset={end} for the next page, \
+             or narrow with relation, fragment or depth; excerpts=false shortens each entry)",
+            offset + 1
+        ));
+    }
+    Ok(out)
 }
+
+/// Default page size of [`analyze_impact`]: 40 entries with their
+/// excerpts stay far below what an MCP client displays inline.
+const IMPACT_PAGE: usize = 40;
 
 /// The first `max_chars` characters of `text` (newlines flattened to
 /// spaces, since a report line should stay one line), with a trailing
@@ -610,7 +807,9 @@ fn validate_live(
              set DITA2GRAPH_SOURCE_ROOT, or add a [dita] source_root to mcp-server.toml"
         )
     })?;
-    let file_path = source_root.join(resource);
+    // A table-of-contents heading's resource is `<map>#<heading id>`:
+    // the file to validate is the map that declares it.
+    let file_path = source_root.join(resource.split('#').next().unwrap_or(resource));
     if !file_path.is_file() {
         return Err(anyhow!(
             "resolved source file {} (from {topic_id}'s `resource: {resource}`) does not \

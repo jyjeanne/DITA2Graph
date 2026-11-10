@@ -41,6 +41,10 @@ pub struct GraphEdge {
     pub from: String,
     pub to: String,
     pub relation: String,
+    /// The reused elements a `generated-from` edge names; empty on every
+    /// other edge, and on bundles built before fragments were recorded.
+    #[serde(default)]
+    pub fragments: Vec<String>,
 }
 
 /// One record from `rag/chunks.jsonl` (§13.1) -- the content-search
@@ -52,6 +56,10 @@ pub struct RagChunk {
     pub title: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// `text` with reused fragments put back in place (`read_topic`);
+    /// absent when the topic reuses nothing.
+    #[serde(default, rename = "resolvedText")]
+    pub resolved_text: Option<String>,
     #[serde(rename = "topicType")]
     pub topic_type: String,
 }
@@ -148,7 +156,12 @@ impl BundleReader {
                         .collect();
                     let edges = raw_edges
                         .into_iter()
-                        .map(|(from, to, relation)| GraphEdge { from, to, relation })
+                        .map(|(from, to, relation, fragments)| GraphEdge {
+                            from,
+                            to,
+                            relation,
+                            fragments,
+                        })
                         .collect();
                     (nodes, edges)
                 }
@@ -558,6 +571,7 @@ mod tests {
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: topic_id.into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -571,6 +585,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: format!("topics/{topic_id}.dita"),
                 links: vec![],
             }),
@@ -909,6 +924,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/first.dita".into(),
                 links: vec![],
             }),
@@ -923,6 +939,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/second.dita".into(),
                 links: vec![],
             }),

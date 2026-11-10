@@ -224,11 +224,14 @@ jobs:
           edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
           expected = {
               ('user-guide', 'chapter', 'contains'),
-              ('user-guide', 'grouped', 'contains'),   # skips through <topichead>
+              ('user-guide', 'topichead--group', 'contains'),  # <topichead navtitle=\"Group\"> is a heading node
+              ('topichead--group', 'grouped', 'contains'),
               ('user-guide', 'another', 'contains'),   # skips through <topicgroup>
               ('chapter', 'section', 'contains'),      # nested topicref -> chapter, not the map
           }
           assert edges == expected, f'edges did not match: {edges}'
+          heading = next(n for n in graph['nodes'] if n['id'] == 'topichead--group')
+          assert heading['type'] == 'Topic Head', heading
           # DITA-OT auto-generates <related-links> parent/child navigation
           # for this genuinely nested map (confirmed directly,
           # sample-docs-nested/README.md); it must never show up as a
@@ -353,12 +356,15 @@ jobs:
           with open('/tmp/depth-test/graph.json') as f:
               graph = json.load(f)
           edges = {(e['from'], e['to'], e['relation']) for e in graph['edges']}
-          # depth=1: top-level topicrefs still contained (topichead/
-          # topicgroup don't consume a level), but section (nested one
-          # level inside chapter) is not -- it's still a node, just with
-          # no incoming contains edge.
+          # depth=1: top-level entries still contained (a topicgroup
+          # doesn't consume a level; the Group heading does), but section
+          # (nested one level inside chapter) and grouped (under the
+          # heading) are not -- still nodes, just with no incoming
+          # contains edge.
           assert ('user-guide', 'chapter', 'contains') in edges, edges
+          assert ('user-guide', 'another', 'contains') in edges, edges
           assert ('chapter', 'section', 'contains') not in edges, edges
+          assert ('topichead--group', 'grouped', 'contains') not in edges, edges
           assert any(n['id'] == 'section' for n in graph['nodes']), 'section should still be extracted as a node'
           print('depth=1 correctly omitted the nested edge:', edges)
           "

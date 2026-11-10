@@ -98,19 +98,26 @@ class DitaModelExtractorTest {
         List<String> warnings = new ArrayList<>();
         List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
         assertTrue(warnings.isEmpty(), "no unresolved links expected: " + warnings);
-        assertEquals(5, nodes.size(), "map + 4 topics");
+        assertEquals(6, nodes.size(), "map + 4 topics + the topichead");
 
         MapNode map = (MapNode) nodes.get(0);
         // "chapter" is a top-level topicref -> map contains it directly.
-        // "grouped" is nested inside a <topichead> (no topic of its own)
-        // and "another" inside a <topicgroup> -- both skip through to
-        // the map, same as if the wrapper weren't there. "section" is
-        // NOT here: it's nested *inside* the "chapter" topicref, so it
-        // belongs to chapter, not the map.
+        // The <topichead navtitle="Group"> becomes a heading node that
+        // contains "grouped"; "another", inside a <topicgroup> (no title
+        // to show), skips through to the map, same as if the wrapper
+        // weren't there. "section" is NOT here: it's nested *inside* the
+        // "chapter" topicref, so it belongs to chapter, not the map.
         assertEquals(3, map.links.size(), "map: " + map.links);
         assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("chapter")));
-        assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("grouped")));
+        assertTrue(map.links.stream()
+                .anyMatch(l -> l.relation.equals("contains") && l.target.equals("topichead--group")));
         assertTrue(map.links.stream().anyMatch(l -> l.relation.equals("contains") && l.target.equals("another")));
+
+        TopicNode group = findTopic(nodes, "topichead--group");
+        assertEquals("topichead", group.topicType);
+        assertEquals("Group", group.title);
+        assertEquals("user-guide.ditamap#topichead--group", group.sourceFile);
+        assertEquals(List.of("grouped"), group.links.stream().map(l -> l.target).toList());
 
         TopicNode chapter = findTopic(nodes, "chapter");
         // Exactly the "contains" edge to section -- NOT also a spurious
@@ -135,30 +142,84 @@ class DitaModelExtractorTest {
         write(tempDir, "topics/grouped.dita", topicXml("grouped", "Grouped"));
         write(tempDir, "topics/another.dita", topicXml("another", "Another"));
 
-        // depth=1: top-level topicrefs (chapter, grouped, another --
-        // topichead/topicgroup don't consume a level) are still
+        // depth=1: top-level entries (chapter, the "Group" topichead,
+        // another -- a topicgroup doesn't consume a level) are still
         // captured, but "section" (nested one level inside "chapter",
-        // i.e. level 2) is not -- its topic node still exists (Pass 2
-        // extracts every resolved topic regardless), it just has no
-        // incoming contains edge.
+        // i.e. level 2) and "grouped" (under the heading) are not --
+        // their topic nodes still exist (Pass 2 extracts every resolved
+        // topic regardless), they just have no incoming contains edge.
         List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, 1, msg -> { }, msg -> { }).extract();
-        assertEquals(5, nodes.size(), "the topic itself is still extracted, just not contained");
+        assertEquals(6, nodes.size(), "the topic itself is still extracted, just not contained");
 
         MapNode map = (MapNode) nodes.get(0);
         assertEquals(3, map.links.size(), "map: " + map.links);
         assertTrue(map.links.stream().anyMatch(l -> l.target.equals("chapter")));
-        assertTrue(map.links.stream().anyMatch(l -> l.target.equals("grouped")));
+        assertTrue(map.links.stream().anyMatch(l -> l.target.equals("topichead--group")));
         assertTrue(map.links.stream().anyMatch(l -> l.target.equals("another")));
 
         TopicNode chapterAtDepth1 = findTopic(nodes, "chapter");
         assertTrue(chapterAtDepth1.links.isEmpty(),
                 "section is one level too deep for depth=1: " + chapterAtDepth1.links);
+        assertTrue(findTopic(nodes, "topichead--group").links.isEmpty());
 
-        // depth=2 (or "unlimited", the default) restores the nested edge.
+        // depth=2 (or "unlimited", the default) restores the nested edges.
         List<Object> unlimitedNodes =
                 new DitaModelExtractor(tempDir.toFile(), false, 2, msg -> { }, msg -> { }).extract();
         TopicNode chapterAtDepth2 = findTopic(unlimitedNodes, "chapter");
         assertTrue(chapterAtDepth2.links.stream().anyMatch(l -> l.target.equals("section")));
+        assertTrue(findTopic(unlimitedNodes, "topichead--group").links.stream()
+                .anyMatch(l -> l.target.equals("grouped")));
+    }
+
+    @Test
+    void bookmapChaptersGlossrefsAndNavtitleOnlyChaptersAreWalked(@TempDir Path tempDir) throws Exception {
+        // Shaped after DITA-OT 4.4's resolved UserManual.ditamap of the
+        // Oxygen XML user guide: most chapters come out renamed to
+        // <topicref>, but a chapter pointing straight at a topic and a
+        // navtitle-only chapter keep their name; only @class says what
+        // they are. The glossary entries are <glossref>s, the ditavalref
+        // is not a topic, and the title is booktitle/mainbooktitle.
+        write(tempDir, ".job.xml", jobXml("topics/intro.dita", "topics/add-ons.dita",
+                "glossary/anchor.dita", "topics/copyright.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<bookmap id=\"manual\" class=\"- map/map bookmap/bookmap \">"
+                + "<booktitle class=\"- topic/title bookmap/booktitle \">"
+                + "<mainbooktitle class=\"- topic/ph bookmap/mainbooktitle \"><ph class=\"- topic/ph \">Product</ph>"
+                + "  28.0  </mainbooktitle>"
+                + "<booktitlealt class=\"- topic/ph bookmap/booktitlealt \">User Guide</booktitlealt></booktitle>"
+                + "<frontmatter class=\"- map/topicref bookmap/frontmatter \">"
+                + "<booklists class=\"- map/topicref bookmap/booklists \"><toc class=\"- map/topicref bookmap/toc \"/>"
+                + "</booklists></frontmatter>"
+                + "<topicref href=\"topics/intro.dita\" navtitle=\"Introduction\" class=\"- map/topicref bookmap/chapter \"/>"
+                + "<chapter href=\"topics/add-ons.dita\" navtitle=\"Add-ons\" class=\"- map/topicref bookmap/chapter \"/>"
+                + "<chapter navtitle=\"Glossary\" xtrf=\"file:/src/user-guide.ditamap\" "
+                + "class=\"- map/topicref bookmap/chapter \">"
+                + "<glossref href=\"glossary/anchor.dita\" keys=\"anchor\" class=\"+ map/topicref glossref-d/glossref \"/>"
+                + "</chapter>"
+                + "<backmatter class=\"- map/topicref bookmap/backmatter \">"
+                + "<notices href=\"topics/copyright.dita\" class=\"- map/topicref bookmap/notices \"/></backmatter>"
+                + "<ditavalref href=\"editor.ditaval\" format=\"ditaval\" class=\"+ map/topicref ditavalref-d/ditavalref \"/>"
+                + "</bookmap>");
+        write(tempDir, "topics/intro.dita", topicXml("intro", "Introduction"));
+        write(tempDir, "topics/add-ons.dita", topicXml("add-ons", "Add-ons"));
+        write(tempDir, "glossary/anchor.dita", topicXml("anchor", "Anchor"));
+        write(tempDir, "topics/copyright.dita", topicXml("copyright", "Copyright"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+        assertTrue(warnings.isEmpty(), "no unresolved targets expected: " + warnings);
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals("Product 28.0", map.title);
+        assertEquals(List.of("intro", "add-ons", "topichead--glossary", "copyright"),
+                map.links.stream().map(l -> l.target).toList());
+
+        TopicNode glossary = findTopic(nodes, "topichead--glossary");
+        assertEquals("topichead", glossary.topicType);
+        assertEquals("Glossary", glossary.title);
+        assertEquals("user-guide.ditamap#topichead--glossary", glossary.sourceFile);
+        assertEquals(List.of("anchor"), glossary.links.stream().map(l -> l.target).toList());
+        assertEquals(List.of("anchor"), findTopic(nodes, "anchor").keys);
     }
 
     private static String topicXml(String id, String title) {
@@ -538,6 +599,171 @@ class DitaModelExtractorTest {
         assertEquals(List.of("Mentioned Elsewhere", "Save"), task.uicontrols, "task: " + task.uicontrols);
     }
 
+    @Test
+    void generatedFromNamesEachReusedFragmentAndResolvedBodyKeepsThemBetweenMarkers(@TempDir Path tempDir)
+            throws Exception {
+        // Shaped after DITA-OT 4.4.1's resolved output (dita-ot/docs,
+        // topics/plugins-installing.dita): a conref'd element loses its
+        // @id in the reusing topic but keeps the xtrc it has in the source
+        // topic's own resolved copy, which still carries the @id.
+        write(tempDir, ".job.xml", JOB_XML_GENERATED_FROM);
+        write(tempDir, "user-guide.ditamap", MAP_XML_GENERATED_FROM);
+        write(tempDir, "topics/source.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"source\" xtrf=\"file:/src/topics/source.dita\" xtrc=\"concept:1;2:30\">"
+                + "<title>Source Topic</title><conbody>"
+                + "<p id=\"warning\" xtrf=\"file:/src/topics/source.dita\" xtrc=\"p:1;5:20\">Reusable content.</p>"
+                + "<p xtrf=\"file:/src/topics/source.dita\" xtrc=\"p:2;6:8\">Paragraph without an id.</p>"
+                + "</conbody></concept>");
+        write(tempDir, "topics/reuser.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<task id=\"reuser\"><title>Reuser Topic</title><taskbody>"
+                + "<context xtrf=\"file:/src/topics/reuser.dita\">"
+                + "<p xtrf=\"file:/src/topics/source.dita\" xtrc=\"p:1;5:20\">Reusable content.</p>"
+                + "<p xtrf=\"file:/src/topics/reuser.dita\">Own content.</p>"
+                + "<p xtrf=\"file:/src/topics/source.dita\" xtrc=\"p:2;6:8\">Paragraph without an id.</p>"
+                + "</context></taskbody></task>");
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode reuser = findTopic(nodes, "reuser");
+        Link generatedFrom = reuser.links.stream()
+                .filter(l -> l.relation.equals("generated-from"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("source", generatedFrom.target);
+        // The id found in the source topic, else element@line from the xtrc.
+        assertEquals(List.of("warning", "p@6"), generatedFrom.fragments);
+        assertEquals("Own content.", reuser.body, "the deduplicated body is unchanged");
+        assertEquals("[reused from topics/source.dita#warning] Reusable content. [end reused] Own content. "
+                        + "[reused from topics/source.dita#p@6] Paragraph without an id. [end reused]",
+                reuser.resolvedBody);
+        assertNull(findTopic(nodes, "source").resolvedBody, "a topic that reuses nothing gets no resolved body");
+    }
+
+    @Test
+    void relationshipTableLinksBecomeReferencesButHierarchyLinksDoNot(@TempDir Path tempDir) throws Exception {
+        // DITA-OT 4.4.1's maplink step writes reltable links with
+        // role="friend" and hierarchy navigation with parent/child/
+        // sibling roles into the same <related-links> block (confirmed
+        // against dita-ot/docs' resolved topics/build-using-dita-command.dita).
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/b.dita", "topics/c.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"/><topicref href=\"topics/b.dita\"/><topicref href=\"topics/c.dita\"/>"
+                + "</map>");
+        write(tempDir, "topics/a.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<concept id=\"a\"><title>A</title>"
+                + "<conbody><p>See <xref href=\"c.dita\" keyref=\"c-key\">C</xref>.</p></conbody>"
+                + "<related-links>"
+                + "<linkpool xtrf=\"file:/src/reltable.ditamap\"><link href=\"b.dita\" role=\"friend\" scope=\"local\" format=\"dita\"/></linkpool>"
+                + "<linkpool xtrf=\"file:/src/reltable.ditamap\"><link href=\"c.dita\" role=\"friend\" scope=\"local\" format=\"dita\"/></linkpool>"
+                + "<linkpool><link href=\"b.dita\" role=\"sibling\" scope=\"local\" format=\"dita\"/></linkpool>"
+                + "<linkpool><link href=\"https://example.com/talk\" role=\"friend\" scope=\"external\" format=\"html\"/></linkpool>"
+                + "</related-links></concept>");
+        write(tempDir, "topics/b.dita", topicXml("b", "B"));
+        write(tempDir, "topics/c.dita", topicXml("c", "C"));
+
+        List<String> warnings = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, msg -> { }).extract();
+        assertTrue(warnings.isEmpty(), "no unresolved links expected: " + warnings);
+
+        TopicNode a = findTopic(nodes, "a");
+        // requires c from the prose; references b from the reltable. The
+        // reltable link to c adds nothing (the prose already links c), the
+        // sibling link is navigation, and the external one leaves the corpus.
+        assertEquals(2, a.links.size(), "a: " + a.links.stream().map(l -> l.relation + "->" + l.target).toList());
+        assertTrue(a.links.stream().anyMatch(l -> l.relation.equals("requires") && l.target.equals("c")));
+        assertTrue(a.links.stream().anyMatch(l -> l.relation.equals("references") && l.target.equals("b")));
+    }
+
+    @Test
+    void resourceOnlyTopicrefGetsNoContainsEdgeButStaysANode(@TempDir Path tempDir) throws Exception {
+        // DITA-OT cascades processing-role="resource-only" onto every
+        // topicref it covers (confirmed in dita-ot/docs' resolved
+        // userguide.ditamap), so the topicref's own attribute is enough.
+        write(tempDir, ".job.xml", jobXml("topics/a.dita", "topics/warehouse.dita"));
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/a.dita\"/>"
+                + "<topicgroup processing-role=\"resource-only\">"
+                + "<topicref href=\"topics/warehouse.dita\" processing-role=\"resource-only\"/>"
+                + "</topicgroup></map>");
+        write(tempDir, "topics/a.dita", topicXml("a", "A"));
+        write(tempDir, "topics/warehouse.dita", topicXml("warehouse", "Conref warehouse"));
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals(List.of("a"), map.links.stream().map(l -> l.target).toList());
+        findTopic(nodes, "warehouse");
+    }
+
+    @Test
+    void copyToCopyIsTheTocEntryAndDerivesFromItsSource(@TempDir Path tempDir) throws Exception {
+        // Shaped after DITA-OT 4.4.1's kept temp directory for a copy-to
+        // fixture: the resolved topicref keeps href on the source and
+        // copy-to on the copy; job.xml lists the copy as its own file
+        // with the source's src, here *before* the source (the order the
+        // Oxygen XML user guide produced, where the copy took the id).
+        String src = "file:/src/topics/shared.dita";
+        write(tempDir, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/topics/chapter-one.dita\" path=\"topics/chapter-one.dita\" format=\"dita\"></file>"
+                + "<file src=\"file:/src/topics/chapter-two.dita\" path=\"topics/chapter-two.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + src + "\" path=\"topics\\shared-2.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + src + "\" path=\"topics\\shared.dita\" format=\"dita\"></file>"
+                + "<file src=\"file:/src/user-guide.ditamap\" path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>");
+        write(tempDir, "user-guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"user-guide\"><title>User Guide</title>"
+                + "<topicref href=\"topics/chapter-one.dita\"><topicref href=\"topics/shared.dita\"/></topicref>"
+                + "<topicref href=\"topics/chapter-two.dita\">"
+                + "<topicref href=\"topics/shared.dita\" copy-to=\"topics/shared-2.dita\"/></topicref>"
+                + "</map>");
+        write(tempDir, "topics/chapter-one.dita", topicXml("chapter-one", "Chapter one"));
+        write(tempDir, "topics/chapter-two.dita", topicXml("chapter-two", "Chapter two"));
+        String shared = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<topic id=\"shared\" xtrf=\"" + src + "\" xtrc=\"topic:1;3:30\">"
+                + "<title xtrf=\"" + src + "\" xtrc=\"title:1;3:38\">Shared</title>"
+                + "<body xtrf=\"" + src + "\" xtrc=\"body:1;3:59\">"
+                + "<p id=\"shared-p\" xtrf=\"" + src + "\" xtrc=\"p:1;3:68\">Shared content.</p></body></topic>";
+        write(tempDir, "topics/shared.dita", shared);
+        write(tempDir, "topics/shared-2.dita", shared);
+
+        List<String> warnings = new ArrayList<>();
+        List<String> infos = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, infos::add).extract();
+        assertTrue(warnings.isEmpty(), "a copy is an expected duplicate, not a warning: " + warnings);
+        assertTrue(infos.stream().anyMatch(m -> m.contains("DITA2GRAPH071I")), "infos: " + infos);
+
+        // The source keeps its id even though job.xml lists the copy first.
+        TopicNode source = findTopic(nodes, "shared");
+        assertEquals("topics/shared.dita", source.sourceFile);
+        TopicNode copy = findTopic(nodes, "shared--topics-shared-2.dita");
+        assertEquals("topics/shared-2.dita", copy.sourceFile);
+
+        // Each TOC entry contains its own file: the source once, the copy once.
+        assertEquals(List.of("shared"), findTopic(nodes, "chapter-one").links.stream()
+                .filter(l -> l.relation.equals("contains")).map(l -> l.target).toList());
+        assertEquals(List.of("shared--topics-shared-2.dita"), findTopic(nodes, "chapter-two").links.stream()
+                .filter(l -> l.relation.equals("contains")).map(l -> l.target).toList());
+
+        // The copy derives from the source, never the other way round.
+        assertTrue(copy.links.stream().anyMatch(l -> l.relation.equals("generated-from") && l.target.equals("shared")),
+                "copy: " + copy.links);
+        assertTrue(source.links.stream().noneMatch(l -> l.relation.equals("generated-from")),
+                "source: " + source.links);
+    }
+
+    private static String jobXml(String... topicPaths) {
+        StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" ?><job><files>");
+        for (String path : topicPaths) {
+            sb.append("<file src=\"file:/src/").append(path).append("\" uri=\"").append(path)
+                    .append("\" path=\"").append(path).append("\" format=\"dita\" target=\"true\"></file>");
+        }
+        sb.append("<file src=\"file:/src/user-guide.ditamap\" uri=\"user-guide.ditamap\" "
+                + "path=\"user-guide.ditamap\" format=\"ditamap\" input=\"true\"></file>");
+        return sb.append("</files></job>").toString();
+    }
+
     private static TopicNode findTopic(List<Object> nodes, String id) {
         return nodes.stream()
                 .filter(TopicNode.class::isInstance)
@@ -646,7 +872,8 @@ class DitaModelExtractorTest {
     // A top-level <topicref> ("chapter") with a nested child <topicref>
     // ("section") -- section should attach to chapter, not the map. A
     // <topichead> and a <topicgroup>, each wrapping one <topicref> with
-    // no topic of their own -- both should skip through to the map.
+    // no topic of their own -- the titled topichead becomes a heading
+    // node, the topicgroup skips through to the map.
     private static final String MAP_XML_NESTED = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
             + "<map id=\"user-guide\"><title>User Guide</title>"
             + "<topicref href=\"topics/chapter.dita\">"

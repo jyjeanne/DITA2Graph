@@ -407,7 +407,7 @@ mod tests {
     use super::*;
     use dita2graph_core::{
         Link, NormalizedMap, NormalizedNode, NormalizedTopic, Relation, TopicType, write_bundle,
-        write_mcp_config, write_rag_index,
+        write_mcp_config, write_rag_index, write_sqlite_store,
     };
 
     #[test]
@@ -562,6 +562,7 @@ mod tests {
                 links: vec![Link {
                     relation: Relation::Contains,
                     target: "installing-product".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -575,10 +576,12 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -592,6 +595,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -616,10 +620,12 @@ mod tests {
                     Link {
                         relation: Relation::Contains,
                         target: "installing-product".into(),
+                        fragments: Vec::new(),
                     },
                     Link {
                         relation: Relation::Contains,
                         target: "unrelated-topic".into(),
+                        fragments: Vec::new(),
                     },
                 ],
             }),
@@ -634,10 +640,12 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
                     target: "configuration".into(),
+                    fragments: Vec::new(),
                 }],
             }),
             NormalizedNode::Topic(NormalizedTopic {
@@ -651,6 +659,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -665,6 +674,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/unrelated-topic.dita".into(),
                 links: vec![],
             }),
@@ -712,6 +722,138 @@ mod tests {
         assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
         assert!(names.contains(&"validate_live"));
+        assert!(names.contains(&"read_topic"));
+    }
+
+    /// `plugins-installing` reuses two fragments of the conref warehouse
+    /// `ID` (resources/conref-task.dita), the shape dita-ot/docs has: a
+    /// generated-from edge naming them, and a resolved body keeping them.
+    fn reuse_bundle_root(with_sqlite: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = vec![
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "plugins-installing".into(),
+                topic_type: TopicType::Task,
+                title: "Installing plug-ins".into(),
+                shortdesc: Some("Use the dita install subcommand to install plug-ins.".into()),
+                body: Some("At the command-line prompt, enter the following command: dita install".into()),
+                resolved_body: Some(
+                    "At the command-line prompt, enter the following command: dita install \
+                     [reused from resources/conref-task.dita#plug-in] the plug-in is an ID, a URL or a ZIP file \
+                     [end reused]"
+                        .into(),
+                ),
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "topics/plugins-installing.dita".into(),
+                links: vec![Link {
+                    relation: Relation::GeneratedFrom,
+                    target: "ID".into(),
+                    fragments: vec!["plug-in".into(), "plugin-integrate-all".into()],
+                }],
+            }),
+            NormalizedNode::Topic(NormalizedTopic {
+                id: "ID".into(),
+                topic_type: TopicType::Task,
+                title: "Conref file for tasks".into(),
+                shortdesc: None,
+                body: Some("the plug-in is an ID, a URL or a ZIP file".into()),
+                resolved_body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: "resources/conref-task.dita".into(),
+                links: vec![],
+            }),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        if with_sqlite {
+            write_sqlite_store(&nodes, dir.path()).unwrap();
+        }
+        dir
+    }
+
+    fn call_tool(dir: &tempfile::TempDir, name: &str, arguments: Value) -> String {
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn read_topic_returns_the_full_text_with_reused_fragments_in_place() {
+        let dir = reuse_bundle_root(false);
+        let text = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "plugins-installing" }),
+        );
+        assert!(text.starts_with("Installing plug-ins (Task) [plugins-installing]\nSource: topics/plugins-installing.dita"));
+        assert!(
+            text.contains("Use the dita install subcommand"),
+            "summary first: {text}"
+        );
+        assert!(
+            text.contains("[reused from resources/conref-task.dita#plug-in] the plug-in is an ID, a URL or a ZIP file [end reused]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Conref file for tasks (ID, resources/conref-task.dita): plug-in, plugin-integrate-all"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn read_topic_falls_back_to_the_plain_text_and_truncates_at_max_chars() {
+        let dir = reuse_bundle_root(false);
+        let text = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "ID", "maxChars": 10 }),
+        );
+        assert!(text.contains("\nthe plug-i\n"), "{text}");
+        assert!(text.contains("(truncated at 10 of 41 characters"), "{text}");
+        assert!(
+            !text.contains("Reused content"),
+            "ID reuses nothing: {text}"
+        );
+    }
+
+    #[test]
+    fn generated_from_fragments_show_in_related_topics_and_impact_from_json_and_sqlite() {
+        for with_sqlite in [false, true] {
+            let dir = reuse_bundle_root(with_sqlite);
+            let related = call_tool(
+                &dir,
+                "find_related_topics",
+                json!({ "topicId": "plugins-installing" }),
+            );
+            assert!(
+                related.contains("generated-from -> Conref file for tasks (ID) [fragments: plug-in, plugin-integrate-all]"),
+                "sqlite={with_sqlite}: {related}"
+            );
+            let impact = call_tool(&dir, "analyze_impact", json!({ "topicId": "ID" }));
+            assert!(
+                impact
+                    .contains("--generated-from--> ID [fragments: plug-in, plugin-integrate-all]"),
+                "sqlite={with_sqlite}: {impact}"
+            );
+        }
     }
 
     #[test]
@@ -939,6 +1081,7 @@ mod tests {
                     keys: vec![],
                     uicontrols: vec![],
                     cmd_uicontrols: vec![],
+                    resolved_body: None,
                     source_file: format!("topics/topic-{i}.dita"),
                     links: vec![],
                 })
@@ -1018,6 +1161,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/install-notes.dita".into(),
                 links: vec![],
             }),
@@ -1032,6 +1176,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                resolved_body: None,
                 source_file: "topics/weather-notes.dita".into(),
                 links: vec![],
             }),
@@ -1156,6 +1301,114 @@ mod tests {
         // rag/ (§13.1), so it gets no excerpt line -- just confirm the
         // overall report still lists it without crashing on the lookup.
         assert!(text.contains("user-guide"), "{text}");
+    }
+
+    /// A conref warehouse reused by 50 topics (fragment `a` by the even
+    /// ones, `b` by the odd ones) and contained by the map: 51 dependents,
+    /// more than one page.
+    fn warehouse_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let topic = |id: String, links: Vec<Link>| {
+            NormalizedNode::Topic(NormalizedTopic {
+                id: id.clone(),
+                topic_type: TopicType::Task,
+                title: format!("Title of {id}"),
+                shortdesc: None,
+                body: Some(format!("Body of {id}.")),
+                resolved_body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                source_file: format!("topics/{id}.dita"),
+                links,
+            })
+        };
+        let mut nodes = vec![
+            NormalizedNode::Map(NormalizedMap {
+                id: "manual".into(),
+                title: "Manual".into(),
+                source_file: "manual.ditamap".into(),
+                links: vec![Link {
+                    relation: Relation::Contains,
+                    target: "warehouse".into(),
+                    fragments: Vec::new(),
+                }],
+            }),
+            topic("warehouse".into(), vec![]),
+        ];
+        for i in 0..50 {
+            let fragment = if i % 2 == 0 { "a" } else { "b" };
+            nodes.push(topic(
+                format!("reuser-{i:02}"),
+                vec![Link {
+                    relation: Relation::GeneratedFrom,
+                    target: "warehouse".into(),
+                    fragments: vec![fragment.into()],
+                }],
+            ));
+        }
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn analyze_impact_gives_totals_first_and_pages_the_entries() {
+        let dir = warehouse_bundle_root();
+        let first = call_tool(&dir, "analyze_impact", json!({ "topicId": "warehouse" }));
+        assert!(
+            first.starts_with(
+                "changing `warehouse` would affect 51 concept(s) (depth 5). By relation: contains 1, generated-from 50. By level: 1: 51."
+            ),
+            "{first}"
+        );
+        assert_eq!(
+            first.matches("--generated-from--> warehouse").count()
+                + first.matches("--contains--> warehouse").count(),
+            40
+        );
+        assert!(
+            first.contains("(showing 1-40 of 51 -- pass offset=40 for the next page"),
+            "{first}"
+        );
+
+        let second = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "offset": 40 }),
+        );
+        assert_eq!(second.matches("--> warehouse").count(), 11, "{second}");
+        assert!(!second.contains("(showing"), "last page: {second}");
+
+        let counts = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "limit": 0 }),
+        );
+        assert!(!counts.contains("-->"), "counts only: {counts}");
+    }
+
+    #[test]
+    fn analyze_impact_fragment_keeps_only_the_topics_reusing_that_fragment() {
+        let dir = warehouse_bundle_root();
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "warehouse", "fragment": "a", "depth": 1, "excerpts": false }),
+        );
+        assert!(
+            text.starts_with(
+                "changing `warehouse` would affect 25 concept(s) (depth 1, fragment a). By relation: generated-from 25."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("reuser-00") && !text.contains("reuser-01 "),
+            "{text}"
+        );
+        assert!(!text.contains("Body of"), "excerpts=false: {text}");
     }
 
     #[test]
