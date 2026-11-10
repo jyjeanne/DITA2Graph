@@ -1,0 +1,130 @@
+name: Ontology pages
+
+# Publishes the d2g vocabulary and its SHACL shapes on GitHub Pages, where
+# the w3id.org identifiers redirect (https://w3id.org/dita2graph/, see
+# docs/semantic-model.md). Pages serves .ttl files as text/turtle;
+# raw.githubusercontent.com serves them as text/plain, which strict RDF
+# clients reject.
+#
+# Each release of the vocabulary is a d2g-X.Y.Z tag on the commit that
+# sets its owl:versionIRI. Every run rebuilds the whole site from those
+# tags, never from a branch: ns/X.Y.Z/d2g.ttl and shapes/X.Y.Z/d2g-shapes.ttl
+# for each tag, and ns/d2g.ttl and shapes/d2g-shapes.ttl from the latest.
+# A published version therefore never changes, even if main moves on.
+#
+# One-time setup in the repository settings:
+# - Pages > Build and deployment > Source: "GitHub Actions";
+# - Environments > github-pages > Deployment branches and tags: add the
+#   tag pattern d2g-*. The environment only accepts main at first, so a
+#   run started by a tag push would be refused (a manual run from main
+#   works without it).
+# A tag pushed with the GITHUB_TOKEN starts no workflow; run this one by
+# hand afterwards.
+
+on:
+  push:
+    tags:
+      - "d2g-*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build the site from the d2g-X.Y.Z tags
+        run: |
+          set -euo pipefail
+          ONT=core/dita2graph-core/ontology
+          tags=$(git tag -l 'd2g-*' --sort=-v:refname | grep -E '^d2g-[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          if [ -z "$tags" ]; then
+            echo "::error::no d2g-X.Y.Z tag: tag the commit that sets the vocabulary's owl:versionIRI first"
+            exit 1
+          fi
+          mkdir -p site
+          releases=""
+          for tag in $tags; do
+            v=${tag#d2g-}
+            mkdir -p "site/ns/$v" "site/shapes/$v"
+            git show "$tag:$ONT/d2g.ttl" > "site/ns/$v/d2g.ttl"
+            git show "$tag:$ONT/d2g-shapes.ttl" > "site/shapes/$v/d2g-shapes.ttl"
+            # A tag on the wrong commit would publish another version
+            # under this version's IRI, for good.
+            if ! grep -qF "owl:versionIRI <https://w3id.org/dita2graph/ns/$v>" "site/ns/$v/d2g.ttl"; then
+              echo "::error::$tag: d2g.ttl does not declare owl:versionIRI <https://w3id.org/dita2graph/ns/$v>"
+              exit 1
+            fi
+            releases="$releases
+                <li>$v: <a href=\"ns/$v/d2g.ttl\">vocabulary</a>, <a href=\"shapes/$v/d2g-shapes.ttl\">shapes</a></li>"
+          done
+          latest=$(echo "$tags" | head -n 1)
+          latest=${latest#d2g-}
+          cp "site/ns/$latest/d2g.ttl" site/ns/d2g.ttl
+          cp "site/shapes/$latest/d2g-shapes.ttl" site/shapes/d2g-shapes.ttl
+          cat > site/index.html <<EOF
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>DITA2Graph vocabulary</title>
+            </head>
+            <body>
+              <h1>DITA2Graph vocabulary</h1>
+              <p>The d2g vocabulary (namespace <code>https://w3id.org/dita2graph/ns#</code>)
+                and the SHACL shapes of the graphs
+                <a href="https://github.com/jyjeanne/DITA2Graph">DITA2Graph</a> exports.
+                Documentation:
+                <a href="https://github.com/jyjeanne/DITA2Graph/blob/main/docs/semantic-model.md">docs/semantic-model.md</a>.</p>
+              <p>Latest release, $latest:
+                <a href="ns/d2g.ttl">vocabulary</a>, <a href="shapes/d2g-shapes.ttl">shapes</a>.</p>
+              <h2>Releases</h2>
+              <ul>$releases
+              </ul>
+            </body>
+          </html>
+          EOF
+          find site -type f | sort
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check that every published file parses as Turtle
+        run: |
+          python -m pip install rdflib==7.6.0
+          python - <<'EOF'
+          import pathlib, rdflib
+          for f in sorted(pathlib.Path("site").rglob("*.ttl")):
+              print(f, len(rdflib.Graph().parse(f, format="turtle")), "triples")
+          EOF
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

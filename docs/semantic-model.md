@@ -62,6 +62,17 @@ Namespace `https://w3id.org/dita2graph/ns#` (prefix `d2g`), ontology IRI
 `https://w3id.org/dita2graph/ns`, version `0.1.0`. It reuses Dublin Core
 (`dcterms:`), PROV-O (`prov:`) and SKOS (`skos:`) where they fit.
 
+The w3id.org identifiers (registration pending, `ids/dita2graph/` in
+[perma-id/w3id.org](https://github.com/perma-id/w3id.org)) redirect to
+the files published on GitHub Pages
+(`.github/workflows/ontology-pages.yml`), which serves them as
+`text/turtle`: `ns` and `shapes` give the latest release to a client
+asking for `text/turtle`, and this page otherwise; `ns.ttl` and
+`shapes.ttl` always give Turtle; a version IRI, `ns/0.1.0`, gives that
+release. Each release of the vocabulary is a `d2g-X.Y.Z` tag on the
+commit that sets its `owl:versionIRI`; pushing it publishes the release,
+and a published version never changes.
+
 The ontology stays within the **OWL 2 RL** profile (checked in CI with
 ROBOT), so a rule engine can apply it without a full OWL reasoner. It
 describes; it does not validate: domains and ranges are broad, and the
