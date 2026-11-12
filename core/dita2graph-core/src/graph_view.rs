@@ -267,6 +267,7 @@ mod tests {
                     key: Some("brew".into()),
                 }],
                 code_refs: vec!["samples/build.xml".into()],
+                authored_file: None,
                 source_file: "topics/install.dita".into(),
                 links: vec![],
             }),

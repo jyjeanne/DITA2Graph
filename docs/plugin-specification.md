@@ -486,6 +486,18 @@ the map never publishes it in the table of contents. Both reach the RDF
 export (`d2g:ditaClass`, `d2g:processingRole`); the OKF bundle does not
 use them yet. An older model without them reads the same as before.
 
+`sourceFile` is the topic's path in DITA-OT's job, which is also its
+concept's identity (the OKF `resource`). For a copy DITA-OT writes under
+another name, that path exists only in the output: a `copy-to` target,
+or a branch-filtering copy that a `<ditavalref>` names with
+`<dvrResourcePrefix>` or `<dvrResourceSuffix>`. Such a topic also carries
+`authoredFile`, the file the author edits, read from the job's `src`
+(the DITA-OT documentation has two: `topics/build-using-dita-command.dita`
+and `topics/first-build-using-dita-command.dita`, both written from
+`topics/using-dita-command.dita`). The field is omitted for every other
+topic. The OKF concept names that file in `sources` (§4.4), and
+`validate_live` checks it (§5.2).
+
 `topicType` is read from the root element's `@class`, so a specialization
 takes the type it specializes; `troubleshooting` is a type of its own.
 What a topic declares besides its links to other topics is in optional
@@ -687,7 +699,7 @@ onto OKF frontmatter:
 | `<shortdesc>`/`<abstract>` | `description` |
 | Source `.dita` file path (relative, never absolute — §6.3) | `resource` |
 | `audience`, `platform`, `product`, `otherprops` | `tags` |
-| `conref`/`conkeyref` origin, resolved `keyref` | `sources` (provenance, OKF spec §5.1) |
+| The file the author edits, for a copy DITA-OT writes under another name (`copy-to`, branch filtering), whose `resource` is the copy's own path (§3.2's `authoredFile`); planned: `conref`/`conkeyref` origin, resolved `keyref` | `sources` (provenance, OKF spec §5.1): `[{ resource: <file> }]` |
 | `dita2graph-core` version + generation timestamp | `generated: { by, at }` |
 | Relation taxonomy edges (§4.3) not covered by a plain link | `relations` — a DITA2Graph **extension** field (spec explicitly allows producer-defined keys) |
 
@@ -1114,7 +1126,9 @@ cross-reference resolution, circular-reference detection, subject-scheme
 profiling — `docs/DITA_LSP_ARCHITECTURE.md` in that repo) against the
 topic's *current* on-disk DITA source, resolved via the `resource` field
 in its OKF frontmatter (§4.4) against a configured `--source-root`
-(§5.4). It's implemented by vendoring DitaCraft's standalone LSP server
+(§5.4). For a copy DITA-OT writes under another name, whose `resource`
+exists only in the output, the file named by its `sources` entry is
+checked instead, and the result says which copy it stands for. It's implemented by vendoring DitaCraft's standalone LSP server
 bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT licensed — see
 that directory's own `README.md`) and speaking its LSP JSON-RPC protocol
 as a client (`mcp/dita2graph-mcp/src/live.rs`) — a second reuse pattern

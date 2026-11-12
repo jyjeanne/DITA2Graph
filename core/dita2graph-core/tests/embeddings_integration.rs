@@ -112,6 +112,7 @@ fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
         resolved_body: None,
         processing_role: None,
         dita_class: None,
+        authored_file: None,
         source_file: format!("topics/{id}.dita"),
         links: vec![],
     })]

@@ -588,6 +588,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
@@ -612,6 +613,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -663,6 +665,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
@@ -687,6 +690,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -707,6 +711,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/unrelated-topic.dita".into(),
                 links: vec![],
             }),
@@ -785,6 +790,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                authored_file: None,
                 source_file: "topics/plugins-installing.dita".into(),
                 links: vec![Link {
                     relation: Relation::GeneratedFrom,
@@ -809,6 +815,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                authored_file: None,
                 source_file: "resources/conref-task.dita".into(),
                 links: vec![],
             }),
@@ -1217,6 +1224,116 @@ mod tests {
         assert!(text.contains("does not exist"), "got: {text}");
     }
 
+    /// A topic published as itself and as a copy DITA-OT writes under
+    /// another name (branch filtering, `copy-to`): the copy's `resource`
+    /// is its own path, which the source tree does not have.
+    fn copy_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let topic = |id: &str, source_file: &str, authored_file: Option<&str>| {
+            NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
+                id: id.into(),
+                topic_type: TopicType::Task,
+                title: "Using the dita command".into(),
+                shortdesc: None,
+                body: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                resolved_body: None,
+                processing_role: None,
+                dita_class: None,
+                authored_file: authored_file.map(Into::into),
+                source_file: source_file.into(),
+                links: vec![],
+            })
+        };
+        let nodes = vec![
+            NormalizedNode::Map(NormalizedMap {
+                key_defs: vec![],
+                id: "user-guide".into(),
+                title: "User Guide".into(),
+                source_file: "user-guide.ditamap".into(),
+                links: vec![],
+            }),
+            topic(
+                "using-command-line-tool",
+                "topics/using-dita-command.dita",
+                None,
+            ),
+            topic(
+                "using-command-line-tool--topics-build-using-dita-command.dita",
+                "topics/build-using-dita-command.dita",
+                Some("topics/using-dita-command.dita"),
+            ),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        dir
+    }
+
+    #[test]
+    fn validate_live_checks_the_file_a_copy_is_written_from() {
+        let dir = copy_bundle_root();
+        let source_root = tempfile::tempdir().unwrap();
+        let call = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "validate_live", "arguments": {
+                "topicId": "using-command-line-tool--topics-build-using-dita-command.dita" } }
+        });
+        let validate = || {
+            let live_config = live::LiveValidationConfig {
+                source_root: Some(source_root.path().to_path_buf()),
+                ..live::LiveValidationConfig::default()
+            };
+            handle_message(
+                &call,
+                &mut bundle::BundleCache::new(dir.path().to_path_buf())
+                    .with_live_config(live_config),
+            )
+            .unwrap()
+        };
+
+        // The copy's own path is not looked for: `sources` names the file.
+        let missing = validate();
+        assert_eq!(missing["result"]["isError"], true);
+        let text = missing["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("`sources: topics/using-dita-command.dita`"),
+            "got: {text}"
+        );
+
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping the live check: no `node` on PATH");
+            return;
+        }
+        std::fs::create_dir_all(source_root.path().join("topics")).unwrap();
+        std::fs::write(
+            source_root.path().join("topics/using-dita-command.dita"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <task id=\"using-command-line-tool\"><title>Using the dita command</title>\
+             <taskbody><steps><step><cmd>Run it.</cmd></step></steps></taskbody></task>\n",
+        )
+        .unwrap();
+        let checked = validate();
+        let text = checked["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(checked["result"]["isError"], false, "got: {text}");
+        assert!(
+            text.contains("topics/using-dita-command.dita")
+                && text.contains(
+                    "topics/build-using-dita-command.dita is a copy DITA-OT writes from it"
+                ),
+            "got: {text}"
+        );
+    }
+
     #[test]
     fn validate_live_reports_an_unknown_topic_id_like_other_tools_do() {
         let dir = sample_bundle_root();
@@ -1409,6 +1526,7 @@ mod tests {
                     resolved_body: None,
                     processing_role: None,
                     dita_class: None,
+                    authored_file: None,
                     source_file: format!("topics/topic-{i}.dita"),
                     links: vec![],
                 })
@@ -1494,6 +1612,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/install-notes.dita".into(),
                 links: vec![],
             }),
@@ -1514,6 +1633,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/weather-notes.dita".into(),
                 links: vec![],
             }),
@@ -1663,6 +1783,7 @@ mod tests {
                 keys: vec![],
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
+                authored_file: None,
                 source_file: format!("topics/{id}.dita"),
                 links,
             })

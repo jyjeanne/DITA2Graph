@@ -986,6 +986,24 @@ fn validate_live(
         .get("resource")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("{topic_id} has no `resource` in its frontmatter"))?;
+    // A copy DITA-OT writes under another name (copy-to, branch
+    // filtering) has no file of its own in the source tree: its OKF
+    // `sources` entry names the file the author edits, the one to check.
+    let authored = frontmatter
+        .get("sources")
+        .and_then(|v| v.as_sequence())
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry.get("resource"))
+        .and_then(|v| v.as_str());
+    let (checked, field) = match authored {
+        Some(file) => (file, "sources"),
+        None => (resource, "resource"),
+    };
+    let copy_note = if authored.is_some() {
+        format!("; {resource} is a copy DITA-OT writes from it")
+    } else {
+        String::new()
+    };
 
     let source_root = live_config.source_root.as_ref().ok_or_else(|| {
         anyhow!(
@@ -995,10 +1013,10 @@ fn validate_live(
     })?;
     // A table-of-contents heading's resource is `<map>#<heading id>`:
     // the file to validate is the map that declares it.
-    let file_path = source_root.join(resource.split('#').next().unwrap_or(resource));
+    let file_path = source_root.join(checked.split('#').next().unwrap_or(checked));
     if !file_path.is_file() {
         return Err(anyhow!(
-            "resolved source file {} (from {topic_id}'s `resource: {resource}`) does not \
+            "resolved source file {} (from {topic_id}'s `{field}: {checked}`) does not \
              exist -- is --source-root pointing at the right DITA project?",
             file_path.display()
         ));
@@ -1007,11 +1025,11 @@ fn validate_live(
     let diagnostics = live::validate_file(live_config, source_root, &file_path)?;
     if diagnostics.is_empty() {
         return Ok(format!(
-            "No diagnostics -- {resource} is valid (live DitaCraft LSP check)."
+            "No diagnostics -- {checked} is valid (live DitaCraft LSP check{copy_note})."
         ));
     }
     let mut lines = vec![format!(
-        "{} diagnostic{} for {topic_id} ({resource}), live from DitaCraft's LSP validation pipeline:",
+        "{} diagnostic{} for {topic_id} ({checked}{copy_note}), live from DitaCraft's LSP validation pipeline:",
         diagnostics.len(),
         if diagnostics.len() == 1 { "" } else { "s" },
     )];

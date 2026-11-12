@@ -533,6 +533,7 @@ mod tests {
             keys: vec![],
             uicontrols: vec![],
             cmd_uicontrols: vec![],
+            authored_file: None,
             source_file: format!("topics/{id}.dita"),
             links,
         })

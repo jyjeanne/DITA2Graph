@@ -35,11 +35,21 @@ struct Frontmatter {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     resource: String,
+    /// OKF v0.2 provenance (`sources[].resource`): for a copy DITA-OT
+    /// wrote under another name, the file the author edits. `resource`
+    /// stays the copy's own path, since two concepts may not share one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<Source>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
     generated: Generated,
     #[serde(skip_serializing_if = "Option::is_none")]
     relations: Option<BTreeMap<String, Vec<String>>>,
+}
+
+#[derive(Serialize)]
+struct Source {
+    resource: String,
 }
 
 #[derive(Serialize)]
@@ -172,6 +182,16 @@ fn render_concept(
         title: node.title().to_string(),
         description: description.clone(),
         resource: node.source_file().to_string(),
+        sources: match node {
+            NormalizedNode::Topic(t) => t
+                .authored_file
+                .iter()
+                .map(|f| Source {
+                    resource: f.clone(),
+                })
+                .collect(),
+            NormalizedNode::Map(_) => Vec::new(),
+        },
         tags,
         generated: Generated {
             by: producer(),
@@ -435,6 +455,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
@@ -466,6 +487,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![Link {
                     relation: Relation::References,
@@ -490,6 +512,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -512,6 +535,59 @@ mod tests {
             "expected a conformant bundle, got issues: {:#?}",
             report.issues
         );
+    }
+
+    #[test]
+    fn copies_keep_their_own_resource_and_name_the_authored_file_in_sources() {
+        // Branch filtering in the DITA-OT documentation: one authored
+        // topic, published as itself and twice as copies DITA-OT writes
+        // under other names. Each concept keeps its own `resource` (OKF
+        // rejects two concepts with one); the copies name the authored
+        // file in `sources`, which is provenance, not identity.
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        let NormalizedNode::Topic(authored) = nodes[1].clone() else {
+            panic!("sample_nodes()[1] is installing-product");
+        };
+        for (id, path) in [
+            (
+                "installing-product--topics-first-install.dita",
+                "topics/first-install.dita",
+            ),
+            (
+                "installing-product--topics-expert-install.dita",
+                "topics/expert-install.dita",
+            ),
+        ] {
+            nodes.push(NormalizedNode::Topic(NormalizedTopic {
+                id: id.into(),
+                source_file: path.into(),
+                authored_file: Some(authored.source_file.clone()),
+                links: vec![],
+                ..authored.clone()
+            }));
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
+
+        let report = validate_bundle(&dir.path().join("okf")).unwrap();
+        assert!(!report.has_errors(), "issues: {:#?}", report.issues);
+        let copy = fs::read_to_string(
+            dir.path()
+                .join("okf/topics/installing-product--topics-expert-install.dita.md"),
+        )
+        .unwrap();
+        assert!(
+            copy.contains("resource: topics/expert-install.dita\n"),
+            "{copy}"
+        );
+        assert!(
+            copy.contains("sources:\n- resource: topics/installing-product.dita\n"),
+            "{copy}"
+        );
+        let source =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(!source.contains("sources:"), "{source}");
     }
 
     #[test]

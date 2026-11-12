@@ -66,6 +66,12 @@ final class TopicNode {
     /** Temp-relative paths of the sample files the topic includes with coderef. */
     final Set<String> codeRefs = new LinkedHashSet<>();
     String sourceFile;
+    /**
+     * The file the author edits, when DITA-OT wrote the topic under
+     * another name ({@code copy-to}, branch filtering): {@link #sourceFile}
+     * is then the copy's path. Null, and omitted, otherwise.
+     */
+    String authoredFile;
     final List<Link> links = new ArrayList<>();
     /** DITA {@code status} attribute, e.g. "draft" -- used for include-drafts filtering, not serialized. */
     String status;
@@ -116,6 +122,9 @@ final class TopicNode {
             sb.append(",\"codeRefs\":").append(Json.stringArray(new ArrayList<>(codeRefs)));
         }
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
+        if (authoredFile != null) {
+            sb.append(",\"authoredFile\":").append(Json.string(authoredFile));
+        }
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {
             if (i > 0) {

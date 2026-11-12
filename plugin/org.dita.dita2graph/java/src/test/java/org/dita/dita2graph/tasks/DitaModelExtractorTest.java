@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -779,8 +780,13 @@ class DitaModelExtractorTest {
         // The source keeps its id even though job.xml lists the copy first.
         TopicNode source = findTopic(nodes, "shared");
         assertEquals("topics/shared.dita", source.sourceFile);
+        assertNull(source.authoredFile);
         TopicNode copy = findTopic(nodes, "shared--topics-shared-2.dita");
+        // The copy keeps its own path, its concept's identity; the file the
+        // author edits comes beside it, as the copy-to target exists only
+        // in DITA-OT's output.
         assertEquals("topics/shared-2.dita", copy.sourceFile);
+        assertEquals("topics/shared.dita", copy.authoredFile);
 
         // Each TOC entry contains its own file: the source once, the copy once.
         assertEquals(List.of("shared"), findTopic(nodes, "chapter-one").links.stream()
@@ -796,6 +802,57 @@ class DitaModelExtractorTest {
         assertTrue(copy.links.stream().anyMatch(l -> l.relation.equals("copy-of") && l.target.equals("shared")),
                 "copy: " + copy.links);
         assertTrue(source.links.stream().noneMatch(l -> l.relation.equals("copy-of")), "source: " + source.links);
+    }
+
+    @Test
+    void branchFilteringCopiesKeepTheFileTheAuthorEdits(@TempDir Path tempDir) throws Exception {
+        // Shaped after DITA-OT 4.4.1's kept temp directory for the DITA-OT
+        // documentation: two <ditavalref>s with a <dvrResourcePrefix> write
+        // topics/first-build-using-dita-command.dita and
+        // topics/build-using-dita-command.dita, each its own job.xml file
+        // with the src of topics/using-dita-command.dita, which the map
+        // also references unfiltered. The last topic is reached only
+        // through a filtered copy, and its authored name has a space,
+        // percent-encoded in src.
+        String base = "file:/C:/docs%20root/";
+        String src = base + "topics/using-dita-command.dita";
+        String spaced = base + "topics/my%20topic.dita";
+        write(tempDir, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"" + base + "guide.ditamap\" path=\"guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "<file src=\"" + src + "\" path=\"topics\\using-dita-command.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + src + "\" path=\"topics\\first-build-using-dita-command.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + src + "\" path=\"topics\\build-using-dita-command.dita\" format=\"dita\"></file>"
+                + "<file src=\"" + spaced + "\" path=\"topics\\novice-topic.dita\" format=\"dita\"></file>"
+                + "</files></job>");
+        write(tempDir, "guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"guide\"><title>Guide</title>"
+                + "<topicref href=\"topics/using-dita-command.dita\"/>"
+                + "<topicref href=\"topics/first-build-using-dita-command.dita\"/>"
+                + "<topicref href=\"topics/build-using-dita-command.dita\"/>"
+                + "<topicref href=\"topics/novice-topic.dita\"/>"
+                + "</map>");
+        String command = topicXml("using-command-line-tool", "Using the dita command");
+        write(tempDir, "topics/using-dita-command.dita", command);
+        write(tempDir, "topics/first-build-using-dita-command.dita", command);
+        write(tempDir, "topics/build-using-dita-command.dita", command);
+        write(tempDir, "topics/novice-topic.dita", topicXml("my-topic", "My topic"));
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, w -> { }, i -> { }).extract();
+
+        TopicNode unfiltered = findTopic(nodes, "using-command-line-tool");
+        assertEquals("topics/using-dita-command.dita", unfiltered.sourceFile);
+        assertNull(unfiltered.authoredFile, "not a copy");
+        TopicNode novice = findTopic(nodes, "using-command-line-tool--topics-first-build-using-dita-command.dita");
+        assertEquals("topics/first-build-using-dita-command.dita", novice.sourceFile);
+        assertEquals("topics/using-dita-command.dita", novice.authoredFile);
+        TopicNode expert = findTopic(nodes, "using-command-line-tool--topics-build-using-dita-command.dita");
+        assertEquals("topics/build-using-dita-command.dita", expert.sourceFile);
+        assertEquals("topics/using-dita-command.dita", expert.authoredFile);
+        TopicNode myTopic = findTopic(nodes, "my-topic");
+        assertEquals("topics/novice-topic.dita", myTopic.sourceFile);
+        assertEquals("topics/my topic.dita", myTopic.authoredFile, "src is percent-decoded");
+        assertTrue(expert.toJson().contains("\"authoredFile\":\"topics/using-dita-command.dita\""), expert.toJson());
+        assertFalse(unfiltered.toJson().contains("authoredFile"), unfiltered.toJson());
     }
 
     @Test

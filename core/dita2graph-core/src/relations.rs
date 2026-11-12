@@ -250,6 +250,7 @@ mod tests {
             resolved_body: None,
             processing_role: None,
             dita_class: None,
+            authored_file: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -273,6 +274,7 @@ mod tests {
             resolved_body: None,
             processing_role: None,
             dita_class: None,
+            authored_file: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -296,6 +298,7 @@ mod tests {
             resolved_body: None,
             processing_role: None,
             dita_class: None,
+            authored_file: None,
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -526,6 +529,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/save-task.dita".into(),
                 links: vec![],
             }),
@@ -558,6 +562,7 @@ mod tests {
                 resolved_body: None,
                 processing_role: None,
                 dita_class: None,
+                authored_file: None,
                 source_file: "topics/some-concept.dita".into(),
                 links: vec![],
             }),

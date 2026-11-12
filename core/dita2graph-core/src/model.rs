@@ -141,6 +141,16 @@ pub struct NormalizedTopic {
     pub code_refs: Vec<String>,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
+    /// The file the author edits, when DITA-OT wrote the topic under
+    /// another name (a `copy-to` target, a branch-filtering copy):
+    /// `source_file` is then the copy's own path, which stays the
+    /// concept's identity. Written to the OKF concept as `sources`.
+    #[serde(
+        default,
+        rename = "authoredFile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authored_file: Option<String>,
     #[serde(default)]
     pub links: Vec<Link>,
 }

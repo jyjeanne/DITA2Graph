@@ -214,6 +214,12 @@ final class DitaModelExtractor {
     private final Map<String, Integer> headingIdCounts = new HashMap<>();
     /** {@code src} URI -> temp path of every job.xml file, to place a heading in its own map. */
     private Map<String, String> srcToPath = Map.of();
+    /**
+     * The directory job.xml's paths are relative to, as a {@code file:}
+     * URI: the input map's {@code src} minus its {@code path}. Null when
+     * the input map has no {@code src}.
+     */
+    private URI sourceBase;
     /** Temp paths of every "dita" job.xml file, to tell whether a {@code copy-to} copy was written. */
     private Set<String> jobDitaPaths = Set.of();
     /**
@@ -418,6 +424,7 @@ final class DitaModelExtractor {
             mapNode.title = mapNode.id;
         }
         mapNode.sourceFile = mapFile.path;
+        sourceBase = sourceBase(mapFile);
 
         headings.clear();
         headingIdCounts.clear();
@@ -556,7 +563,12 @@ final class DitaModelExtractor {
             topic.shortdesc = shortdesc.isEmpty() ? null : shortdesc;
             topic.audience.addAll(splitAttr(root, "audience"));
             topic.product.addAll(splitAttr(root, "product"));
+            // The copy keeps its own path, the concept's identity (OKF
+            // rejects two concepts with one resource); the file it copies
+            // travels beside it.
             topic.sourceFile = file.path;
+            String authored = authoredPath(file);
+            topic.authoredFile = authored.equals(file.path) ? null : authored;
             topic.status = root.getAttribute("status");
             List<String> keys = keysByPath.get(file.path);
             if (keys != null) {
@@ -895,6 +907,52 @@ final class DitaModelExtractor {
             }
         }
         return map;
+    }
+
+    /**
+     * The directory the input map's job.xml {@code path} is relative to:
+     * its {@code src} with the path's own directories removed.
+     */
+    private static URI sourceBase(JobFile mapFile) {
+        if (mapFile.src.isEmpty()) {
+            return null;
+        }
+        try {
+            URI base = new URI(mapFile.src).resolve(".");
+            for (int i = 0; i < mapFile.path.chars().filter(c -> c == '/').count(); i++) {
+                base = base.resolve("../");
+            }
+            return base;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The file of the corpus a topic comes from, relative to the input
+     * map's directory, as the author edits it. That is the job.xml path,
+     * except for a copy DITA-OT writes under another name, whose
+     * {@code src} is still the authored file: a {@code copy-to} target, or
+     * a branch-filtering copy a {@code <ditavalref>} names with
+     * {@code <dvrResourcePrefix>} or {@code <dvrResourceSuffix>}. The DITA-OT
+     * documentation has two of the latter, {@code topics/build-using-dita-command.dita}
+     * and {@code topics/first-build-using-dita-command.dita}, both from
+     * {@code topics/using-dita-command.dita}: no file in the corpus has the
+     * copy's name, so the MCP server's {@code validate_live} found nothing
+     * to check. Falls back to the job.xml path when {@code src} is outside
+     * the map's directory.
+     */
+    private String authoredPath(JobFile file) {
+        if (sourceBase == null || file.src.isEmpty()) {
+            return file.path;
+        }
+        try {
+            URI relative = sourceBase.relativize(new URI(file.src));
+            String path = relative.getPath();
+            return relative.isAbsolute() || path == null || path.isEmpty() ? file.path : path;
+        } catch (Exception e) {
+            return file.path;
+        }
     }
 
     private List<JobFile> parseJobXml(File jobXml) throws Exception {
