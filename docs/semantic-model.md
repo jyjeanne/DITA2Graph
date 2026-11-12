@@ -62,8 +62,9 @@ Namespace `https://w3id.org/dita2graph/ns#` (prefix `d2g`), ontology IRI
 `https://w3id.org/dita2graph/ns`, version `0.1.0`. It reuses Dublin Core
 (`dcterms:`), PROV-O (`prov:`) and SKOS (`skos:`) where they fit.
 
-The w3id.org identifiers (registration pending, `ids/dita2graph/` in
-[perma-id/w3id.org](https://github.com/perma-id/w3id.org)) redirect to
+The w3id.org identifiers (`ids/dita2graph/` in
+[perma-id/w3id.org](https://github.com/perma-id/w3id.org/tree/master/ids/dita2graph),
+registered by [#7144](https://github.com/perma-id/w3id.org/pull/7144)) redirect to
 the files published on GitHub Pages
 (`.github/workflows/ontology-pages.yml`), which serves them as
 `text/turtle`: `ns` and `shapes` give the latest release to a client
