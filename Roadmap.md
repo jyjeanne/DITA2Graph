@@ -538,7 +538,10 @@ state, most-complete first:
    warnings: external-URL keydefs, keyword markup, `href="#./element"`,
    references quoted inside `<codeph>`), **then to v0.10.3** (DITA-OT
    parity diagnostics matched with the platform path separator, so they
-   also run on Linux and macOS). **Windows fixed alongside it:**
+   also run on Linux and macOS), **then to v0.11.0** (DITA 1.3
+   conformance: key references resolve across key scopes, and reference
+   severities follow DITA-OT 4.3.5, so a missing target or an unresolved
+   content reference is now an error). **Windows fixed alongside v0.10.2:**
    on Windows, `canonicalize()` returns `\\?\C:\...` verbatim paths, and
    `live.rs` percent-encoded them into `file://%5C%5C%3F%5CC%3A...` URIs
    the LSP couldn't map back to any file — so every href/keyref came back

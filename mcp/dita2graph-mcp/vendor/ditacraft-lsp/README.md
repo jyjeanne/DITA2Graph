@@ -1,17 +1,39 @@
 # Vendored: DitaCraft standalone LSP server
 
 **Source:** [`jyjeanne/ditacraft`](https://github.com/jyjeanne/ditacraft)
-**Version vendored:** v0.10.3 (commit `e00d5ee48c038c28a84e895b1ce63aeaaa721e13`,
-2026-10-13 release; `dist/lsp-server.js` downloaded from that release's
-`lsp-server-0.10.3.zip` GitHub Release asset rather than rebuilt from
-source, to vendor exactly what upstream shipped — SHA-256
-`24224cd6bc2325876b9079c3295fda7ed4325cba4989ca685fa150ea629d8fad`).
-v0.10.3 is a maintenance release: DITA-OT parity diagnostics now match
-the release-notes and resources maps with the platform path separator,
-so they also run on Linux and macOS, not only on Windows.
-**DTDs:** `dtds/` matches the same tag; its 327 files are byte-identical
-between v0.10.2 and v0.10.3 (compared blob by blob in both tags' Git
-trees). v0.10.2 had only changed `dtds/base/catalog.xml` since v0.9.1
+**Version vendored:** v0.11.0 (commit `39b0fdc4dbdac1ace32035784541c154f722e830`,
+2026-11-11 release; `dist/lsp-server.js` downloaded from that release's
+`lsp-server-0.11.0.zip` GitHub Release asset rather than rebuilt from
+source, to vendor exactly what upstream shipped — zip SHA-256
+`63f7b0a75c434e37fa3ee912a0397d1e5cb6a17bb7437944ac7ef3453bf9d90c`,
+the digest GitHub publishes for the asset; `lsp-server.js` SHA-256
+`df17872ffc8b23cd8501d8ebc42b0f83cefafd8a9c5c7a2e2b7894ff9d7ec090`).
+v0.11.0 is a DITA 1.3 conformance release, checked against DITA-OT 4.3.5.
+What changes for `validate_live`:
+- Key references resolve across key scopes as DITA 1.3 requires: a
+  parent scope's definition wins over a child scope's, a key defined
+  only in a child scope is reachable from outside it by its
+  scope-qualified name only, and a peer map's keys are named by the
+  `@keyscope` of the map reference.
+- Reference severities follow DITA-OT: a missing DITA topic, map,
+  content reference or image (`DITA-XREF-001`), a content reference
+  whose target cannot be found (`DITA-XREF-002`/`003`, `DITA-KEY-003`)
+  and a `@conkeyref` to an undefined key (`DITA-KEY-001`) are now
+  errors, no longer warnings. `DITA-SCH-003` (`<indextermref>`) drops
+  to a warning and `DITA-SCH-014` (`@navtitle`) to information.
+- Content reference compatibility is decided by `@class`
+  (`DITA-XREF-004`), and `@conrefend` ranges are checked
+  (`DITA-XREF-006`, `DITA-XREF-007`).
+- Fewer false reports: URI-encoded `@href`s, ids in non-ASCII scripts,
+  specialized topic types as conref targets, subject scheme
+  `<subjectdef>` keys, documents tied to RELAX NG by `<?xml-model?>`.
+
+v0.10.4 (2026-10-26), between the two, only fixed subject scheme maps
+without a DOCTYPE in the editor and updated dependencies.
+**DTDs:** `dtds/` matches the same tag; its 327 files are unchanged
+since v0.10.3: the `dtds` tree has the same Git SHA
+(`8cea000155c45ae8432b58a4255802649105eb83`) in v0.10.3, v0.10.4 and
+v0.11.0. v0.10.2 had only changed `dtds/base/catalog.xml` since v0.9.1
 (adds the missing DITA 1.3 `topicDefn.ent` mapping, which otherwise
 suffix-matched the DITA 1.2 copy, whose common elements lack `<div>`)
 **License:** MIT (`jyjeanne/ditacraft`'s `LICENSE`) — compatible with
@@ -87,7 +109,7 @@ exactly what `jyjeanne/ditacraft`'s own release workflow produces
 either way:
 
 **Preferred — download the release asset directly** (what the v0.9.1,
-v0.10.2 and v0.10.3 updates did), so what's vendored here is byte-identical to
+v0.10.2, v0.10.3 and v0.11.0 updates did), so what's vendored here is byte-identical to
 what upstream actually shipped, not a local rebuild that merely
 *should* match:
 
