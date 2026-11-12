@@ -12,7 +12,7 @@
 //! `okf_validator::validate_bundle`, which *is* reused as-is (§3, §6.4)
 //! since it operates on raw parsed frontmatter, not the typed model.
 
-use crate::model::{Link, NormalizedNode, Relation};
+use crate::model::{Link, Metadata, NormalizedNode, Relation};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -42,6 +42,11 @@ struct Frontmatter {
     sources: Vec<Source>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    /// A DITA2Graph extension, like `relations`: the node's DITA metadata
+    /// (dates, authors, products, audiences, permissions, keywords, index
+    /// terms), so an agent reading the concept sees them.
+    #[serde(skip_serializing_if = "Metadata::is_empty")]
+    metadata: Metadata,
     generated: Generated,
     #[serde(skip_serializing_if = "Option::is_none")]
     relations: Option<BTreeMap<String, Vec<String>>>,
@@ -193,6 +198,7 @@ fn render_concept(
             NormalizedNode::Map(_) => Vec::new(),
         },
         tags,
+        metadata: node.metadata().clone(),
         generated: Generated {
             by: producer(),
             at: generated_at,
@@ -422,6 +428,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![
                     Link {
@@ -456,6 +463,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
@@ -488,6 +496,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/installing-product-prereqs.dita".into(),
                 links: vec![Link {
                     relation: Relation::References,
@@ -513,6 +522,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -535,6 +545,41 @@ mod tests {
             "expected a conformant bundle, got issues: {:#?}",
             report.issues
         );
+    }
+
+    #[test]
+    fn a_topics_dita_metadata_is_in_its_concept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            t.metadata = crate::model::Metadata {
+                modified: Some("2025-06-01".into()),
+                products: vec![crate::model::Product {
+                    name: "Product".into(),
+                    version: Some("2.1".into()),
+                }],
+                keywords: vec!["setup".into()],
+                index_terms: vec![vec!["installing".into(), "on Linux".into()]],
+                ..Default::default()
+            };
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, true).unwrap();
+
+        let report = validate_bundle(&dir.path().join("okf")).unwrap();
+        assert!(!report.has_errors(), "issues: {:#?}", report.issues);
+        let concept =
+            fs::read_to_string(dir.path().join("okf/topics/installing-product.md")).unwrap();
+        let front = concept.split("\n---").next().unwrap();
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(front.trim_start_matches("---")).unwrap();
+        let metadata = &yaml["metadata"];
+        assert_eq!(metadata["modified"].as_str(), Some("2025-06-01"), "{front}");
+        assert_eq!(metadata["products"][0]["version"].as_str(), Some("2.1"));
+        assert_eq!(metadata["indexTerms"][0][1].as_str(), Some("on Linux"));
+        // A topic without metadata gets no empty block.
+        let other = fs::read_to_string(dir.path().join("okf/topics/configuration.md")).unwrap();
+        assert!(!other.contains("metadata:"), "{other}");
     }
 
     #[test]
@@ -561,6 +606,7 @@ mod tests {
         ] {
             nodes.push(NormalizedNode::Topic(NormalizedTopic {
                 id: id.into(),
+                metadata: Default::default(),
                 source_file: path.into(),
                 authored_file: Some(authored.source_file.clone()),
                 links: vec![],

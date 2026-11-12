@@ -48,6 +48,13 @@ impl NormalizedNode {
         }
     }
 
+    pub fn metadata(&self) -> &Metadata {
+        match self {
+            NormalizedNode::Topic(t) => &t.metadata,
+            NormalizedNode::Map(m) => &m.metadata,
+        }
+    }
+
     /// The OKF frontmatter `type` value for this node (§4.1's DITA→OKF
     /// mapping table).
     pub fn okf_type(&self) -> &'static str {
@@ -151,8 +158,85 @@ pub struct NormalizedTopic {
         skip_serializing_if = "Option::is_none"
     )]
     pub authored_file: Option<String>,
+    /// The prolog's metadata and the topic's index terms (see [`Metadata`]).
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// A node's metadata as DITA-OT resolved it (`docs/semantic-model.md`,
+/// "DITA metadata"): a topic's prolog, into which DITA-OT has already cascaded
+/// the map's metadata, plus the index terms of the whole topic; or a map's
+/// own `topicmeta`/`bookmeta`. Every field is optional, and an empty value
+/// is left out of the model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Metadata {
+    /// `critdates/created/@date`, as written (ISO 8601 when the author used it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    /// The most recent `critdates/revised/@modified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+    /// `@golive` of the most recent revision that has one, else of `created`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub golive: Option<String>,
+    /// `@expiry`, chosen like `golive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry: Option<String>,
+    /// `permissions/@view` (`internal`, `classified`, `all`, `entitled`...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authors: Vec<Author>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<Product>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audiences: Vec<Audience>,
+    /// The `<keyword>`s of the prolog's `<keywords>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// Each index entry as the path from its top-level term
+    /// (`["languages", "adding support for"]`), prolog and body alike.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub index_terms: Vec<Vec<String>>,
+}
+
+impl Metadata {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `<author>`: its text and `@type` (`creator`, `contributor`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Author {
+    pub name: String,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_: Option<String>,
+}
+
+/// `<prodinfo>`: the product name, and a version joined from one `<vrm>`
+/// (version, release, modification: `4.2.1`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Product {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// `<audience>`: its type, job and experience level (`@othertype` and
+/// `@otherjob` stand in for `other`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Audience {
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experience_level: Option<String>,
 }
 
 /// A link from a topic to a URL outside the corpus.
@@ -174,6 +258,9 @@ pub struct NormalizedMap {
     /// order (the first definition of a key in its scope wins).
     #[serde(default, rename = "keyDefs", skip_serializing_if = "Vec::is_empty")]
     pub key_defs: Vec<KeyDef>,
+    /// The map's own `topicmeta`/`bookmeta` metadata (see [`Metadata`]).
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
     #[serde(default)]
     pub links: Vec<Link>,
 }

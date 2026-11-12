@@ -251,6 +251,7 @@ mod tests {
             processing_role: None,
             dita_class: None,
             authored_file: None,
+            metadata: Default::default(),
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -275,6 +276,7 @@ mod tests {
             processing_role: None,
             dita_class: None,
             authored_file: None,
+            metadata: Default::default(),
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -299,6 +301,7 @@ mod tests {
             processing_role: None,
             dita_class: None,
             authored_file: None,
+            metadata: Default::default(),
             source_file: format!("topics/{id}.dita"),
             links: vec![],
         })
@@ -375,6 +378,7 @@ mod tests {
                 key_defs: vec![],
                 id: "guide".into(),
                 title: "Guide".into(),
+                metadata: Default::default(),
                 source_file: "guide.ditamap".into(),
                 links: vec![],
             }),
@@ -530,6 +534,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/save-task.dita".into(),
                 links: vec![],
             }),
@@ -563,6 +568,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/some-concept.dita".into(),
                 links: vec![],
             }),

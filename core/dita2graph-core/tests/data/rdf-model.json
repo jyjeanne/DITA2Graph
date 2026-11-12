@@ -4,6 +4,15 @@
     "id": "user-guide",
     "title": "User Guide",
     "sourceFile": "user-guide.ditamap",
+    "metadata": {
+      "created": "2025-01-15",
+      "products": [
+        {
+          "name": "Product",
+          "version": "2.1"
+        }
+      ]
+    },
     "links": [
       {
         "relation": "contains",
@@ -82,6 +91,53 @@
       "install-task"
     ],
     "sourceFile": "topics/installing-product.dita",
+    "metadata": {
+      "created": "2025-01-15",
+      "modified": "2025-06-01",
+      "golive": "June 2025",
+      "expiry": "2027-01-01",
+      "permissions": "internal",
+      "authors": [
+        {
+          "name": "Ada",
+          "type": "creator"
+        },
+        {
+          "name": "Grace",
+          "type": "contributor"
+        }
+      ],
+      "products": [
+        {
+          "name": "Product",
+          "version": "2.1"
+        }
+      ],
+      "audiences": [
+        {
+          "type": "administrator",
+          "job": "installing",
+          "experienceLevel": "expert"
+        }
+      ],
+      "keywords": [
+        "setup",
+        "installer"
+      ],
+      "indexTerms": [
+        [
+          "installing",
+          "on Linux"
+        ],
+        [
+          "installing",
+          "on Windows"
+        ],
+        [
+          "setup"
+        ]
+      ]
+    },
     "links": [
       {
         "relation": "requires",
@@ -131,6 +187,17 @@
     "title": "Configuration \"overview\" — café",
     "ditaClass": "- topic/topic concept/concept",
     "sourceFile": "topics/configuration.dita",
+    "metadata": {
+      "indexTerms": [
+        [
+          "installing",
+          "on Linux"
+        ],
+        [
+          "configuration"
+        ]
+      ]
+    },
     "links": [
       {
         "relation": "contains",

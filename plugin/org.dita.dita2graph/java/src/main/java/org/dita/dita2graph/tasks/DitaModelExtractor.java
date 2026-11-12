@@ -426,6 +426,7 @@ final class DitaModelExtractor {
             mapNode.title = mapNode.id;
         }
         mapNode.sourceFile = mapFile.path;
+        mapNode.metadata = Metadata.ofMap(mapRoot);
         sourceBase = sourceBase(mapFile);
 
         headings.clear();
@@ -565,6 +566,7 @@ final class DitaModelExtractor {
             }
             String ditaClass = normalizeSpace(root.getAttribute("class"));
             topic.ditaClass = ditaClass.isEmpty() ? null : ditaClass;
+            topic.metadata = Metadata.ofTopic(root);
             // Resource-only only when nothing in the table of contents
             // names the file too: one navigation topicref publishes it.
             boolean resourceOnly = file.resourceOnly || resourceOnlyTargets.contains(file.path);

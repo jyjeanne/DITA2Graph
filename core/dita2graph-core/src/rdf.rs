@@ -11,7 +11,7 @@
 //! links and included sample files are nodes of their own. Output is
 //! sorted, so the same model and build time always give the same file.
 
-use crate::model::{KeyDef, Link, NormalizedNode, NormalizedTopic, Relation, TopicType};
+use crate::model::{KeyDef, Link, Metadata, NormalizedNode, NormalizedTopic, Relation, TopicType};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -264,6 +264,7 @@ fn build_graph(
                 }
             }
         }
+        add_dita_metadata(&mut graph, base, &subject, node.metadata());
         for link in node.links() {
             add_link(&mut graph, base, node.id(), &subject, link, &target_iri);
         }
@@ -412,6 +413,88 @@ fn add_topic_metadata(graph: &mut Graph, subject: &str, topic: &NormalizedTopic)
     }
 }
 
+/// The node's DITA metadata (`docs/semantic-model.md`, "DITA metadata"): dates
+/// and authors in Dublin Core, the rest in d2g, and each index entry as a
+/// SKOS concept under its broader term, shared by every node indexed under it.
+fn add_dita_metadata(graph: &mut Graph, base: &str, subject: &str, metadata: &Metadata) {
+    for (predicate, value) in [
+        ("dcterms:created", &metadata.created),
+        ("dcterms:modified", &metadata.modified),
+        ("dcterms:available", &metadata.golive),
+        ("d2g:expiry", &metadata.expiry),
+    ] {
+        if let Some(date) = value {
+            graph.add(subject, predicate, date_literal(date));
+        }
+    }
+    if let Some(view) = &metadata.permissions {
+        graph.add(subject, "d2g:permissions", literal(view));
+    }
+    for author in &metadata.authors {
+        let predicate = match author.type_.as_deref() {
+            Some("contributor") => "dcterms:contributor",
+            _ => "dcterms:creator",
+        };
+        graph.add(subject, predicate, literal(&author.name));
+    }
+    for product in &metadata.products {
+        graph.add(subject, "d2g:productName", literal(&product.name));
+        if let Some(version) = &product.version {
+            graph.add(subject, "d2g:productVersion", literal(version));
+        }
+    }
+    for audience in &metadata.audiences {
+        for (predicate, value) in [
+            ("d2g:audienceType", &audience.type_),
+            ("d2g:audienceJob", &audience.job),
+            ("d2g:experienceLevel", &audience.experience_level),
+        ] {
+            if let Some(value) = value {
+                graph.add(subject, predicate, literal(value));
+            }
+        }
+    }
+    for keyword in &metadata.keywords {
+        graph.add(subject, "d2g:keyword", literal(keyword));
+    }
+    for path in &metadata.index_terms {
+        let mut broader: Option<String> = None;
+        let mut segments = String::new();
+        for label in path {
+            segments.push('/');
+            segments.push_str(&encode_segment(label));
+            let concept = iri(&format!("{base}index{segments}"));
+            graph.add(&concept, "a", "skos:Concept".into());
+            graph.add(&concept, "skos:prefLabel", literal(label));
+            if let Some(parent) = &broader {
+                graph.add(&concept, "skos:broader", parent.clone());
+            }
+            broader = Some(concept);
+        }
+        if let Some(entry) = broader {
+            graph.add(subject, "d2g:indexTerm", entry);
+        }
+    }
+}
+
+/// A date as written: typed `xsd:date` when it is one (`YYYY-MM-DD`), a
+/// plain string otherwise (DITA does not require ISO 8601).
+fn date_literal(value: &str) -> String {
+    let b = value.as_bytes();
+    let iso = b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        && chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok();
+    if iso {
+        format!("{}^^xsd:date", literal(value))
+    } else {
+        literal(value)
+    }
+}
+
 fn add_link(
     graph: &mut Graph,
     base: &str,
@@ -534,6 +617,7 @@ mod tests {
             uicontrols: vec![],
             cmd_uicontrols: vec![],
             authored_file: None,
+            metadata: Default::default(),
             source_file: format!("topics/{id}.dita"),
             links,
         })
@@ -553,6 +637,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![link(Relation::Contains, "install")],
             }),
@@ -712,6 +797,19 @@ mod tests {
         let mut reversed = sample();
         reversed.reverse();
         assert_eq!(turtle(&sample()), turtle(&reversed));
+    }
+
+    #[test]
+    fn a_date_is_typed_only_when_it_is_an_iso_date() {
+        assert_eq!(date_literal("2025-06-01"), "\"2025-06-01\"^^xsd:date");
+        // DITA does not require ISO 8601: the date stays as written.
+        assert_eq!(date_literal("June 2025"), "\"June 2025\"");
+        assert_eq!(
+            date_literal("2025-02-30"),
+            "\"2025-02-30\"",
+            "not a real day"
+        );
+        assert_eq!(date_literal("2025-6-1"), "\"2025-6-1\"");
     }
 
     #[test]

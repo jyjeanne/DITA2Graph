@@ -229,6 +229,7 @@ mod tests {
             NormalizedNode::Map(NormalizedMap {
                 id: "guide".into(),
                 title: "Guide".into(),
+                metadata: Default::default(),
                 source_file: "guide.ditamap".into(),
                 key_defs: vec![
                     KeyDef {
@@ -268,6 +269,7 @@ mod tests {
                 }],
                 code_refs: vec!["samples/build.xml".into()],
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/install.dita".into(),
                 links: vec![],
             }),

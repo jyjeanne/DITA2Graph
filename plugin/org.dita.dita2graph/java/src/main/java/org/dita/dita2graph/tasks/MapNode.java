@@ -14,6 +14,8 @@ final class MapNode {
     final List<Link> links = new ArrayList<>();
     /** Effective key definitions, in map order: the first definition of a key in its scope wins. */
     final List<KeyDef> keyDefs = new ArrayList<>();
+    /** The map's own topicmeta/bookmeta metadata (dates, product...). */
+    Metadata metadata;
 
     String toJson() {
         StringBuilder sb = new StringBuilder();
@@ -30,6 +32,9 @@ final class MapNode {
                 sb.append(keyDefs.get(i).toJson());
             }
             sb.append(']');
+        }
+        if (metadata != null && !metadata.isEmpty()) {
+            sb.append(",\"metadata\":").append(metadata.toJson());
         }
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {

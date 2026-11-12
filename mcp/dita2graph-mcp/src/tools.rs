@@ -468,6 +468,89 @@ fn forward_reachable(
 /// readable in one call, while a pathological one can't flood the client.
 const READ_TOPIC_MAX_CHARS: usize = 20_000;
 
+/// A topic's DITA metadata as `read_topic` shows it, one line per kind and
+/// nothing for what the topic does not have: its dates, permissions,
+/// products, audiences, authors, keywords and index entries
+/// (`docs/semantic-model.md`, "DITA metadata").
+fn metadata_lines(m: &dita2graph_core::Metadata) -> String {
+    let mut lines = Vec::new();
+    let dates: Vec<String> = [
+        ("created", &m.created),
+        ("modified", &m.modified),
+        ("go-live", &m.golive),
+        ("expiry", &m.expiry),
+        ("permissions", &m.permissions),
+    ]
+    .iter()
+    .filter_map(|(label, value)| value.as_ref().map(|v| format!("{label} {v}")))
+    .collect();
+    if !dates.is_empty() {
+        lines.push(format!("Dates: {}", dates.join(", ")));
+    }
+    if !m.products.is_empty() {
+        let products: Vec<String> = m
+            .products
+            .iter()
+            .map(|p| match &p.version {
+                Some(version) => format!("{} {version}", p.name),
+                None => p.name.clone(),
+            })
+            .collect();
+        lines.push(format!("Product: {}", products.join(", ")));
+    }
+    if !m.audiences.is_empty() {
+        let audiences: Vec<String> = m
+            .audiences
+            .iter()
+            .map(|a| {
+                [&a.type_, &a.job, &a.experience_level]
+                    .iter()
+                    .filter_map(|v| v.as_deref())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            })
+            .collect();
+        lines.push(format!("Audience: {}", audiences.join(", ")));
+    }
+    if !m.authors.is_empty() {
+        let authors: Vec<String> = m
+            .authors
+            .iter()
+            .map(|a| match &a.type_ {
+                Some(type_) => format!("{} ({type_})", a.name),
+                None => a.name.clone(),
+            })
+            .collect();
+        lines.push(format!("Authors: {}", authors.join(", ")));
+    }
+    if !m.keywords.is_empty() {
+        lines.push(format!("Keywords: {}", m.keywords.join(", ")));
+    }
+    if !m.index_terms.is_empty() {
+        // An add-on catalogue page of the Oxygen guide has 27 entries: the
+        // first ones say what the topic is indexed under; the rest is in
+        // the concept file and the RDF export.
+        const SHOWN: usize = 20;
+        let entries: Vec<String> = m
+            .index_terms
+            .iter()
+            .take(SHOWN)
+            .map(|path| path.join(" > "))
+            .collect();
+        let more = m.index_terms.len().saturating_sub(SHOWN);
+        lines.push(format!(
+            "Index: {}{}",
+            entries.join("; "),
+            if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            }
+        ));
+    }
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
 /// One topic's whole text, reused fragments included. Found by the
 /// token/latency benchmark (dita2graph-demo/bench, q1/q2): with only
 /// `explain_task`'s 300-character excerpt and `search_content`'s
@@ -496,6 +579,12 @@ fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         role_note(bundle, topic_id),
         field("resource").unwrap_or_else(|| "?".into())
     );
+    if let Some(metadata) = frontmatter
+        .get("metadata")
+        .and_then(|v| serde_yaml::from_value::<dita2graph_core::Metadata>(v.clone()).ok())
+    {
+        out.push_str(&metadata_lines(&metadata));
+    }
 
     let chunks = bundle.rag_chunks().unwrap_or_default();
     let text = chunks
@@ -1057,6 +1146,17 @@ fn validate_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_index_shows_its_first_entries_and_counts_the_rest() {
+        let metadata = dita2graph_core::Metadata {
+            index_terms: (1..=27).map(|i| vec![format!("term {i}")]).collect(),
+            ..Default::default()
+        };
+        let lines = metadata_lines(&metadata);
+        assert!(lines.contains("term 20 (+7 more)"), "{lines}");
+        assert!(!lines.contains("term 21"), "{lines}");
+    }
 
     #[test]
     fn relevance_score_weighs_a_title_match_more_than_a_body_mention() {

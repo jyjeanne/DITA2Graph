@@ -242,6 +242,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
@@ -267,6 +268,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![
                     Link {
@@ -299,6 +301,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -381,6 +384,7 @@ mod tests {
             processing_role: None,
             dita_class: None,
             authored_file: None,
+            metadata: Default::default(),
             source_file: "topics/configuration.dita".into(),
             links: vec![],
         })];
@@ -409,6 +413,7 @@ mod tests {
                 key_defs: vec![],
                 id: "dup".into(),
                 title: "First".into(),
+                metadata: Default::default(),
                 source_file: "a.ditamap".into(),
                 links: vec![],
             }),
@@ -416,6 +421,7 @@ mod tests {
                 key_defs: vec![],
                 id: "dup".into(),
                 title: "Second".into(),
+                metadata: Default::default(),
                 source_file: "b.ditamap".into(),
                 links: vec![],
             }),

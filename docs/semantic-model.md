@@ -59,7 +59,7 @@ rdf/
 ## Vocabulary
 
 Namespace `https://w3id.org/dita2graph/ns#` (prefix `d2g`), ontology IRI
-`https://w3id.org/dita2graph/ns`, version `0.1.1`. It reuses Dublin Core
+`https://w3id.org/dita2graph/ns`, version `0.2.0`. It reuses Dublin Core
 (`dcterms:`), PROV-O (`prov:`) and SKOS (`skos:`) where they fit.
 
 The vocabulary and the shapes are under the
@@ -70,7 +70,10 @@ gives what vocabulary catalogues such as [LOV](https://lov.linkeddata.es/)
 read: its creator, its dates, its prior version and its preferred prefix
 and namespace (`vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri`).
 Version 0.1.1 adds that header and changes no term; the shapes' 0.1.1
-states `relatedTo`'s symmetry in SHACL Core.
+states `relatedTo`'s symmetry in SHACL Core. Version 0.2.0 adds the DITA
+metadata of each node, its index entries included
+([DITA metadata](#dita-metadata)), and changes no existing term; the
+shapes' 0.2.0 check them.
 
 The w3id.org identifiers (`ids/dita2graph/` in
 [perma-id/w3id.org](https://github.com/perma-id/w3id.org/tree/master/ids/dita2graph),
@@ -141,6 +144,7 @@ pairwise disjoint, and so are `Map`, `Topic` and `TopicHead`.
 | `d2g:linksTo` | Topic → ExternalResource | An `http(s)` link outside the corpus, directly or through a key |
 | `d2g:includesCode` | Topic → SourceFile | A sample file the topic shows with `coderef` |
 | `d2g:sourceFile` | Node, Key → SourceFile | The node's file (a heading's file is its map); for a key, the map file that defines it |
+| `d2g:indexTerm` | Node → `skos:Concept` | An index entry leading to the node (`indexterm`, prolog or body); the entries form a SKOS hierarchy (`skos:broader`) |
 
 Each relation carries a `d2g:origin` annotation: `declared` (written by
 the author), `derived` (read from DITA-OT's resolved output) or
@@ -170,6 +174,13 @@ when any of their links says so.
 | `d2g:keyName`, `d2g:keyText` | Key | The key's name; the text it stands for when it names no topic (its keyword, link text or navtitle), and the label of a URL key |
 | `d2g:path` | SourceFile | Path relative to the publication, with `/` |
 | `prov:wasGeneratedBy` | Node | The build, a `prov:Activity` with `prov:endedAtTime` and `d2g:generator` |
+| `dcterms:created`, `dcterms:modified`, `dcterms:available`, `d2g:expiry` | Node | The `critdates`: the creation date, the latest revision, and its `@golive` and `@expiry` (else those of `created`); `xsd:date` when written `YYYY-MM-DD`, a plain string otherwise |
+| `d2g:permissions` | Node | `permissions/@view` (`internal`, `classified`, `all`, `entitled`...) |
+| `dcterms:creator`, `dcterms:contributor` | Node | An `author`, by its `@type` (creator unless it says `contributor`) |
+| `d2g:productName`, `d2g:productVersion` | Node | A `prodinfo`: its `prodname`, and its `vrm` joined as `version.release.modification` |
+| `d2g:audienceType`, `d2g:audienceJob`, `d2g:experienceLevel` | Node | An `audience` element of the prolog (`@othertype`, `@otherjob` for `other`); not the `@audience` attribute, which is `d2g:audience` |
+| `d2g:keyword` | Node | A `keyword` of the prolog's `keywords` |
+| `skos:prefLabel` | Index entry | The entry's own words, without its broader terms |
 
 ### IRIs
 
@@ -187,6 +198,7 @@ segment by segment.
 | The build | `<b>build/<timestamp, ':' replaced by '-'>` |
 | A key | `<b>key/<scope>/<name>`, `_` for the root scope |
 | An external resource | The URL itself, with the characters an IRI cannot hold (space, `"`, `<`, `{`...) percent-encoded |
+| An index entry | `<b>index/<term>/<subterm>/...`: the same entry is one concept for every node indexed under it |
 
 A node keeps its IRI across builds as long as its id does not change.
 
@@ -208,7 +220,7 @@ SPARQL engine needs no reasoning to query the export.
 
 | Shape | Rule |
 |---|---|
-| `NodeShape` | One identifier, one non-empty title, one source file, one OKF concept |
+| `NodeShape` | One identifier, one non-empty title, one source file, one OKF concept; at most one of each date (an `xsd:date` or a string) and one permissions view |
 | `SourceFileShape` | One relative path: no leading `/` or `\`, no drive letter, no URL scheme |
 | `ContainsShape` | From a map, topic or heading to a topic or heading; no loop |
 | `PublishedTopicShape` (Warning) | A topic has a parent in the table of contents, unless it is resource-only or a `copy-to` source published through its copies |
@@ -223,6 +235,7 @@ SPARQL engine needs no reasoning to query the export.
 | `LinksToShape`, `IncludesCodeShape` | From a topic, to an external resource; to a file of the corpus |
 | `RelatedToShape` (Warning) | `relatedTo` is stated both ways |
 | `ExternalResourceShape` (Warning) | An external resource is an `http(s)` URL |
+| `IndexTermShape` | An index entry is a `skos:Concept` with one label and at most one broader entry, itself a concept |
 
 Five rules use SHACL-SPARQL (`sh:sparql`), because SHACL Core cannot
 express them: no loop in `contains` or `requires`, no topic referencing
@@ -362,6 +375,28 @@ SELECT ?prerequisite WHERE {
 }
 ```
 
+The pages indexed under an entry, its subentries included (39 pages under
+"plug-ins" on the DITA-OT documentation), with
+`PREFIX skos: <http://www.w3.org/2004/02/skos/core#>`:
+
+```sparql
+SELECT DISTINCT ?topic WHERE {
+  ?entry skos:prefLabel "plug-ins" .
+  FILTER NOT EXISTS { ?entry skos:broader [] }
+  ?t d2g:indexTerm/skos:broader* ?entry ; dcterms:identifier ?topic .
+}
+```
+
+The pages that expire before 2027, with
+`PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>`:
+
+```sparql
+SELECT ?topic ?expiry WHERE {
+  ?t d2g:expiry ?expiry ; dcterms:identifier ?topic .
+  FILTER (datatype(?expiry) = xsd:date && ?expiry < "2027-01-01"^^xsd:date)
+}
+```
+
 ### From the MCP server
 
 `dita2graph-mcp --sparql` adds the tool `query_graph(query, limit?,
@@ -467,6 +502,64 @@ These declarations are in every output, not only the RDF export:
   the map uses only as a resource with `[resource-only: not a published
   page]`, from the `processingRole` that `graph.json` and `graph.db` now
   carry.
+
+## DITA metadata
+
+What the author says about a topic in its `prolog`, and about the
+publication in the map's `topicmeta` or `bookmeta`, is in every output
+since version 0.2.0 of the vocabulary:
+
+- **Dates** (`critdates`): `created`; `modified`, the most recent
+  `revised`; `golive` and `expiry`, from the most recent revision that
+  gives one, else from `created`. A date stays as written: DITA does not
+  require ISO 8601, so the RDF export types it `xsd:date` only when it is
+  one.
+- **Permissions** (`permissions/@view`), **authors** (`author`, with its
+  `@type`), **products** (`prodinfo`: `prodname`, and its `vrm` joined as
+  `4.2.1`), **audiences** (`audience`: `@type`, `@job`,
+  `@experiencelevel`, `@othertype` and `@otherjob` standing in for
+  `other`) and **keywords** (`keywords/keyword`).
+- **Index entries**: every `indexterm` of the topic, in its prolog or its
+  body, as the path from its top-level term
+  (`["languages", "adding support for"]`), one path per leaf. A
+  redirection (`index-see`, `index-see-also`) and a sort key
+  (`index-sort-as`) are not entries and are left out.
+
+Elements are recognized by their `@class`, so a specialization of
+`author` or `indexterm` counts.
+
+**No cascade in the extractor.** DITA lets metadata set on the map, or on
+a topicref, apply to the topic. DITA-OT 4.4's preprocessing already does
+it: the resolved topic's prolog carries the `critdates`, `prodinfo`,
+`audience`, `permissions` and `keywords` of the map's `topicmeta` and of
+the topicref that names it (checked on a two-topic map). The extractor
+reads that resolved prolog and the map's own `topicmeta` as they are, so a
+node's metadata is what DITA-OT would publish, and the map's is the
+publication's.
+
+**The index is a SKOS hierarchy.** Each entry is a `skos:Concept` named
+after its path (`<b>index/languages/adding%20support%20for`), labelled with
+its own words (`skos:prefLabel`) and under its broader entry
+(`skos:broader`); a node points at its entries with `d2g:indexTerm`. Two
+topics indexed under the same entry point at the same concept, so the
+index becomes a navigable thesaurus of the publication: on the DITA-OT
+documentation, 1,498 entries on 194 topics give 1,106 concepts; on the
+Oxygen guide, 3,881 entries on 1,843 topics give 3,590.
+
+Where it goes:
+
+- the normalized model: a `metadata` object on each topic and on the map
+  ([plugin specification §3.2](plugin-specification.md#32-normalized-dita-model-input-to-the-core-engine));
+- the OKF concepts: the same object in the front matter, a DITA2Graph
+  extension like `relations`;
+- the RDF export: the attributes and `d2g:indexTerm` above, checked by
+  `NodeShape` and `IndexTermShape`;
+- the MCP tool `read_topic`: `Dates`, `Product`, `Audience`, `Authors`,
+  `Keywords` and `Index` lines after the topic's title and source, the index cut at
+  20 entries.
+
+`graph.json`, `graph.db` and the RAG chunks do not carry it yet, so
+`search_topics` does not find a topic by its keywords or index entries.
 
 ## Limits and next steps
 

@@ -72,6 +72,8 @@ final class TopicNode {
      * is then the copy's path. Null, and omitted, otherwise.
      */
     String authoredFile;
+    /** The prolog's metadata, as DITA-OT resolved and cascaded it, and the topic's index terms. */
+    Metadata metadata;
     final List<Link> links = new ArrayList<>();
     /** DITA {@code status} attribute, e.g. "draft" -- used for include-drafts filtering, not serialized. */
     String status;
@@ -124,6 +126,9 @@ final class TopicNode {
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
         if (authoredFile != null) {
             sb.append(",\"authoredFile\":").append(Json.string(authoredFile));
+        }
+        if (metadata != null && !metadata.isEmpty()) {
+            sb.append(",\"metadata\":").append(metadata.toJson());
         }
         sb.append(",\"links\":[");
         for (int i = 0; i < links.size(); i++) {

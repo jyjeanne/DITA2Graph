@@ -74,6 +74,28 @@
     a d2g:SourceFile ;
     d2g:path "user-guide.ditamap" .
 
+<https://example.org/user-guide/index/configuration>
+    a skos:Concept ;
+    skos:prefLabel "configuration" .
+
+<https://example.org/user-guide/index/installing/on%20Linux>
+    a skos:Concept ;
+    skos:broader <https://example.org/user-guide/index/installing> ;
+    skos:prefLabel "on Linux" .
+
+<https://example.org/user-guide/index/installing/on%20Windows>
+    a skos:Concept ;
+    skos:broader <https://example.org/user-guide/index/installing> ;
+    skos:prefLabel "on Windows" .
+
+<https://example.org/user-guide/index/installing>
+    a skos:Concept ;
+    skos:prefLabel "installing" .
+
+<https://example.org/user-guide/index/setup>
+    a skos:Concept ;
+    skos:prefLabel "setup" .
+
 <https://example.org/user-guide/key/_/config-concept>
     a d2g:Key ;
     d2g:definedIn <https://example.org/user-guide/map/user-guide> ;
@@ -122,7 +144,10 @@
     d2g:contains <https://example.org/user-guide/node/configuration> , <https://example.org/user-guide/node/fixing-errors> , <https://example.org/user-guide/node/installing-product> , <https://example.org/user-guide/node/internal-notes> , <https://example.org/user-guide/node/topichead--setup> , <https://example.org/user-guide/node/ui-reference> ;
     d2g:definesKey <https://example.org/user-guide/key/_/config-concept> , <https://example.org/user-guide/key/_/homebrew> , <https://example.org/user-guide/key/_/install-task> , <https://example.org/user-guide/key/_/logo> , <https://example.org/user-guide/key/_/product-name> , <https://example.org/user-guide/key/legacy/product-name> ;
     d2g:okfConcept "okf/maps/user-guide.md" ;
+    d2g:productName "Product" ;
+    d2g:productVersion "2.1" ;
     d2g:sourceFile <https://example.org/user-guide/file/user-guide.ditamap> ;
+    dcterms:created "2025-01-15"^^xsd:date ;
     dcterms:identifier "user-guide" ;
     dcterms:title "User Guide" ;
     prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
@@ -155,6 +180,7 @@
     d2g:containedIn <https://example.org/user-guide/map/user-guide> ;
     d2g:contains <https://example.org/user-guide/node/installing-product-prereqs> ;
     d2g:ditaClass "- topic/topic concept/concept" ;
+    d2g:indexTerm <https://example.org/user-guide/index/configuration> , <https://example.org/user-guide/index/installing/on%20Linux> ;
     d2g:okfConcept "okf/topics/configuration.md" ;
     d2g:prerequisiteFor <https://example.org/user-guide/node/installing-product> ;
     d2g:sourceFile <https://example.org/user-guide/file/topics/configuration.dita> ;
@@ -203,21 +229,35 @@
     a d2g:Node , d2g:Task , d2g:Topic ;
     d2g:appliesTo <https://example.org/user-guide/node/ui-reference> ;
     d2g:audience "admin" ;
+    d2g:audienceJob "installing" ;
+    d2g:audienceType "administrator" ;
     d2g:containedIn <https://example.org/user-guide/map/user-guide> ;
     d2g:ditaClass "- topic/topic task/task" ;
+    d2g:experienceLevel "expert" ;
+    d2g:expiry "2027-01-01"^^xsd:date ;
     d2g:generatedFrom <https://example.org/user-guide/node/warehouse> ;
     d2g:includesCode <https://example.org/user-guide/file/samples/install.sh> ;
+    d2g:indexTerm <https://example.org/user-guide/index/installing/on%20Linux> , <https://example.org/user-guide/index/installing/on%20Windows> , <https://example.org/user-guide/index/setup> ;
+    d2g:keyword "installer" , "setup" ;
     d2g:linksTo <https://brew.sh> ;
     d2g:okfConcept "okf/topics/installing-product.md" ;
+    d2g:permissions "internal" ;
     d2g:product "enterprise" ;
+    d2g:productName "Product" ;
+    d2g:productVersion "2.1" ;
     d2g:qualifiedReuse <https://example.org/user-guide/node/installing-product/reuse/warehouse> ;
     d2g:references <https://example.org/user-guide/node/configuration> , <https://example.org/user-guide/node/installing-product-prereqs> ;
     d2g:relatedTo <https://example.org/user-guide/node/internal-notes> ;
     d2g:requires <https://example.org/user-guide/node/configuration> ;
     d2g:sourceFile <https://example.org/user-guide/file/topics/installing-product.dita> ;
     d2g:usesKey <https://example.org/user-guide/key/_/config-concept> , <https://example.org/user-guide/key/_/homebrew> , <https://example.org/user-guide/key/_/product-name> , <https://example.org/user-guide/key/legacy/product-name> ;
+    dcterms:available "June 2025" ;
+    dcterms:contributor "Grace" ;
+    dcterms:created "2025-01-15"^^xsd:date ;
+    dcterms:creator "Ada" ;
     dcterms:description "Steps to install the product in a production environment." ;
     dcterms:identifier "installing-product" ;
+    dcterms:modified "2025-06-01"^^xsd:date ;
     dcterms:title "Installing Product" ;
     prov:wasGeneratedBy <https://example.org/user-guide/build/2026-01-01T00-00-00Z> .
 

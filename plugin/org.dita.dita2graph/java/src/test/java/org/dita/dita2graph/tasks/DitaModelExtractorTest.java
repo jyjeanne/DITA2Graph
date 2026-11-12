@@ -811,6 +811,75 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void metadataComesFromTheResolvedPrologAndIndexTermsFromTheWholeTopic(@TempDir Path tempDir) throws Exception {
+        // Shaped after DITA-OT 4.4.1's resolved output for a map whose
+        // topicmeta and topicref topicmeta carry metadata: DITA-OT has
+        // already cascaded them into topic a's prolog (the map's critdates
+        // and prodinfo, the topicref's audience, permissions and keyword).
+        write(tempDir, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"file:/src/guide.ditamap\" path=\"guide.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "<file src=\"file:/src/topics/a.dita\" path=\"topics/a.dita\" format=\"dita\"></file>"
+                + "<file src=\"file:/src/topics/b.dita\" path=\"topics/b.dita\" format=\"dita\"></file>"
+                + "</files></job>");
+        String prodinfo = "<prodinfo class=\"- topic/prodinfo \"><prodname class=\"- topic/prodname \">Widget Pro</prodname>"
+                + "<vrmlist class=\"- topic/vrmlist \"><vrm class=\"- topic/vrm \" version=\"4\" release=\"2\"/></vrmlist></prodinfo>";
+        write(tempDir, "guide.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"guide\" class=\"- map/map \"><title>Guide</title>"
+                + "<topicmeta class=\"- map/topicmeta \"><critdates class=\"- topic/critdates \">"
+                + "<created class=\"- topic/created \" date=\"2024-01-15\"/></critdates>" + prodinfo + "</topicmeta>"
+                + "<topicref class=\"- map/topicref \" href=\"topics/a.dita\"/>"
+                + "<topicref class=\"- map/topicref \" href=\"topics/b.dita\"/></map>");
+        write(tempDir, "topics/a.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<task id=\"a\" class=\"- topic/topic task/task \"><title class=\"- topic/title \">Install</title>"
+                + "<prolog class=\"- topic/prolog \">"
+                + "<author class=\"- topic/author \" type=\"creator\">Ada</author>"
+                + "<critdates class=\"- topic/critdates \"><created class=\"- topic/created \" date=\"2024-01-15\"/>"
+                + "<revised class=\"- topic/revised \" modified=\"2025-01-01\" golive=\"2025-01-10\"/>"
+                + "<revised class=\"- topic/revised \" modified=\"2025-06-01\" golive=\"2025-06-15\" expiry=\"2027-01-01\"/>"
+                + "</critdates><permissions class=\"- topic/permissions \" view=\"internal\"/>"
+                + "<metadata class=\"- topic/metadata \">"
+                + "<audience class=\"- topic/audience \" type=\"other\" othertype=\"integrator\" job=\"installing\" experiencelevel=\"expert\"/>"
+                + "<keywords class=\"- topic/keywords \"><keyword class=\"- topic/keyword \">from-map</keyword></keywords>"
+                + "<keywords class=\"- topic/keywords \"><keyword class=\"- topic/keyword \">setup</keyword>"
+                + "<cmdname class=\"+ topic/keyword sw-d/cmdname \">dita</cmdname>"
+                + "<indexterm class=\"- topic/indexterm \">installing"
+                + "<indexterm class=\"- topic/indexterm \">on <xmlelement class=\"+ topic/keyword markup-d/xmlelement \">Linux</xmlelement>"
+                + "<index-sort-as class=\"+ topic/index-base indexing-d/index-sort-as \">linux</index-sort-as></indexterm>"
+                + "</indexterm>"
+                + "<indexterm class=\"- topic/indexterm \">setup<index-see class=\"+ topic/index-base indexing-d/index-see \">installing</index-see></indexterm>"
+                + "</keywords>" + prodinfo + "</metadata></prolog>"
+                + "<taskbody class=\"- topic/body task/taskbody \"><p class=\"- topic/p \">Run it."
+                + "<indexterm class=\"- topic/indexterm \">commands<indexterm class=\"- topic/indexterm \">run</indexterm></indexterm>"
+                + "</p></taskbody></task>");
+        write(tempDir, "topics/b.dita", topicXml("b", "About"));
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, w -> { }, i -> { }).extract();
+
+        Metadata a = findTopic(nodes, "a").metadata;
+        assertEquals("2024-01-15", a.created);
+        assertEquals("2025-06-01", a.modified, "the latest revision");
+        assertEquals("2025-06-15", a.golive);
+        assertEquals("2027-01-01", a.expiry);
+        assertEquals("internal", a.permissions);
+        assertEquals(List.of("Ada|creator"), a.authors.stream().map(x -> x[0] + "|" + x[1]).toList());
+        assertEquals(List.of("integrator|installing|expert"),
+                a.audiences.stream().map(x -> String.join("|", x)).toList(), "type=other reads othertype");
+        assertEquals(List.of("from-map", "setup", "dita"), List.copyOf(a.keywords), "a keyword specialization counts");
+        assertEquals(List.of("Widget Pro|4.2"), a.products.stream().map(x -> x[0] + "|" + x[1]).toList());
+        // Each entry from its top level; a see reference and a sort key are
+        // not words of the term.
+        assertEquals(List.of(List.of("installing", "on Linux"), List.of("setup"), List.of("commands", "run")),
+                List.copyOf(a.indexTerms));
+        assertTrue(findTopic(nodes, "a").toJson().contains(
+                "\"indexTerms\":[[\"installing\",\"on Linux\"],[\"setup\"],[\"commands\",\"run\"]]"));
+
+        assertFalse(findTopic(nodes, "b").toJson().contains("metadata"), "no metadata, no field");
+        MapNode map = (MapNode) nodes.get(0);
+        assertEquals("2024-01-15", map.metadata.created);
+        assertTrue(map.toJson().contains("\"products\":[{\"name\":\"Widget Pro\",\"version\":\"4.2\"}]"), map.toJson());
+    }
+
+    @Test
     void branchFilteringCopiesKeepTheFileTheAuthorEdits(@TempDir Path tempDir) throws Exception {
         // Shaped after DITA-OT 4.4.1's kept temp directory for the DITA-OT
         // documentation: two <ditavalref>s with a <dvrResourcePrefix> write

@@ -20,10 +20,11 @@
 @prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
 
 <https://w3id.org/dita2graph/shapes>
     a owl:Ontology ;
-    owl:versionInfo "0.1.1" ;
+    owl:versionInfo "0.2.0" ;
     rdfs:label "DITA2Graph shapes"@en ;
     dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
     dcterms:creator <https://github.com/jyjeanne> ;
@@ -58,7 +59,14 @@ d2g:NodeShape
         sh:path d2g:okfConcept ;
         sh:minCount 1 ; sh:maxCount 1 ;
         sh:datatype xsd:string
-    ] .
+    ] ;
+    # DITA metadata: one value per date, an xsd:date or the date as written;
+    # one permissions view.
+    sh:property [ sh:path dcterms:created ; sh:maxCount 1 ; sh:or ( [ sh:datatype xsd:date ] [ sh:datatype xsd:string ] ) ] ;
+    sh:property [ sh:path dcterms:modified ; sh:maxCount 1 ; sh:or ( [ sh:datatype xsd:date ] [ sh:datatype xsd:string ] ) ] ;
+    sh:property [ sh:path dcterms:available ; sh:maxCount 1 ; sh:or ( [ sh:datatype xsd:date ] [ sh:datatype xsd:string ] ) ] ;
+    sh:property [ sh:path d2g:expiry ; sh:maxCount 1 ; sh:or ( [ sh:datatype xsd:date ] [ sh:datatype xsd:string ] ) ] ;
+    sh:property [ sh:path d2g:permissions ; sh:maxCount 1 ; sh:datatype xsd:string ] .
 
 # A source file's path is relative: no leading slash or backslash, no
 # drive letter, no URL scheme (the same rule as OKF's resource field).
@@ -284,3 +292,12 @@ d2g:ExternalResourceShape
     sh:severity sh:Warning ;
     sh:nodeKind sh:IRI ;
     sh:pattern "^https?://" .
+
+# An index entry is a SKOS concept with one label, under at most one
+# broader term, itself a concept.
+d2g:IndexTermShape
+    a sh:NodeShape ;
+    sh:targetObjectsOf d2g:indexTerm ;
+    sh:class skos:Concept ;
+    sh:property [ sh:path skos:prefLabel ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ;
+    sh:property [ sh:path skos:broader ; sh:maxCount 1 ; sh:class skos:Concept ] .

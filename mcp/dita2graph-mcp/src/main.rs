@@ -564,6 +564,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,
@@ -589,6 +590,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
@@ -614,6 +616,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -634,6 +637,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![
                     Link {
@@ -666,6 +670,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/installing-product.dita".into(),
                 links: vec![Link {
                     relation: Relation::Requires,
@@ -691,6 +696,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/configuration.dita".into(),
                 links: vec![],
             }),
@@ -712,6 +718,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/unrelated-topic.dita".into(),
                 links: vec![],
             }),
@@ -791,6 +798,7 @@ mod tests {
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/plugins-installing.dita".into(),
                 links: vec![Link {
                     relation: Relation::GeneratedFrom,
@@ -816,6 +824,7 @@ mod tests {
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "resources/conref-task.dita".into(),
                 links: vec![],
             }),
@@ -1248,6 +1257,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: authored_file.map(Into::into),
+                metadata: Default::default(),
                 source_file: source_file.into(),
                 links: vec![],
             })
@@ -1257,6 +1267,7 @@ mod tests {
                 key_defs: vec![],
                 id: "user-guide".into(),
                 title: "User Guide".into(),
+                metadata: Default::default(),
                 source_file: "user-guide.ditamap".into(),
                 links: vec![],
             }),
@@ -1273,6 +1284,48 @@ mod tests {
         ];
         write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
         dir
+    }
+
+    #[test]
+    fn read_topic_shows_the_topics_dita_metadata() {
+        // The model as the extractor writes it (metadata of a resolved
+        // prolog, with what DITA-OT cascaded from the map).
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            {"type": "map", "id": "user-guide", "title": "User Guide",
+             "sourceFile": "user-guide.ditamap", "links": [{"relation": "contains", "target": "install"}]},
+            {"type": "topic", "id": "install", "topicType": "task", "title": "Install",
+             "sourceFile": "topics/install.dita", "links": [],
+             "metadata": {
+                 "created": "2025-01-15", "modified": "2025-06-01", "permissions": "internal",
+                 "authors": [{"name": "Ada", "type": "creator"}],
+                 "products": [{"name": "Widget Pro", "version": "4.2"}],
+                 "audiences": [{"type": "administrator", "experienceLevel": "expert"}],
+                 "keywords": ["setup"],
+                 "indexTerms": [["installing", "on Linux"], ["setup"]]}}
+        ]))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "read_topic", "arguments": { "topicId": "install" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        for line in [
+            "Dates: created 2025-01-15, modified 2025-06-01, permissions internal",
+            "Product: Widget Pro 4.2",
+            "Audience: administrator / expert",
+            "Authors: Ada (creator)",
+            "Keywords: setup",
+            "Index: installing > on Linux; setup",
+        ] {
+            assert!(text.contains(line), "missing {line:?} in:\n{text}");
+        }
     }
 
     #[test]
@@ -1527,6 +1580,7 @@ mod tests {
                     processing_role: None,
                     dita_class: None,
                     authored_file: None,
+                    metadata: Default::default(),
                     source_file: format!("topics/topic-{i}.dita"),
                     links: vec![],
                 })
@@ -1613,6 +1667,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/install-notes.dita".into(),
                 links: vec![],
             }),
@@ -1634,6 +1689,7 @@ mod tests {
                 processing_role: None,
                 dita_class: None,
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: "topics/weather-notes.dita".into(),
                 links: vec![],
             }),
@@ -1784,6 +1840,7 @@ mod tests {
                 uicontrols: vec![],
                 cmd_uicontrols: vec![],
                 authored_file: None,
+                metadata: Default::default(),
                 source_file: format!("topics/{id}.dita"),
                 links,
             })
@@ -1793,6 +1850,7 @@ mod tests {
                 key_defs: vec![],
                 id: "manual".into(),
                 title: "Manual".into(),
+                metadata: Default::default(),
                 source_file: "manual.ditamap".into(),
                 links: vec![Link {
                     relation: Relation::Contains,

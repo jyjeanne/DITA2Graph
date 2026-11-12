@@ -113,6 +113,7 @@ fn one_topic(id: &str, body: &str) -> Vec<NormalizedNode> {
         processing_role: None,
         dita_class: None,
         authored_file: None,
+        metadata: Default::default(),
         source_file: format!("topics/{id}.dita"),
         links: vec![],
     })]

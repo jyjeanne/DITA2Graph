@@ -530,6 +530,33 @@ each field is read from DITA-OT's output, including `coderef` and
 `@conkeyref`, which preprocessing removes and the extractor reads from
 the topic's source file: [semantic-model.md](semantic-model.md#keys-external-links-and-sample-files).
 
+A topic's prolog, and the map's `topicmeta` or `bookmeta`, give the
+optional `metadata` object, omitted when the node has none, as is each of
+its fields:
+
+```json
+"metadata": {
+  "created": "2024-01-15",
+  "modified": "2025-06-01",
+  "golive": "2025-06-15",
+  "expiry": "2027-01-01",
+  "permissions": "internal",
+  "authors": [{ "name": "Ada", "type": "creator" }],
+  "products": [{ "name": "Widget Pro", "version": "4.2" }],
+  "audiences": [{ "type": "administrator", "job": "installing", "experienceLevel": "expert" }],
+  "keywords": ["setup"],
+  "indexTerms": [["installing", "on Linux"]]
+}
+```
+
+Dates are as written; `modified` is the most recent revision, and
+`golive` and `expiry` come from the most recent revision that gives one.
+`indexTerms` holds every `indexterm` of the topic, prolog and body, as the
+path from its top-level term. The prolog is read after DITA-OT's
+preprocessing, which has already cascaded the map's and the topicref's
+`topicmeta` into it, so the extractor cascades nothing itself
+([semantic-model.md](semantic-model.md#dita-metadata)).
+
 ### 3.3 Core engine responsibilities
 
 - **Graph construction**: build nodes for maps, topics, and topic-type
@@ -830,6 +857,21 @@ reuses) is a markdown link under the first and named under the next
 (``- Title (`id`, linked above)``), so okf_validator's "redundant link"
 warning no longer fires (107 on `dita-ot/docs`, 435 on the Oxygen guide
 before).
+
+A topic or map with DITA metadata (§3.2) also gets a `metadata` block in
+its front matter, a DITA2Graph extension like `relations`, with the same
+fields:
+
+```yaml
+metadata:
+  modified: 2025-06-01
+  products:
+  - name: Widget Pro
+    version: '4.2'
+  indexTerms:
+  - - installing
+    - on Linux
+```
 
 `# Content` is the topic's whitespace-normalized body text, nested
 topics of a composite file included, with `](` escaped as `]\(` so that
