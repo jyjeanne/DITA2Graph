@@ -21,7 +21,7 @@ okf-validator.workspace = true
 dita2graph-core = { path = "../../core/dita2graph-core" }
 # SPARQL over rdf/graph.ttl for query_graph: in-memory store only, no
 # RocksDB and no HTTP client (a SERVICE clause cannot reach out).
-oxigraph = { version = "0.5", default-features = false }
+oxigraph.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

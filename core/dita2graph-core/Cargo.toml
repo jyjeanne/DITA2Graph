@@ -26,6 +26,9 @@ okf-validator.workspace = true
 ort.workspace = true
 tokenizers.workspace = true
 rusqlite.workspace = true
+# The build-time SHACL check of the RDF export (src/shacl.rs).
+oxigraph.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 # Parses the RDF export back in tests (src/rdf.rs); the export itself is

@@ -37,6 +37,12 @@ pub const UNKNOWN_TOPIC_TYPE: MessageId = MessageId("DITA2GRAPH040W", Severity::
 pub const POSSIBLE_SECRET_LEAK: MessageId = MessageId("DITA2GRAPH050E", Severity::Error);
 /// The RDF export has no `--rdf-base`: its IRIs sit under the reserved
 /// `https://dita2graph.invalid/` domain and are not meant to be published.
+/// The RDF export breaks a `sh:Violation` rule of the d2g shapes: the build fails.
+pub const SHACL_VIOLATION: MessageId = MessageId("DITA2GRAPH080E", Severity::Error);
+/// The RDF export breaks a `sh:Warning` rule of the d2g shapes: reported only.
+pub const SHACL_WARNING: MessageId = MessageId("DITA2GRAPH081W", Severity::Warning);
+/// The RDF export breaks a `sh:Info` rule of the d2g shapes: reported only.
+pub const SHACL_NOTE: MessageId = MessageId("DITA2GRAPH082I", Severity::Info);
 pub const PLACEHOLDER_RDF_BASE: MessageId = MessageId("DITA2GRAPH083W", Severity::Warning);
 
 #[derive(Serialize)]
@@ -70,6 +76,9 @@ mod tests {
         assert_eq!(BUNDLE_VALIDATION_FAILED.0, "DITA2GRAPH030E");
         assert_eq!(UNKNOWN_TOPIC_TYPE.0, "DITA2GRAPH040W");
         assert_eq!(POSSIBLE_SECRET_LEAK.0, "DITA2GRAPH050E");
+        assert_eq!(SHACL_VIOLATION.0, "DITA2GRAPH080E");
+        assert_eq!(SHACL_WARNING.0, "DITA2GRAPH081W");
+        assert_eq!(SHACL_NOTE.0, "DITA2GRAPH082I");
         assert_eq!(PLACEHOLDER_RDF_BASE.0, "DITA2GRAPH083W");
     }
 }

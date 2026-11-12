@@ -51,8 +51,7 @@ about rather than silently dropped, finding 16, but real support would
 mean this plugin independently parsing/merging navigation maps outside
 DITA-OT's own pipeline — not attempted), §5.1's MCP Resources —
 `dita://topics` etc. — which `dita2graph-mcp` doesn't implement at all,
-only the §5.2 tools, and a SHACL check inside the build (it runs in CI)
-— real gaps, documented rather than hidden. Reused `conref`/`conkeyref`
+only the §5.2 tools — real gaps, documented rather than hidden. Reused `conref`/`conkeyref`
 text is stored once, in its source topic (canonical-node deduplication,
 [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)).
 Every relation in §4.3's taxonomy (`contains`/`requires`/`references`/
@@ -228,17 +227,23 @@ published page.
 
 With the RDF export on, the SHACL shapes become a quality gate for the
 docs repository itself: build with `--args.dita2graph.rdf=true` in the
-docs CI and run pySHACL on the result. A violation fails the check: a
-key a topic uses but no map defines, a loop of prerequisites or in the
-table of contents, a reuse naming a fragment its source does not have,
-a link to a sample file outside the corpus. Warnings flag topics that
-have no place in the table of contents: on the Oxygen user guide, 46
-topics merged into their parent by `chunk="to-content"` and one
-duplicate id, real cases worth a look.
+docs CI. The build checks the shapes itself, and a violation fails it
+(`DITA2GRAPH080E`): a key a topic uses but no map defines, a loop of
+prerequisites or in the table of contents, a reuse naming a fragment its
+source does not have, a link to a sample file outside the corpus.
+Warnings (`DITA2GRAPH081W`) flag topics that have no place in the table
+of contents: on the Oxygen user guide, topics merged into their parent by
+`chunk="to-content"` and a duplicate id, real cases worth a look.
 
 ```bash
 dita --input user-guide.ditamap --format dita2graph -o out \
   --args.dita2graph.rdf=true --args.dita2graph.rdf.base=https://docs.example.com/
+```
+
+Any engine implementing SHACL-SPARQL gives the same results, pySHACL for
+one:
+
+```bash
 pyshacl -s out/rdf/shapes.ttl -e out/rdf/ontology.ttl -i none -w -f human out/rdf/graph.ttl
 ```
 

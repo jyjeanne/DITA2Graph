@@ -52,3 +52,6 @@ ex:a d2g:usesKey ex:undefined-key ;
     d2g:linksTo ex:b ;
     d2g:includesCode ex:b .
 ex:undefined-key a d2g:Key ; d2g:keyName "undefined-key" .
+
+# RelatedToShape: relatedTo stated one way (a warning).
+ex:a d2g:relatedTo ex:b .

@@ -10,8 +10,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 use dita2graph_core::diagnostics::{
-    self, BUNDLE_VALIDATION_FAILED, PLACEHOLDER_RDF_BASE, POSSIBLE_SECRET_LEAK,
+    self, BUNDLE_VALIDATION_FAILED, PLACEHOLDER_RDF_BASE, POSSIBLE_SECRET_LEAK, SHACL_NOTE,
+    SHACL_VIOLATION, SHACL_WARNING,
 };
+use dita2graph_core::shacl::{self, ShaclSeverity};
 use dita2graph_core::{
     Embedder, NormalizedNode, PreviousEmbeddings, graph_view, infer_applies_to, infer_related_to,
     query_sqlite_store, scan_bundle, write_bundle_with, write_embeddings_index, write_mcp_config,
@@ -280,6 +282,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     }
 
     let rdf_dir = output.join("rdf");
+    let mut shapes_ok = true;
     if emit_rdf {
         let rdf_summary = write_rdf(
             &nodes,
@@ -304,6 +307,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
                 ),
             );
         }
+        shapes_ok = check_shapes_and_report(&rdf_dir)?;
     } else {
         remove_stale_rdf(&rdf_dir)?;
     }
@@ -316,11 +320,39 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     let okf_ok = validate_and_report(&output.join("okf"))?;
     let rag_ok = scan_rag_and_report(&output.join("rag"))?;
     let rdf_ok = !emit_rdf || scan_and_report(&rdf_dir)?;
-    Ok(if okf_ok && rag_ok && rdf_ok {
+    Ok(if okf_ok && rag_ok && rdf_ok && shapes_ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
     })
+}
+
+/// Checks the RDF export against its SHACL shapes (`docs/semantic-model.md`,
+/// "Validation"), one diagnostic per result: a `sh:Violation` fails the
+/// build like an OKF conformance error (§2.5), a warning or a note is only
+/// reported.
+fn check_shapes_and_report(rdf_dir: &Path) -> Result<bool> {
+    let started = std::time::Instant::now();
+    let report = shacl::validate_rdf_dir(rdf_dir)?;
+    for result in &report.results {
+        let id = match result.severity {
+            ShaclSeverity::Violation => SHACL_VIOLATION,
+            ShaclSeverity::Warning => SHACL_WARNING,
+            ShaclSeverity::Info => SHACL_NOTE,
+        };
+        diagnostics::emit(id, &result.describe());
+    }
+    println!(
+        "checked {} against its SHACL shapes: {} violation(s), {} warning(s), {} note(s) \
+         ({} focus nodes, {:.1} s)",
+        rdf_dir.join("graph.ttl").display(),
+        report.count(ShaclSeverity::Violation),
+        report.count(ShaclSeverity::Warning),
+        report.count(ShaclSeverity::Info),
+        report.focus_nodes,
+        started.elapsed().as_secs_f64()
+    );
+    Ok(report.passes())
 }
 
 /// The build's timestamp: now, or `SOURCE_DATE_EPOCH` (seconds since the

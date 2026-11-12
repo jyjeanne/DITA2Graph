@@ -34,6 +34,7 @@ pub mod rag;
 pub mod rdf;
 pub mod relations;
 pub mod secrets;
+pub mod shacl;
 pub mod store;
 
 pub use embeddings::{

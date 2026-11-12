@@ -61,4 +61,32 @@ final class Json {
         }
         return sb.append(']').toString();
     }
+
+    /** The text of a JSON string's contents (between its quotes), escapes resolved. */
+    static String unescape(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\\' || i + 1 == s.length()) {
+                sb.append(c);
+                continue;
+            }
+            char e = s.charAt(++i);
+            switch (e) {
+                case 'n' -> sb.append('\n');
+                case 't' -> sb.append('\t');
+                case 'r' -> sb.append('\r');
+                case 'b' -> sb.append('\b');
+                case 'f' -> sb.append('\f');
+                case 'u' -> {
+                    if (i + 4 < s.length()) {
+                        sb.append((char) Integer.parseInt(s.substring(i + 1, i + 5), 16));
+                        i += 4;
+                    }
+                }
+                default -> sb.append(e); // \" \\ \/
+            }
+        }
+        return sb.toString();
+    }
 }

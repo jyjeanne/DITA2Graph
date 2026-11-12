@@ -66,7 +66,7 @@ jobs:
               exit 1
             fi
             releases="$releases
-                <li>$v: <a href=\"ns/$v/d2g.ttl\">vocabulary</a>, <a href=\"shapes/$v/d2g-shapes.ttl\">shapes</a></li>"
+                <li>$v: <a href=\"ns/$v/\">documentation</a>, <a href=\"ns/$v/d2g.ttl\">vocabulary</a>, <a href=\"shapes/$v/d2g-shapes.ttl\">shapes</a></li>"
           done
           latest=$(echo "$tags" | head -n 1)
           latest=${latest#d2g-}
@@ -84,10 +84,12 @@ jobs:
               <h1>DITA2Graph vocabulary</h1>
               <p>The d2g vocabulary (namespace <code>https://w3id.org/dita2graph/ns#</code>)
                 and the SHACL shapes of the graphs
-                <a href="https://github.com/jyjeanne/DITA2Graph">DITA2Graph</a> exports.
-                Documentation:
+                <a href="https://github.com/jyjeanne/DITA2Graph">DITA2Graph</a> exports,
+                under the <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> licence.
+                Documentation: <a href="ns/">the vocabulary, term by term</a>, and
                 <a href="https://github.com/jyjeanne/DITA2Graph/blob/main/docs/semantic-model.md">docs/semantic-model.md</a>.</p>
               <p>Latest release, $latest:
+                <a href="ns/">documentation</a>,
                 <a href="ns/d2g.ttl">vocabulary</a>, <a href="shapes/d2g-shapes.ttl">shapes</a>.</p>
               <h2>Releases</h2>
               <ul>$releases
@@ -109,6 +111,31 @@ jobs:
           for f in sorted(pathlib.Path("site").rglob("*.ttl")):
               print(f, len(rdflib.Graph().parse(f, format="turtle")), "triples")
           EOF
+
+      # The page a browser gets at ns/ and ns/X.Y.Z/, term by term, made
+      # by pyLODE from each release's Turtle. pyLODE prints every label of
+      # a term side by side ("NodeNœud"), so it reads a copy with the
+      # English labels only; the published Turtle keeps both languages.
+      - name: Document each release of the vocabulary in HTML
+        run: |
+          set -euo pipefail
+          python -m pip install pylode==3.6.1
+          for ttl in site/ns/*/d2g.ttl site/ns/d2g.ttl; do
+            dir=$(dirname "$ttl")
+            python - "$ttl" "$dir/d2g-en.ttl" <<'EOF'
+          import sys
+          from rdflib import Graph, RDFS
+          g = Graph().parse(sys.argv[1], format="turtle")
+          for s, label in list(g.subject_objects(RDFS.label)):
+              if getattr(label, "language", None) not in (None, "en"):
+                  g.remove((s, RDFS.label, label))
+          g.serialize(sys.argv[2], format="turtle")
+          EOF
+            pylode "$dir/d2g-en.ttl" -o "$dir/index.html"
+            rm "$dir/d2g-en.ttl"
+            test -s "$dir/index.html"
+            echo "$dir/index.html"
+          done
 
       - uses: actions/configure-pages@v5
 

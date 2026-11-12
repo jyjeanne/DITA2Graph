@@ -6,8 +6,13 @@
 # validator still loads the ontology beside it.
 #
 # Severities: sh:Violation fails a build, sh:Warning and sh:Info are
-# reported only. The SPARQL-based constraints (sh:sparql) are part of
-# SHACL-SPARQL: a SHACL Core-only engine ignores them without an error.
+# reported only. Five rules need SHACL-SPARQL (sh:sparql): no loop in the
+# table of contents (ContainsShape) or in prerequisites (RequiresShape), no
+# topic referencing itself (ReferencesShape), every generatedFrom
+# qualified by a reuse (GeneratedFromShape), every reused fragment from the
+# reuse's source (ReuseShape). SHACL Core cannot express them, and a
+# Core-only engine skips them without an error: use pySHACL, TopBraid
+# SHACL or Jena SHACL, or the check dita2graph-core runs during the build.
 
 @prefix d2g:     <https://w3id.org/dita2graph/ns#> .
 @prefix sh:      <http://www.w3.org/ns/shacl#> .
@@ -18,8 +23,10 @@
 
 <https://w3id.org/dita2graph/shapes>
     a owl:Ontology ;
-    owl:versionInfo "0.1.0" ;
+    owl:versionInfo "0.1.1" ;
     rdfs:label "DITA2Graph shapes"@en ;
+    dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
+    dcterms:creator <https://github.com/jyjeanne> ;
     rdfs:seeAlso <https://w3id.org/dita2graph/ns> ;
     sh:declare [
         sh:prefix "d2g" ;
@@ -226,7 +233,8 @@ d2g:UsedKeyShape
         sh:message "A topic uses a key that no map defines"
     ] .
 
-# copyOf: a copy-to copy and its source are topics; a copy has one source.
+# copyOf: a copy (copy-to, branch filtering) and its source are topics; a
+# copy has one source.
 d2g:CopyOfShape
     a sh:NodeShape ;
     sh:targetSubjectsOf d2g:copyOf ;
@@ -235,7 +243,7 @@ d2g:CopyOfShape
         sh:path d2g:copyOf ;
         sh:maxCount 1 ;
         sh:class d2g:Topic ;
-        sh:message "A copy-to copy has one source topic"
+        sh:message "A copy has one source topic"
     ] .
 
 # linksTo: from a topic, to an external resource.
@@ -256,20 +264,17 @@ d2g:IncludesCodeShape
         sh:message "An included sample file is a file of the corpus"
     ] .
 
-# relatedTo holds both ways.
+# relatedTo holds both ways: the topics a topic is related to are the
+# topics related to it. In SHACL Core (sh:equals), so an engine without
+# SHACL-SPARQL checks it too.
 d2g:RelatedToShape
     a sh:NodeShape ;
     sh:targetSubjectsOf d2g:relatedTo ;
-    sh:severity sh:Warning ;
-    sh:sparql [
-        sh:message "relatedTo is stated in one direction only" ;
-        sh:prefixes <https://w3id.org/dita2graph/shapes> ;
-        sh:select """
-            SELECT $this ?value WHERE {
-                $this d2g:relatedTo ?value .
-                FILTER NOT EXISTS { ?value d2g:relatedTo $this }
-            }
-        """
+    sh:property [
+        sh:path [ sh:inversePath d2g:relatedTo ] ;
+        sh:equals d2g:relatedTo ;
+        sh:severity sh:Warning ;
+        sh:message "relatedTo is stated in one direction only"
     ] .
 
 # An external resource is an absolute http(s) URL.

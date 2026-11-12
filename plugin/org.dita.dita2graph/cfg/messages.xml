@@ -26,8 +26,12 @@
     <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (§4.1).</response>
   </message>
   <message id="DITA2GRAPH071I" type="info">
-    <reason>A copy-to copy carries the same id as its source topic.</reason>
-    <response>No action needed: the source keeps its id and the copy's graph node gets a suffixed one, linked to the source by generated-from.</response>
+    <reason>A copy DITA-OT writes under another name (copy-to, or branch filtering with a ditavalref resource prefix or suffix) carries the same id as its source topic.</reason>
+    <response>No action needed: the source keeps its id and the copy's graph node gets a suffixed one, linked to the source by copy-of and generated-from.</response>
+  </message>
+  <message id="DITA2GRAPH073I" type="info">
+    <reason>Elements other topics reuse have no @id: the graph names their fragments element@line, a name that changes as soon as a line is added above them.</reason>
+    <response>Give each reused element of the file an @id, so its fragment name (and its IRI in the RDF export) stays stable.</response>
   </message>
   <message id="DITA2GRAPH072I" type="info">
     <reason>The source file of a topic could not be read on its own to find its coderef and conkeyref elements, which preprocessing removes.</reason>
@@ -36,6 +40,18 @@
   <message id="DITA2GRAPH060W" type="warn">
     <reason>A &lt;navref&gt; map-composition element was found but is not resolved by DITA-OT for this transtype and is not independently parsed by this plugin.</reason>
     <response>The referenced navigation map's content is excluded from the graph. Restructure the source to use topicref/mapref instead if that content should appear.</response>
+  </message>
+  <message id="DITA2GRAPH080E" type="error">
+    <reason>The RDF export breaks a rule of the d2g SHACL shapes whose severity is Violation (a loop in the table of contents, a used key no map defines...).</reason>
+    <response>The build fails. Fix the source the message points at; docs/semantic-model.md lists the shapes and their rules.</response>
+  </message>
+  <message id="DITA2GRAPH081W" type="warn">
+    <reason>The RDF export breaks a rule of the d2g SHACL shapes whose severity is Warning, such as a published topic without a parent in the table of contents.</reason>
+    <response>No action needed for the build. Each case is worth a look: a topic merged into its parent by chunk="to-content" is a common cause.</response>
+  </message>
+  <message id="DITA2GRAPH082I" type="info">
+    <reason>The RDF export breaks a rule of the d2g SHACL shapes whose severity is Info.</reason>
+    <response>No action needed.</response>
   </message>
   <message id="DITA2GRAPH083W" type="warn">
     <reason>The RDF export has no base IRI: its node IRIs use the placeholder https://dita2graph.invalid/&lt;map id&gt;/.</reason>

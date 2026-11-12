@@ -1,0 +1,18 @@
+# pySHACL 0.30.1 on rdf-invalid.ttl (-i none, d2g.ttl as ont_graph), one
+# severity|component|focus|path|value line per result, sorted. src/shacl.rs must
+# report exactly these. Regenerate with pySHACL when the shapes change.
+Violation|ClassConstraintComponent|https://example.org/invalid/node/a|https://w3id.org/dita2graph/ns#includesCode|https://example.org/invalid/node/b
+Violation|ClassConstraintComponent|https://example.org/invalid/node/a|https://w3id.org/dita2graph/ns#linksTo|https://example.org/invalid/node/b
+Violation|ClassConstraintComponent|https://example.org/invalid/node/b|-|https://example.org/invalid/node/b
+Violation|ClassConstraintComponent|https://example.org/invalid/node/b|-|https://example.org/invalid/node/b
+Violation|ClassConstraintComponent|https://example.org/invalid/node/b|https://w3id.org/dita2graph/ns#appliesTo|https://example.org/invalid/node/a
+Violation|MaxCountConstraintComponent|https://example.org/invalid/node/a|https://w3id.org/dita2graph/ns#copyOf|-
+Violation|MinCountConstraintComponent|https://example.org/invalid/node/undefined-key|https://w3id.org/dita2graph/ns#definedIn|-
+Violation|MinCountConstraintComponent|https://example.org/invalid/node/untitled|http://purl.org/dc/terms/title|-
+Violation|PatternConstraintComponent|https://example.org/invalid/file/abs|https://w3id.org/dita2graph/ns#path|"/etc/abs.dita"
+Violation|SPARQLConstraintComponent|https://example.org/invalid/node/a|-|https://example.org/invalid/node/a
+Violation|SPARQLConstraintComponent|https://example.org/invalid/node/b|-|https://example.org/invalid/node/a
+Violation|SPARQLConstraintComponent|https://example.org/invalid/node/b|-|https://example.org/invalid/node/b
+Violation|SPARQLConstraintComponent|https://example.org/invalid/node/b|-|https://example.org/invalid/node/b
+Violation|SPARQLConstraintComponent|https://example.org/invalid/node/reuse|-|https://example.org/invalid/node/frag
+Warning|EqualsConstraintComponent|https://example.org/invalid/node/a|^https://w3id.org/dita2graph/ns#relatedTo|https://example.org/invalid/node/b

@@ -185,7 +185,21 @@ public class ExtractTask extends Task {
                     new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    log("dita2graph-core: " + line, Project.MSG_INFO);
+                    // A core warning or error is logged at its own level, so
+                    // it shows in a normal DITA-OT run as the extractor's own
+                    // do; as information, like the rest of the core's output,
+                    // only --verbose showed it (the SHACL check's results
+                    // went unseen).
+                    CoreDiagnostic diagnostic = CoreDiagnostic.parse(line);
+                    if (diagnostic == null) {
+                        log("dita2graph-core: " + line, Project.MSG_INFO);
+                    } else {
+                        log(diagnostic.text(), switch (diagnostic.severity()) {
+                            case "error" -> Project.MSG_ERR;
+                            case "warning" -> Project.MSG_WARN;
+                            default -> Project.MSG_INFO;
+                        });
+                    }
                 }
             }
             return process.waitFor();

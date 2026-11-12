@@ -12,14 +12,34 @@
 @prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix prov:    <http://www.w3.org/ns/prov#> .
 @prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
+@prefix vann:    <http://purl.org/vocab/vann/> .
 
 <https://w3id.org/dita2graph/ns>
     a owl:Ontology ;
-    owl:versionIRI <https://w3id.org/dita2graph/ns/0.1.0> ;
-    owl:versionInfo "0.1.0" ;
+    owl:versionIRI <https://w3id.org/dita2graph/ns/0.1.1> ;
+    owl:versionInfo "0.1.1" ;
+    owl:priorVersion <https://w3id.org/dita2graph/ns/0.1.0> ;
     rdfs:label "DITA2Graph vocabulary"@en , "Vocabulaire DITA2Graph"@fr ;
     rdfs:comment "Classes and properties of the knowledge graph DITA2Graph builds from a DITA publication resolved by DITA-OT."@en ;
+    dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
+    dcterms:creator <https://github.com/jyjeanne> ;
+    dcterms:created "2026-11-10"^^xsd:date ;
+    dcterms:modified "2026-11-12"^^xsd:date ;
+    vann:preferredNamespacePrefix "d2g" ;
+    vann:preferredNamespaceUri "https://w3id.org/dita2graph/ns#" ;
     rdfs:seeAlso <https://github.com/jyjeanne/DITA2Graph> .
+
+# The header's own annotations (licence, creator, dates, preferred prefix
+# for vocabulary catalogues such as LOV), declared so they stay annotation
+# properties in OWL 2. dcterms:title and dcterms:description are data
+# properties of the graph below, so the header uses rdfs:label and
+# rdfs:comment instead: one IRI cannot be both.
+dcterms:license a owl:AnnotationProperty .
+dcterms:creator a owl:AnnotationProperty .
+dcterms:created a owl:AnnotationProperty .
+dcterms:modified a owl:AnnotationProperty .
+vann:preferredNamespacePrefix a owl:AnnotationProperty .
+vann:preferredNamespaceUri a owl:AnnotationProperty .
 
 # ---------------------------------------------------------------------------
 # Annotation used on every relation of this vocabulary.
@@ -204,7 +224,7 @@ d2g:copyOf
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:subPropertyOf prov:wasDerivedFrom ;
     rdfs:label "copy of"@en , "copie de"@fr ;
-    rdfs:comment "The subject is a copy-to copy of the object. Derived from it, not a d2g:generatedFrom: a copy names no reused fragments (the extractor states the generatedFrom of its content separately)."@en ;
+    rdfs:comment "The subject is a copy DITA-OT writes of the object under another name: a copy-to copy, or a branch-filtering copy (a ditavalref with a resource prefix or suffix). Derived from it, not a d2g:generatedFrom: a copy names no reused fragments (the extractor states the generatedFrom of its content separately)."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Topic ;
     d2g:origin "derived" .

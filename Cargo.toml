@@ -31,3 +31,8 @@ tokenizers = { version = "0.23.2", default-features = false, features = ["onig"]
 # stays offline at build time too and needs no system libsqlite3 --
 # see `core/dita2graph-core/src/store.rs`.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# In-memory RDF store and SPARQL engine: the build-time SHACL check
+# (core/dita2graph-core/src/shacl.rs) and the MCP server's query_graph.
+# No RocksDB and no HTTP client (a SERVICE clause cannot reach out).
+oxigraph = { version = "0.5", default-features = false }
+regex = "1"

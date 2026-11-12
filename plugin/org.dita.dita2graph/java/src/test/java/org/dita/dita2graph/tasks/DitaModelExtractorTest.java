@@ -632,7 +632,8 @@ class DitaModelExtractorTest {
                 + "<p xtrf=\"file:/src/topics/source.dita\" xtrc=\"p:2;6:8\">Paragraph without an id.</p>"
                 + "</context></taskbody></task>");
 
-        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+        List<String> infos = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, infos::add).extract();
 
         TopicNode reuser = findTopic(nodes, "reuser");
         Link generatedFrom = reuser.links.stream()
@@ -642,6 +643,11 @@ class DitaModelExtractorTest {
         assertEquals("source", generatedFrom.target);
         // The id found in the source topic, else element@line from the xtrc.
         assertEquals(List.of("warning", "p@6"), generatedFrom.fragments);
+        // The author of the source file hears about the element without an
+        // @id, whose name changes with its line; not about the one with it.
+        assertEquals(List.of("DITA2GRAPH073I: topics/source.dita: 1 reused element(s) without an @id (p@6), "
+                        + "named by their line: give them an @id so their fragment names stay stable"),
+                infos.stream().filter(m -> m.startsWith("DITA2GRAPH073I")).toList());
         assertEquals("Own content.", reuser.body, "the deduplicated body is unchanged");
         assertEquals("[reused from topics/source.dita#warning] Reusable content. [end reused] Own content. "
                         + "[reused from topics/source.dita#p@6] Paragraph without an id. [end reused]",
@@ -837,7 +843,13 @@ class DitaModelExtractorTest {
         write(tempDir, "topics/build-using-dita-command.dita", command);
         write(tempDir, "topics/novice-topic.dita", topicXml("my-topic", "My topic"));
 
-        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, w -> { }, i -> { }).extract();
+        List<String> warnings = new ArrayList<>();
+        List<String> infos = new ArrayList<>();
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, warnings::add, infos::add).extract();
+
+        // Expected copies, not topics that happen to share an id.
+        assertTrue(warnings.stream().noneMatch(w -> w.startsWith("DITA2GRAPH070W")), "warnings: " + warnings);
+        assertEquals(2, infos.stream().filter(i -> i.startsWith("DITA2GRAPH071I")).count(), "infos: " + infos);
 
         TopicNode unfiltered = findTopic(nodes, "using-command-line-tool");
         assertEquals("topics/using-dita-command.dita", unfiltered.sourceFile);
@@ -853,6 +865,15 @@ class DitaModelExtractorTest {
         assertEquals("topics/my topic.dita", myTopic.authoredFile, "src is percent-decoded");
         assertTrue(expert.toJson().contains("\"authoredFile\":\"topics/using-dita-command.dita\""), expert.toJson());
         assertFalse(unfiltered.toJson().contains("authoredFile"), unfiltered.toJson());
+
+        // Each filtered copy is a copy of the unfiltered topic; a topic the
+        // map publishes only filtered has no source to be a copy of.
+        for (TopicNode copy : List.of(novice, expert)) {
+            assertEquals(List.of("using-command-line-tool"), copy.links.stream()
+                    .filter(l -> l.relation.equals("copy-of")).map(l -> l.target).toList(), copy.id);
+        }
+        assertTrue(myTopic.links.stream().noneMatch(l -> l.relation.equals("copy-of")), "my-topic: " + myTopic.links);
+        assertTrue(unfiltered.links.stream().noneMatch(l -> l.relation.equals("copy-of")));
     }
 
     @Test

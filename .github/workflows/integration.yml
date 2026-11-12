@@ -421,7 +421,8 @@ jobs:
             exit 1
           fi
           for rule in 'loops back' 'references itself' 'without the reuse' 'does not belong' 'must be relative' \
-                      'no map defines' 'one source topic' 'file of the corpus' 'class d2g:ExternalResource'; do
+                      'no map defines' 'one source topic' 'file of the corpus' 'class d2g:ExternalResource' \
+                      'one direction only'; do
             grep -q "$rule" /tmp/rdf-invalid.txt || { echo "::error::no '$rule' violation reported"; exit 1; }
           done
 

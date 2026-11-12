@@ -24,6 +24,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 
 /**
@@ -448,6 +450,16 @@ final class DitaModelExtractor {
         srcToPath = srcToPathPreferringSources(files, null);
         collectKeyDefsAndScopes(mapRoot, mapFile.path);
         walkMapChildren(mapRoot, mapFile.path, null, 1, containments, keysByPath);
+        // A branch-filtering copy is a copy too: a <ditavalref> with a
+        // <dvrResourcePrefix> or <dvrResourceSuffix> makes DITA-OT write the
+        // topic under another name, with the src of the file it filters.
+        // Without this, each such copy read as a second topic with the same
+        // id (DITA2GRAPH070W) instead of an expected copy.
+        for (JobFile file : files) {
+            if ("dita".equals(file.format) && !authoredPath(file).equals(file.path)) {
+                copyPaths.add(file.path);
+            }
+        }
 
         // Every resolved element DITA-OT writes carries an xtrf attribute
         // tracing its true source file (as an absolute file: URI,
@@ -530,8 +542,9 @@ final class DitaModelExtractor {
                 }
                 topic.id = disambiguated;
                 if (copyPaths.contains(file.path)) {
-                    // Expected: a copy-to copy carries its source's id.
-                    info.accept("DITA2GRAPH071I: " + file.path + " is a copy-to copy of a topic with id \""
+                    // Expected: a copy (copy-to, branch filtering) carries
+                    // its source's id.
+                    info.accept("DITA2GRAPH071I: " + file.path + " is a copy of a topic with id \""
                             + original + "\" (" + existingOwner + ") -- using \"" + disambiguated
                             + "\" for the copy's graph node");
                 } else {
@@ -576,8 +589,11 @@ final class DitaModelExtractor {
             }
             collectKeyrefs(root, topic.keyrefs);
             if (copyPaths.contains(file.path)) {
+                // The source is the job's file of that src that is not a
+                // copy: when the map only publishes filtered copies, there
+                // is none, and the copies are not copies of each other.
                 String sourcePath = ditaSrcToPath.get(file.src);
-                if (sourcePath != null && !sourcePath.equals(file.path)) {
+                if (sourcePath != null && !sourcePath.equals(file.path) && !copyPaths.contains(sourcePath)) {
                     copySources.put(file.path, sourcePath);
                 }
             }
@@ -757,6 +773,8 @@ final class DitaModelExtractor {
                 copyNode.links.add(new Link("copy-of", source.id));
             }
         }
+        // Authored file -> the reused elements of it that have no @id.
+        Map<String, Set<String>> unnamedFragments = new TreeMap<>();
         for (RawGeneratedFrom raw : rawGeneratedFrom) {
             TopicNode source = topicsByPath.get(raw.sourceTopicPath);
             TopicNode target = topicsByPath.get(raw.generatedFromPath);
@@ -774,8 +792,22 @@ final class DitaModelExtractor {
                 if (!fragments.contains(fragment)) {
                     fragments.add(fragment);
                 }
+                Map<String, String> ids = fragmentIdsByPath.get(raw.generatedFromPath);
+                if (ids == null || !ids.containsKey(trace)) {
+                    String file = target.authoredFile != null ? target.authoredFile : target.sourceFile;
+                    unnamedFragments.computeIfAbsent(file, k -> new TreeSet<>()).add(fragment);
+                }
             }
             source.links.add(new Link("generated-from", target.id, fragments));
+        }
+        // A reused element without an @id is named element@line: its
+        // fragment (and its IRI in the RDF export) changes as soon as a line
+        // is added above it. One note per file, for its author.
+        for (Map.Entry<String, Set<String>> entry : unnamedFragments.entrySet()) {
+            Set<String> names = entry.getValue();
+            info.accept("DITA2GRAPH073I: " + entry.getKey() + ": " + names.size()
+                    + " reused element(s) without an @id (" + String.join(", ", names)
+                    + "), named by their line: give them an @id so their fragment names stay stable");
         }
         for (Map.Entry<String, BodyWalk> entry : bodyWalksWithReuse.entrySet()) {
             String resolved = renderResolvedBody(entry.getValue(), fragmentIdsByPath);
