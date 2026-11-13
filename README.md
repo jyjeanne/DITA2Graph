@@ -400,7 +400,7 @@ Once registered, an agent can call:
 
 | Tool | What it does |
 |---|---|
-| `search_topics(query)` | Plain text match against topic/map titles and ids |
+| `search_topics(query)` | Plain text match against topic/map titles and ids, then against the topics' keywords and index entries (listed after, with the entries that matched) |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
 | `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, then the reused fragments by source topic, and the topic's external links, keys and sample files |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments. On a key, URL or file node (`key:<name>`, the URL, `file:<path>`), the topics pointing to it |

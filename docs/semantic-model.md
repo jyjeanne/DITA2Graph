@@ -556,10 +556,20 @@ Where it goes:
   `NodeShape` and `IndexTermShape`;
 - the MCP tool `read_topic`: `Dates`, `Product`, `Audience`, `Authors`,
   `Keywords` and `Index` lines after the topic's title and source, the index cut at
-  20 entries.
+  20 entries;
+- the MCP tool `search_topics`: after the topics whose title or id
+  matches, the ones whose keyword or index entry has a word starting
+  with the query, under "Indexed under or tagged with", each with the
+  first three entries that matched. A word start rather than any
+  substring, unlike titles: on the Oxygen guide, `git` would otherwise
+  find the "Digital Signature" entries. On the DITA-OT documentation,
+  `plug-ins` finds 14 topics by title and 34 more by their index
+  entries; on the Oxygen guide, `content completion` finds 39 and 15
+  more.
 
-`graph.json`, `graph.db` and the RAG chunks do not carry it yet, so
-`search_topics` does not find a topic by its keywords or index entries.
+`graph.json`, `graph.db` and the RAG chunks do not carry it:
+`search_topics` reads it from the concept files it already reads for the
+titles.
 
 ## Limits and next steps
 

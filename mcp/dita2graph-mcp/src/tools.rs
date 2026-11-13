@@ -14,7 +14,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "search_topics",
-            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Use this first to find an id before calling the other tools. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
+            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Then over the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query is listed after the title matches, under 'Indexed under or tagged with', with the entries that matched. Use this first to find an id before calling the other tools. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "query": { "type": "string", "description": "Search text" } },
@@ -234,23 +234,84 @@ fn arg_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
 fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let query = arg_str(arguments, "query")?.to_lowercase();
     let mut hits: Vec<String> = Vec::new();
+    // A node found by its keywords or index entries rather than its name,
+    // with what matched: the author's own words for what the topic is
+    // about, which its title often does not repeat.
+    let mut by_metadata: Vec<String> = Vec::new();
     for node in bundle.all_nodes() {
         let title = bundle.title(&node.id).unwrap_or_else(|_| node.id.clone());
+        let line = format!(
+            "{} ({}) [{}]{}",
+            title,
+            node.type_,
+            node.id,
+            role_note(bundle, &node.id)
+        );
         if node.id.to_lowercase().contains(&query) || title.to_lowercase().contains(&query) {
-            hits.push(format!(
-                "{} ({}) [{}]{}",
-                title,
-                node.type_,
-                node.id,
-                role_note(bundle, &node.id)
-            ));
+            hits.push(line);
+        } else if !node.is_declared() {
+            let matched = metadata_matches(&bundle.metadata(&node.id), &query);
+            if !matched.is_empty() {
+                by_metadata.push(format!("{line} -- {matched}"));
+            }
         }
     }
     hits.sort();
-    if hits.is_empty() {
+    by_metadata.sort();
+    if hits.is_empty() && by_metadata.is_empty() {
         return Ok(format!("no topics matched `{query}`"));
     }
+    if !by_metadata.is_empty() {
+        if !hits.is_empty() {
+            hits.push(String::new());
+        }
+        hits.push(format!(
+            "Indexed under or tagged with `{query}` ({}):",
+            by_metadata.len()
+        ));
+        hits.append(&mut by_metadata);
+    }
     Ok(hits.join("\n"))
+}
+
+/// What of a node's keywords and index entries has a word starting with
+/// `query` (already lowercased): `keyword "..."` and `index "term >
+/// subterm"`, the first three, then how many more; empty when nothing
+/// does. A word start, not any substring as for titles: on the Oxygen
+/// guide, `git` otherwise finds the "Digital Signature" entries.
+fn metadata_matches(m: &dita2graph_core::Metadata, query: &str) -> String {
+    const SHOWN: usize = 3;
+    let matches = |term: &str| starts_a_word(&term.to_lowercase(), query);
+    let keywords = m
+        .keywords
+        .iter()
+        .filter(|k| matches(k))
+        .map(|k| format!("keyword \"{k}\""));
+    let entries = m
+        .index_terms
+        .iter()
+        .filter(|path| path.iter().any(|term| matches(term)))
+        .map(|path| format!("index \"{}\"", path.join(" > ")));
+    let mut matched: Vec<String> = keywords.chain(entries).collect();
+    matched.dedup();
+    let more = matched.len().saturating_sub(SHOWN);
+    matched.truncate(SHOWN);
+    if more > 0 {
+        matched.push(format!("+{more} more"));
+    }
+    matched.join(", ")
+}
+
+/// `query` occurs in `text` at the start of a word: at the start of
+/// `text`, or after a character that is not a letter or a digit.
+fn starts_a_word(text: &str, query: &str) -> bool {
+    !query.is_empty()
+        && text.match_indices(query).any(|(i, _)| {
+            text[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
 }
 
 /// A semantic-similarity match this strong counts on its own, even with
@@ -579,12 +640,7 @@ fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         role_note(bundle, topic_id),
         field("resource").unwrap_or_else(|| "?".into())
     );
-    if let Some(metadata) = frontmatter
-        .get("metadata")
-        .and_then(|v| serde_yaml::from_value::<dita2graph_core::Metadata>(v.clone()).ok())
-    {
-        out.push_str(&metadata_lines(&metadata));
-    }
+    out.push_str(&metadata_lines(&bundle.metadata(topic_id)));
 
     let chunks = bundle.rag_chunks().unwrap_or_default();
     let text = chunks
@@ -1146,6 +1202,34 @@ fn validate_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_metadata_match_starts_a_word() {
+        assert!(starts_a_word("git client", "git"));
+        assert!(starts_a_word("--plugins", "plugin"));
+        assert!(starts_a_word("error: java.io", "java"));
+        assert!(!starts_a_word("digital signature", "git"));
+        assert!(!starts_a_word("anything", ""));
+    }
+
+    #[test]
+    fn metadata_matches_names_what_matched_and_counts_the_rest() {
+        let metadata = dita2graph_core::Metadata {
+            keywords: vec!["Setup".into(), "digital".into()],
+            index_terms: vec![
+                vec!["installing".into(), "setup wizard".into()],
+                vec!["setup".into()],
+                vec!["setup".into(), "on Linux".into()],
+                vec!["setup".into(), "on Windows".into()],
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            metadata_matches(&metadata, "setup"),
+            "keyword \"Setup\", index \"installing > setup wizard\", index \"setup\", +2 more"
+        );
+        assert_eq!(metadata_matches(&metadata, "git"), "");
+    }
 
     #[test]
     fn a_long_index_shows_its_first_entries_and_counts_the_rest() {

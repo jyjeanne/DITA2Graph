@@ -1036,7 +1036,11 @@ more tokens). Without `rdf/graph.ttl` it answers with how to produce one.
 This is the current, implemented tool contract — real tool names and
 argument shapes from `mcp/dita2graph-mcp/src/tools.rs`, not an
 aspirational sketch. `search_topics`'s `query` argument does plain text
-matching against titles/ids, not embedding-based semantic search;
+matching against titles/ids, then against the topics' keywords and index
+entries (a word starting with the query; those topics are listed after the
+title matches, with the entries that matched:
+[semantic-model.md](semantic-model.md#dita-metadata)), not embedding-based
+semantic search;
 `topicType`/`audience`/`product` filter arguments and a
 `list_key_definitions` tool were part of an earlier draft of this
 contract and were never implemented, so they're not listed here.

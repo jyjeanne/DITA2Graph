@@ -422,6 +422,20 @@ impl BundleReader {
         Ok(graph)
     }
 
+    /// The node's DITA metadata, from its concept's front matter (§4.4):
+    /// empty for a node without a concept file (a key, a URL, a sample
+    /// file) and for a concept written before the metadata was.
+    pub fn metadata(&self, id: &str) -> dita2graph_core::Metadata {
+        if self.nodes.get(id).is_some_and(GraphNode::is_declared) {
+            return Default::default();
+        }
+        self.read_concept(id)
+            .ok()
+            .and_then(|(frontmatter, _)| frontmatter.get("metadata").cloned())
+            .and_then(|value| serde_yaml::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
     pub fn title(&self, id: &str) -> Result<String> {
         if let Some(title) = self.nodes.get(id).and_then(|n| n.title.clone()) {
             return Ok(title);

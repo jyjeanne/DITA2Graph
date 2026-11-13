@@ -1329,6 +1329,54 @@ mod tests {
     }
 
     #[test]
+    fn search_topics_finds_a_topic_by_its_keywords_and_index_entries() {
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            {"type": "map", "id": "user-guide", "title": "User Guide",
+             "sourceFile": "user-guide.ditamap",
+             "links": [{"relation": "contains", "target": "install"},
+                       {"relation": "contains", "target": "linux-setup"}]},
+            {"type": "topic", "id": "install", "topicType": "task", "title": "Install",
+             "sourceFile": "topics/install.dita", "links": [],
+             "metadata": {"keywords": ["deployment"],
+                          "indexTerms": [["Linux", "installing on"], ["digital signature"]]}},
+            {"type": "topic", "id": "linux-setup", "topicType": "task", "title": "Linux setup",
+             "sourceFile": "topics/linux-setup.dita", "links": [],
+             "metadata": {"indexTerms": [["Linux"]]}}
+        ]))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        let mut cache = bundle::BundleCache::new(dir.path().to_path_buf());
+        let mut search = |query: &str| {
+            let response = handle_message(
+                &json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "search_topics", "arguments": { "query": query } }
+                }),
+                &mut cache,
+            )
+            .unwrap();
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // The title match first; the topic indexed under the word after it,
+        // with the entry, and only once even though its title matches too.
+        let text = search("linux");
+        assert_eq!(
+            text,
+            "Linux setup (Task) [linux-setup]\n\n\
+             Indexed under or tagged with `linux` (1):\n\
+             Install (Task) [install] -- index \"Linux > installing on\""
+        );
+        assert!(search("deploy").contains("[install] -- keyword \"deployment\""));
+        // Inside a word is not a match: "digital" does not answer "git".
+        assert_eq!(search("git"), "no topics matched `git`");
+    }
+
+    #[test]
     fn validate_live_checks_the_file_a_copy_is_written_from() {
         let dir = copy_bundle_root();
         let source_root = tempfile::tempdir().unwrap();
