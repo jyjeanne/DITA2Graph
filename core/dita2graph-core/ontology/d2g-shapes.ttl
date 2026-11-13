@@ -24,7 +24,7 @@
 
 <https://w3id.org/dita2graph/shapes>
     a owl:Ontology ;
-    owl:versionInfo "0.2.0" ;
+    owl:versionInfo "0.2.1" ;
     rdfs:label "DITA2Graph shapes"@en ;
     dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
     dcterms:creator <https://github.com/jyjeanne> ;

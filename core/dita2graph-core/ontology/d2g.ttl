@@ -13,30 +13,40 @@
 @prefix prov:    <http://www.w3.org/ns/prov#> .
 @prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
 @prefix vann:    <http://purl.org/vocab/vann/> .
+@prefix voaf:    <http://purl.org/vocommons/voaf#> .
+@prefix cc:      <http://creativecommons.org/ns#> .
+@prefix vs:      <http://www.w3.org/2003/06/sw-vocab-status/ns#> .
 
 <https://w3id.org/dita2graph/ns>
-    a owl:Ontology ;
-    owl:versionIRI <https://w3id.org/dita2graph/ns/0.2.0> ;
-    owl:versionInfo "0.2.0" ;
-    owl:priorVersion <https://w3id.org/dita2graph/ns/0.1.1> ;
+    a owl:Ontology , voaf:Vocabulary ;
+    owl:versionIRI <https://w3id.org/dita2graph/ns/0.2.1> ;
+    owl:versionInfo "0.2.1" ;
+    owl:priorVersion <https://w3id.org/dita2graph/ns/0.2.0> ;
     rdfs:label "DITA2Graph vocabulary"@en , "Vocabulaire DITA2Graph"@fr ;
     rdfs:comment "Classes and properties of the knowledge graph DITA2Graph builds from a DITA publication resolved by DITA-OT."@en ;
     dcterms:license <https://creativecommons.org/licenses/by/4.0/> ;
+    cc:license <https://creativecommons.org/licenses/by/4.0/> ;
+    dcterms:rights "Copyright (c) 2026 The DITA2Graph Contributors" ;
     dcterms:creator <https://github.com/jyjeanne> ;
     dcterms:created "2026-11-10"^^xsd:date ;
-    dcterms:modified "2026-11-12"^^xsd:date ;
+    dcterms:issued "2026-11-10"^^xsd:date ;
+    dcterms:modified "2026-11-13"^^xsd:date ;
     vann:preferredNamespacePrefix "d2g" ;
     vann:preferredNamespaceUri "https://w3id.org/dita2graph/ns#" ;
     rdfs:seeAlso <https://github.com/jyjeanne/DITA2Graph> .
 
-# The header's own annotations (licence, creator, dates, preferred prefix
-# for vocabulary catalogues such as LOV), declared so they stay annotation
-# properties in OWL 2. dcterms:title and dcterms:description are data
-# properties of the graph below, so the header uses rdfs:label and
-# rdfs:comment instead: one IRI cannot be both.
+# The header's own annotations (licence, rights, creator, dates, preferred
+# prefix), as vocabulary catalogues read them: LOV's "Metadata
+# Recommendations for Linked Open Data Vocabularies" (version 1.1). They
+# are declared so they stay annotation properties in OWL 2.
+# dcterms:title and dcterms:description are data properties of the graph
+# below, so the header uses rdfs:label and rdfs:comment instead, which
+# those recommendations accept and LOV reads: one IRI cannot be both.
 dcterms:license a owl:AnnotationProperty .
+dcterms:rights a owl:AnnotationProperty .
 dcterms:creator a owl:AnnotationProperty .
 dcterms:created a owl:AnnotationProperty .
+dcterms:issued a owl:AnnotationProperty .
 dcterms:modified a owl:AnnotationProperty .
 # Also the DITA metadata of the nodes (dates, authors): annotations, so a
 # date that is not ISO 8601 stays valid as a plain string.
@@ -44,6 +54,12 @@ dcterms:available a owl:AnnotationProperty .
 dcterms:contributor a owl:AnnotationProperty .
 vann:preferredNamespacePrefix a owl:AnnotationProperty .
 vann:preferredNamespaceUri a owl:AnnotationProperty .
+# What the LOV metadata recommendations add: the vocabulary's type
+# (VOAF), its licence as Creative Commons states it, and each term's
+# status (testing while the vocabulary is 0.x).
+voaf:Vocabulary a owl:Class .
+cc:license a owl:AnnotationProperty .
+vs:term_status a owl:AnnotationProperty .
 
 # ---------------------------------------------------------------------------
 # Annotation used on every relation of this vocabulary.
@@ -51,6 +67,8 @@ vann:preferredNamespaceUri a owl:AnnotationProperty .
 d2g:origin
     a owl:AnnotationProperty ;
     rdfs:label "origin"@en , "origine"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "How DITA2Graph obtains a relation: \"declared\" (written by the author in the DITA source), \"derived\" (read from DITA-OT's resolved output) or \"inferred\" (a heuristic)."@en .
 
 # ---------------------------------------------------------------------------
@@ -77,79 +95,107 @@ dcterms:description a owl:DatatypeProperty .
 d2g:Node
     a owl:Class ;
     rdfs:label "Node"@en , "Nœud"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A unit of the publication represented in the graph: the map, a topic or a table-of-contents heading."@en .
 
 d2g:Map
     a owl:Class ;
     rdfs:subClassOf d2g:Node ;
     rdfs:label "Map"@en , "Map"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The input map of the publication (a map or a bookmap)."@en .
 
 d2g:Topic
     a owl:Class ;
     rdfs:subClassOf d2g:Node ;
     rdfs:label "Topic"@en , "Topic"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A published DITA topic; the generic class when it is not one of the specialized types below."@en .
 
 d2g:Concept
     a owl:Class ;
     rdfs:subClassOf d2g:Topic ;
     rdfs:label "Concept"@en , "Concept"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA concept topic."@en .
 
 d2g:Task
     a owl:Class ;
     rdfs:subClassOf d2g:Topic ;
     rdfs:label "Task"@en , "Tâche"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA task topic."@en .
 
 d2g:Reference
     a owl:Class ;
     rdfs:subClassOf d2g:Topic ;
     rdfs:label "Reference"@en , "Référence"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA reference topic."@en .
 
 d2g:GlossEntry
     a owl:Class ;
     rdfs:subClassOf d2g:Topic , skos:Concept ;
     rdfs:label "Glossary entry"@en , "Entrée de glossaire"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA glossentry topic: a defined term, hence also a skos:Concept."@en .
 
 d2g:Troubleshooting
     a owl:Class ;
     rdfs:subClassOf d2g:Topic ;
     rdfs:label "Troubleshooting"@en , "Dépannage"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA troubleshooting topic."@en .
 
 d2g:TopicHead
     a owl:Class ;
     rdfs:subClassOf d2g:Node ;
     rdfs:label "Topic head"@en , "Titre de table des matières"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A titled table-of-contents entry with no topic of its own: a topichead, a navtitle-only bookmap chapter."@en .
 
 d2g:Fragment
     a owl:Class ;
     rdfs:label "Fragment"@en , "Fragment"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "An element of a topic that other topics reuse, named by its @id (or a fallback name when it has none)."@en .
 
 d2g:Reuse
     a owl:Class ;
     rdfs:label "Reuse"@en , "Réutilisation"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "One reuse: which topic pulls which fragments from which source topic."@en .
 
 d2g:Key
     a owl:Class ;
     rdfs:label "Key"@en , "Clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A DITA key, defined in a map within a key scope."@en .
 
 d2g:ExternalResource
     a owl:Class ;
     rdfs:label "External resource"@en , "Ressource externe"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A resource outside the corpus, named by its URL."@en .
 
 d2g:SourceFile
     a owl:Class ;
     rdfs:label "Source file"@en , "Fichier source"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A file of the DITA source: a topic, a map or an included sample file."@en .
 
 [] a owl:AllDisjointClasses ;
@@ -164,6 +210,8 @@ d2g:SourceFile
 d2g:contains
     a owl:ObjectProperty , owl:AsymmetricProperty , owl:IrreflexiveProperty ;
     rdfs:label "contains"@en , "contient"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "In the published table of contents, the object is a direct child of the subject. Navigation, not dependency."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range d2g:Node ;
@@ -173,6 +221,8 @@ d2g:contains
 d2g:containedIn
     a owl:ObjectProperty ;
     rdfs:label "contained in"@en , "contenu dans"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Inverse of d2g:contains."@en ;
     d2g:origin "declared" .
 
@@ -180,6 +230,8 @@ d2g:references
     a owl:ObjectProperty ;
     rdfs:subPropertyOf dcterms:references ;
     rdfs:label "references"@en , "renvoie à"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The subject links to the object for the reader to consult; no order is implied. From xref and link, including relationship-table links."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Node ;
@@ -189,6 +241,8 @@ d2g:requires
     a owl:ObjectProperty ;
     rdfs:subPropertyOf d2g:references ;
     rdfs:label "requires"@en , "demande au préalable"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The subject task can only be done after reading or doing the object: a link in the task's prereq, or a link of the task marked importance=\"required\"."@en ;
     rdfs:domain d2g:Task ;
     rdfs:range d2g:Topic ;
@@ -198,12 +252,16 @@ d2g:requires
 d2g:prerequisiteFor
     a owl:ObjectProperty ;
     rdfs:label "prerequisite for"@en , "prérequis de"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Inverse of d2g:requires."@en ;
     d2g:origin "declared" .
 
 d2g:relatedTo
     a owl:ObjectProperty , owl:SymmetricProperty ;
     rdfs:label "related to"@en , "lié à"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Both topics are about the same product: a hint, not an author's statement."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Topic ;
@@ -212,6 +270,8 @@ d2g:relatedTo
 d2g:appliesTo
     a owl:ObjectProperty ;
     rdfs:label "applies to"@en , "s'applique à"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The task operates a user-interface element the reference describes."@en ;
     rdfs:domain d2g:Task ;
     rdfs:range d2g:Reference ;
@@ -221,6 +281,8 @@ d2g:generatedFrom
     a owl:ObjectProperty ;
     rdfs:subPropertyOf prov:wasDerivedFrom ;
     rdfs:label "generated from"@en , "reprend du contenu de"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Part of the subject's published content comes from the object, through conref or conkeyref: changing the object changes the subject."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Topic ;
@@ -230,6 +292,8 @@ d2g:copyOf
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:subPropertyOf prov:wasDerivedFrom ;
     rdfs:label "copy of"@en , "copie de"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The subject is a copy DITA-OT writes of the object under another name: a copy-to copy, or a branch-filtering copy (a ditavalref with a resource prefix or suffix). Derived from it, not a d2g:generatedFrom: a copy names no reused fragments (the extractor states the generatedFrom of its content separately)."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Topic ;
@@ -238,6 +302,8 @@ d2g:copyOf
 d2g:qualifiedReuse
     a owl:ObjectProperty ;
     rdfs:label "qualified reuse"@en , "réutilisation qualifiée"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Qualifies a d2g:generatedFrom with the fragments it reuses."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Reuse ;
@@ -246,6 +312,9 @@ d2g:qualifiedReuse
 d2g:reuseSource
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:label "reuse source"@en , "source de la réutilisation"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "The topic a reuse takes its fragments from: the object of the d2g:generatedFrom this reuse qualifies."@en ;
     rdfs:domain d2g:Reuse ;
     rdfs:range d2g:Topic ;
     d2g:origin "derived" .
@@ -253,6 +322,9 @@ d2g:reuseSource
 d2g:reusedFragment
     a owl:ObjectProperty ;
     rdfs:label "reused fragment"@en , "fragment réutilisé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "A fragment of the reuse source that the reusing topic pulls in (conref, conkeyref)."@en ;
     rdfs:domain d2g:Reuse ;
     rdfs:range d2g:Fragment ;
     d2g:origin "derived" .
@@ -260,6 +332,8 @@ d2g:reusedFragment
 d2g:fragmentOf
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:label "fragment of"@en , "fragment de"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The topic that holds the fragment."@en ;
     rdfs:domain d2g:Fragment ;
     rdfs:range d2g:Topic ;
@@ -268,6 +342,9 @@ d2g:fragmentOf
 d2g:definesKey
     a owl:ObjectProperty ;
     rdfs:label "defines key"@en , "définit la clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "A key the map defines, with its submaps: the first definition of the key in its scope, as DITA resolves it."@en ;
     rdfs:domain d2g:Map ;
     rdfs:range d2g:Key ;
     owl:inverseOf d2g:definedIn ;
@@ -276,12 +353,16 @@ d2g:definesKey
 d2g:definedIn
     a owl:ObjectProperty ;
     rdfs:label "defined in"@en , "définie dans"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Inverse of d2g:definesKey."@en ;
     d2g:origin "declared" .
 
 d2g:keyTarget
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:label "key target"@en , "cible de la clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "What the key names: a topic or an external resource. A key's IRI includes its scope, so it has one target."@en ;
     rdfs:domain d2g:Key ;
     d2g:origin "declared" .
@@ -289,6 +370,8 @@ d2g:keyTarget
 d2g:usesKey
     a owl:ObjectProperty ;
     rdfs:label "uses key"@en , "utilise la clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The topic links to or reuses content through the key (keyref, conkeyref)."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:Key ;
@@ -297,6 +380,8 @@ d2g:usesKey
 d2g:linksTo
     a owl:ObjectProperty ;
     rdfs:label "links to"@en , "pointe vers"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The topic links to a URL outside the corpus."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:ExternalResource ;
@@ -305,6 +390,8 @@ d2g:linksTo
 d2g:includesCode
     a owl:ObjectProperty ;
     rdfs:label "includes code"@en , "inclut le fichier"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The topic shows the content of a sample file (coderef)."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range d2g:SourceFile ;
@@ -313,6 +400,8 @@ d2g:includesCode
 d2g:sourceFile
     a owl:ObjectProperty , owl:FunctionalProperty ;
     rdfs:label "source file"@en , "fichier source"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The file a node comes from, or the map file that defines a key. No domain: a node and a key share it, and OWL 2 RL allows no union as a domain."@en ;
     rdfs:range d2g:SourceFile ;
     d2g:origin "derived" .
@@ -320,6 +409,8 @@ d2g:sourceFile
 d2g:indexTerm
     a owl:ObjectProperty ;
     rdfs:label "index term"@en , "entrée d'index"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "An entry of the publication's index (an indexterm, prolog or body) that leads to the node. Each entry is a SKOS concept, labelled with its own words and under its broader term (skos:broader): the index as a concept hierarchy, shared by every node indexed under the same entry."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range skos:Concept ;
@@ -331,18 +422,26 @@ d2g:indexTerm
 d2g:audience
     a owl:DatatypeProperty ;
     rdfs:label "audience"@en , "public"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "A value of the topic's @audience profiling attribute, one triple per value. Not d2g:audienceType, which holds the prolog's audience element."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range xsd:string .
 
 d2g:product
     a owl:DatatypeProperty ;
     rdfs:label "product"@en , "produit"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "A value of the topic's @product profiling attribute, one triple per value. Not d2g:productName, which holds the prolog's prodinfo."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range xsd:string .
 
 d2g:processingRole
     a owl:DatatypeProperty ;
     rdfs:label "processing role"@en , "rôle de traitement"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "\"resource-only\" when every topicref naming the topic is resource-only: a reuse warehouse or a key target, outside the table of contents."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range xsd:string .
@@ -350,6 +449,8 @@ d2g:processingRole
 d2g:ditaClass
     a owl:DatatypeProperty ;
     rdfs:label "DITA class"@en , "classe DITA"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The full @class value of the topic's root element, which keeps its specialization."@en ;
     rdfs:domain d2g:Topic ;
     rdfs:range xsd:string .
@@ -357,12 +458,17 @@ d2g:ditaClass
 d2g:keyName
     a owl:DatatypeProperty ;
     rdfs:label "key name"@en , "nom de clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
+    rdfs:comment "The key's name, without its scope."@en ;
     rdfs:domain d2g:Key ;
     rdfs:range xsd:string .
 
 d2g:keyText
     a owl:DatatypeProperty ;
     rdfs:label "key text"@en , "texte de la clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The text a key stands for (its keyword, link text or navtitle) when it names no topic: the value of a variable key, the label of a URL key."@en ;
     rdfs:domain d2g:Key ;
     rdfs:range xsd:string .
@@ -370,6 +476,8 @@ d2g:keyText
 d2g:path
     a owl:DatatypeProperty ;
     rdfs:label "path"@en , "chemin"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The file's path relative to the publication's root, with forward slashes; never absolute."@en ;
     rdfs:domain d2g:SourceFile ;
     rdfs:range xsd:string .
@@ -377,6 +485,8 @@ d2g:path
 d2g:okfConcept
     a owl:DatatypeProperty ;
     rdfs:label "OKF concept"@en , "concept OKF"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Path of the node's OKF concept file in the bundle (okf/topics/<id>.md, okf/maps/<id>.md)."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -384,12 +494,16 @@ d2g:okfConcept
 d2g:expiry
     a owl:DatatypeProperty ;
     rdfs:label "expiry"@en , "date d'expiration"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The date after which the content no longer applies (critdates @expiry, of the most recent revision that gives one). An xsd:date when written as ISO 8601, a plain string otherwise. Its other dates are Dublin Core: dcterms:created, dcterms:modified (the most recent revision) and dcterms:available (@golive)."@en ;
     rdfs:domain d2g:Node .
 
 d2g:permissions
     a owl:DatatypeProperty ;
     rdfs:label "permissions"@en , "droits"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Who may see the content: the @view of the prolog's permissions (internal, classified, all, entitled...)."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -397,6 +511,8 @@ d2g:permissions
 d2g:productName
     a owl:DatatypeProperty ;
     rdfs:label "product name"@en , "nom du produit"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A product the content documents, from the prolog's prodinfo/prodname. Not d2g:product, which holds the @product profiling values."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -404,6 +520,8 @@ d2g:productName
 d2g:productVersion
     a owl:DatatypeProperty ;
     rdfs:label "product version"@en , "version du produit"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A version of the documented product, joined from a prodinfo/vrm: version, release and modification (4.2.1)."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -411,6 +529,8 @@ d2g:productVersion
 d2g:audienceType
     a owl:DatatypeProperty ;
     rdfs:label "audience type"@en , "type de public"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The prolog audience's @type (user, administrator, programmer...; @othertype for other). Not d2g:audience, which holds the @audience profiling values."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -418,6 +538,8 @@ d2g:audienceType
 d2g:audienceJob
     a owl:DatatypeProperty ;
     rdfs:label "audience job"@en , "tâche du public"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The prolog audience's @job (installing, programming, troubleshooting...; @otherjob for other)."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -425,6 +547,8 @@ d2g:audienceJob
 d2g:experienceLevel
     a owl:DatatypeProperty ;
     rdfs:label "experience level"@en , "niveau d'expérience"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "The prolog audience's @experiencelevel (novice, general, expert)."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -432,6 +556,8 @@ d2g:experienceLevel
 d2g:keyword
     a owl:DatatypeProperty ;
     rdfs:label "keyword"@en , "mot-clé"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "A keyword of the prolog's keywords. Its index terms are d2g:indexTerm."@en ;
     rdfs:domain d2g:Node ;
     rdfs:range xsd:string .
@@ -439,6 +565,8 @@ d2g:keyword
 d2g:generator
     a owl:DatatypeProperty ;
     rdfs:label "generator"@en , "générateur"@fr ;
+    rdfs:isDefinedBy <https://w3id.org/dita2graph/ns> ;
+    vs:term_status "testing" ;
     rdfs:comment "Name and version of the program that ran the build."@en ;
     rdfs:domain prov:Activity ;
     rdfs:range xsd:string .

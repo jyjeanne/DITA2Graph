@@ -59,7 +59,7 @@ rdf/
 ## Vocabulary
 
 Namespace `https://w3id.org/dita2graph/ns#` (prefix `d2g`), ontology IRI
-`https://w3id.org/dita2graph/ns`, version `0.2.0`. It reuses Dublin Core
+`https://w3id.org/dita2graph/ns`, version `0.2.1`. It reuses Dublin Core
 (`dcterms:`), PROV-O (`prov:`) and SKOS (`skos:`) where they fit.
 
 The vocabulary and the shapes are under the
@@ -73,7 +73,17 @@ Version 0.1.1 adds that header and changes no term; the shapes' 0.1.1
 states `relatedTo`'s symmetry in SHACL Core. Version 0.2.0 adds the DITA
 metadata of each node, its index entries included
 ([DITA metadata](#dita-metadata)), and changes no existing term; the
-shapes' 0.2.0 check them.
+shapes' 0.2.0 check them. Version 0.2.1 completes what LOV's
+[metadata recommendations](https://lov.linkeddata.es/Recommendations_Vocabulary_Design.pdf)
+ask for, and changes no term: the vocabulary is also a
+`voaf:Vocabulary`, with its first publication date (`dcterms:issued`),
+its rights (`dcterms:rights`) and its licence as Creative Commons states
+it (`cc:license`); every term has a comment, the vocabulary that defines
+it (`rdfs:isDefinedBy`) and its status (`vs:term_status`, `testing`
+while the vocabulary is 0.x). The header names the vocabulary with
+`rdfs:label` and `rdfs:comment`, which the recommendations accept, rather
+than `dcterms:title` and `dcterms:description`, which are data properties
+of the graph. The shapes' 0.2.1 change nothing.
 
 The w3id.org identifiers (`ids/dita2graph/` in
 [perma-id/w3id.org](https://github.com/perma-id/w3id.org/tree/master/ids/dita2graph),
