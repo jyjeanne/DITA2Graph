@@ -25,6 +25,8 @@ dependencies {
     // present) -- compileOnly, not bundled into the jar. Version matches
     // DITA-OT 4.4's own bundled Ant exactly (lib/ant-apache-resolver-1.10.15.jar).
     compileOnly("org.apache.ant:ant:1.10.15")
+    // ExtractTaskTest runs the task in an Ant Project of its own.
+    testImplementation("org.apache.ant:ant:1.10.15")
 
     testImplementation(platform("org.junit:junit-bom:5.11.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")

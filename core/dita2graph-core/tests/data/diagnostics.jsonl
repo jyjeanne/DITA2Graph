@@ -1,0 +1,14 @@
+{"id":"DITA2GRAPH001E","severity":"error","message":"sample message"}
+{"id":"DITA2GRAPH010W","severity":"warning","message":"sample message"}
+{"id":"DITA2GRAPH020I","severity":"info","message":"sample message"}
+{"id":"DITA2GRAPH030E","severity":"error","message":"sample message"}
+{"id":"DITA2GRAPH040W","severity":"warning","message":"sample message"}
+{"id":"DITA2GRAPH050E","severity":"error","message":"sample message"}
+{"id":"DITA2GRAPH080E","severity":"error","message":"sample message"}
+{"id":"DITA2GRAPH081W","severity":"warning","message":"sample message"}
+{"id":"DITA2GRAPH082I","severity":"info","message":"sample message"}
+{"id":"DITA2GRAPH083W","severity":"warning","message":"sample message"}
+{"id":"DITA2GRAPH081W","severity":"warning","message":"PublishedTopicShape on https://ex.org/node/a: \"Published\" topic é"}
+{"id":"DITA2GRAPH080E","severity":"error","message":"C:\\docs\\a.dita loops back\tto itself"}
+{"id":"DITA2GRAPH082I","severity":"info","message":"first line\nsecond line"}
+{"id":"DITA2GRAPH083W","severity":"warning","message":"日本語 🚀 \u0001"}

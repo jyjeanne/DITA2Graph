@@ -29,7 +29,10 @@ Windows. Each run builds `sample-docs/` with no other `dita2graph-core`
 on the machine.
 
 The jar is compiled with `--release 17` because DITA-OT 4.x runs on
-Java 17.
+Java 17. `plugin.xml`, `build.xml` and `cfg/` stay ASCII
+(`PluginDescriptorTest`): on Java 17 under Windows, DITA-OT 4.4.1
+failed to install the plugin while a parameter description in
+`plugin.xml` had a `§`.
 
 `package.yml` also runs on every push to `main` that touches the
 plugin, the core or the build, so a broken package shows up before a

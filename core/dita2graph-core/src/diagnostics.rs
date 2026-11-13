@@ -35,15 +35,30 @@ pub const BUNDLE_VALIDATION_FAILED: MessageId = MessageId("DITA2GRAPH030E", Seve
 pub const UNKNOWN_TOPIC_TYPE: MessageId = MessageId("DITA2GRAPH040W", Severity::Warning);
 /// A generated concept matches a high-confidence secret pattern (§6.4).
 pub const POSSIBLE_SECRET_LEAK: MessageId = MessageId("DITA2GRAPH050E", Severity::Error);
-/// The RDF export has no `--rdf-base`: its IRIs sit under the reserved
-/// `https://dita2graph.invalid/` domain and are not meant to be published.
 /// The RDF export breaks a `sh:Violation` rule of the d2g shapes: the build fails.
 pub const SHACL_VIOLATION: MessageId = MessageId("DITA2GRAPH080E", Severity::Error);
 /// The RDF export breaks a `sh:Warning` rule of the d2g shapes: reported only.
 pub const SHACL_WARNING: MessageId = MessageId("DITA2GRAPH081W", Severity::Warning);
 /// The RDF export breaks a `sh:Info` rule of the d2g shapes: reported only.
 pub const SHACL_NOTE: MessageId = MessageId("DITA2GRAPH082I", Severity::Info);
+/// The RDF export has no `--rdf-base`: its IRIs sit under the reserved
+/// `https://dita2graph.invalid/` domain and are not meant to be published.
 pub const PLACEHOLDER_RDF_BASE: MessageId = MessageId("DITA2GRAPH083W", Severity::Warning);
+
+/// Every message of the catalog. The DITA-OT plugin's `CoreDiagnostic`
+/// parses a line of each (`tests/diagnostics.rs` writes them).
+pub const CATALOG: [MessageId; 10] = [
+    UNRESOLVED_KEYREF,
+    AMBIGUOUS_RELATION,
+    DRAFT_TOPIC_SKIPPED,
+    BUNDLE_VALIDATION_FAILED,
+    UNKNOWN_TOPIC_TYPE,
+    POSSIBLE_SECRET_LEAK,
+    SHACL_VIOLATION,
+    SHACL_WARNING,
+    SHACL_NOTE,
+    PLACEHOLDER_RDF_BASE,
+];
 
 #[derive(Serialize)]
 struct Diagnostic<'a> {
@@ -54,14 +69,20 @@ struct Diagnostic<'a> {
 
 /// Emits one diagnostic as a JSON line on stderr (§2.5).
 pub fn emit(id: MessageId, message: &str) {
+    let _ = writeln!(std::io::stderr(), "{}", line(id, message));
+}
+
+/// The JSON line of one diagnostic,
+/// `{"id":"DITA2GRAPH081W","severity":"warning","message":"..."}`: the
+/// shape the DITA-OT plugin's `CoreDiagnostic` parses, so its fields keep
+/// this order.
+pub fn line(id: MessageId, message: &str) -> String {
     let diagnostic = Diagnostic {
         id: id.0,
         severity: id.1,
         message,
     };
-    if let Ok(line) = serde_json::to_string(&diagnostic) {
-        let _ = writeln!(std::io::stderr(), "{line}");
-    }
+    serde_json::to_string(&diagnostic).expect("a diagnostic serializes")
 }
 
 #[cfg(test)]
@@ -80,5 +101,24 @@ mod tests {
         assert_eq!(SHACL_WARNING.0, "DITA2GRAPH081W");
         assert_eq!(SHACL_NOTE.0, "DITA2GRAPH082I");
         assert_eq!(PLACEHOLDER_RDF_BASE.0, "DITA2GRAPH083W");
+    }
+
+    #[test]
+    fn each_id_ends_with_the_letter_of_its_severity() {
+        for MessageId(id, severity) in CATALOG {
+            let letter = match severity {
+                Severity::Fatal => 'F',
+                Severity::Error => 'E',
+                Severity::Warning => 'W',
+                Severity::Info => 'I',
+            };
+            assert!(id.ends_with(letter), "{id} is {severity:?}");
+        }
+    }
+
+    #[test]
+    fn the_catalog_lists_each_message_once() {
+        let ids: std::collections::HashSet<_> = CATALOG.iter().map(|m| m.0).collect();
+        assert_eq!(ids.len(), CATALOG.len());
     }
 }

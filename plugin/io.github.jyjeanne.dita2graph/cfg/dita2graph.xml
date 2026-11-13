@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Default configuration for the dita2graph transtype
-  (docs/plugin-specification.md §2.1, §2.3). Values here are the
+  (docs/plugin-specification.md section 2.1, section 2.3). Values here are the
   documented defaults; override any of them per-build with an
-  args.dita2graph.NAME=VALUE argument (§2.3) or the equivalent Gradle
-  properties block (§8.2).
+  args.dita2graph.NAME=VALUE argument (section 2.3) or the equivalent Gradle
+  properties block (section 8.2).
 -->
 <dita2graph-config>
   <param name="depth" default="unlimited"/>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Implements the dita2graph transtype (docs/plugin-specification.md §2).
+  Implements the dita2graph transtype (docs/plugin-specification.md section 2).
   Verified end-to-end against a live DITA-OT 4.4 preprocessing run
   (gradle-build/, docs/dev/phase-0-findings.md finding 5): the target
   name, dependency chain, and transtype registration below are the real,
@@ -19,7 +19,7 @@
        pipeline needs; skipping it fails with a NullPointerException
        deep in build_preprocess2.xml before this target ever runs. -->
   <target name="dita2dita2graph" depends="build-init,preprocess2">
-    <!-- Defaults for the args.dita2graph.* CLI arguments (§2.3,
+    <!-- Defaults for the args.dita2graph.* CLI arguments (section 2.3,
          cfg/dita2graph.xml): plain Ant <property>, which never overrides
          an already-set value, so a CLI-supplied override still wins.
          Needed because a bare ${args.dita2graph.store} reference with
@@ -38,13 +38,13 @@
 
     <!-- Custom Ant task, defined by lib/dita2graph-core.jar:
            1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
-           2. builds the normalized DITA model (§3.2)
-           3. shells out to the `dita2graph-core` Rust binary (§3.4),
+           2. builds the normalized DITA model (section 3.2)
+           3. shells out to the `dita2graph-core` Rust binary (section 3.4),
               already implemented and tested under core/dita2graph-core,
-              to write the OKF bundle + graph.json (§2.4)
+              to write the OKF bundle + graph.json (section 2.4)
          depth/mcp/emit-graph-json are read and logged but not yet
          functionally wired to the Rust core's CLI, which only accepts
-         the input/output/store arguments today (§12 Phase 1 status;
+         the input/output/store arguments today (section 12 Phase 1 status;
          finding 6); include-drafts is fully implemented (topic
          filtering happens in Java, before the Rust core ever sees the
          normalized model). outputDir uses dita.output.dir, not

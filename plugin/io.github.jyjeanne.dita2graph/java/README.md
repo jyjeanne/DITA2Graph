@@ -9,10 +9,24 @@ Rust workspace at the repo root.
 ## Building and testing
 
 ```bash
-./gradlew test    # runs DitaModelExtractorTest against a fixture shaped
-                   # like real DITA-OT 4.4 resolved output
+./gradlew test     # the tests below
 ./gradlew jar      # writes ../lib/dita2graph-core.jar
 ```
+
+| Test | What it checks |
+|---|---|
+| `DitaModelExtractorTest` | The normalized model built from fixtures shaped like DITA-OT 4.4's resolved output. |
+| `ExtractTaskTest` | The Ant task in an Ant project, with a stand-in for `dita2graph-core`: the arguments it gets, the build.xml defaults, diagnostics logged at their level, exit codes, `args.dita2graph.depth` checks. |
+| `CoreBinaryTest` | Which `dita2graph-core` runs on each platform, and the execute bit `dita install` drops. |
+| `ModelJsonContractTest` | The model JSON against `core/dita2graph-core/tests/data/java-model.json`, which the core's `tests/java_model.rs` and `tests/cli.rs` read back. |
+| `CoreDiagnosticTest` | The diagnostic lines in `core/dita2graph-core/tests/data/diagnostics.jsonl`, which the core's `tests/diagnostics.rs` writes. |
+| `PluginDescriptorTest` | `plugin.xml`, `build.xml` and `cfg/` stay ASCII, the plugin version is Cargo's, and `build.xml` runs this jar's task. |
+
+The two files under `core/dita2graph-core/tests/data/` are the contract
+between the jar and the Rust core: a change on one side fails a test on
+the other. After an intended change, regenerate them with
+`UPDATE_GOLDEN=1 ./gradlew test` here or `UPDATE_GOLDEN=1 cargo test -p
+dita2graph-core --test diagnostics` there, then run both suites.
 
 Once installed in DITA-OT, the jar runs the `dita2graph-core` Rust
 binary (`../../../core/dita2graph-core`): the one `DITA2GRAPH_CORE_BIN`

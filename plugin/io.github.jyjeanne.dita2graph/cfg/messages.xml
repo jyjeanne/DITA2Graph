@@ -2,7 +2,7 @@
 <!--
   Message catalog for io.github.jyjeanne.dita2graph, registered via plugin.xml's
   `dita.xsl.messages` feature so these show up in a normal `dita` build
-  log alongside DITA-OT's own messages (docs/plugin-specification.md §2.5).
+  log alongside DITA-OT's own messages (docs/plugin-specification.md section 2.5).
 -->
 <messages>
   <message id="DITA2GRAPH001E" type="error">
@@ -23,7 +23,7 @@
   </message>
   <message id="DITA2GRAPH040W" type="warn">
     <reason>Topic has no resolvable type mapping (unknown/custom topic type).</reason>
-    <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (§4.1).</response>
+    <response>Emitted as a generic OKF concept. Review whether the topic type should be added to the mapping table (section 4.1).</response>
   </message>
   <message id="DITA2GRAPH071I" type="info">
     <reason>A copy DITA-OT writes under another name (copy-to, or branch filtering with a ditavalref resource prefix or suffix) carries the same id as its source topic.</reason>

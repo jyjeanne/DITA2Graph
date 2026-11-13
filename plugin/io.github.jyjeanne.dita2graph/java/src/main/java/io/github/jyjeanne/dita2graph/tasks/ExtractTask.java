@@ -12,6 +12,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * The {@code dita2graph:extract} Ant task (docs/plugin-specification.md
@@ -44,6 +45,8 @@ public class ExtractTask extends Task {
     private String rdf;
     private String rdfBase;
     private String pluginDir;
+    /** The environment {@code DITA2GRAPH_CORE_BIN} is read from; a test sets its own. */
+    Function<String, String> env = System::getenv;
 
     public void setTempDir(String tempDir) {
         this.tempDir = tempDir;
@@ -152,16 +155,25 @@ public class ExtractTask extends Task {
 
     private void writeModel(File file, List<Object> nodes) throws IOException {
         try (FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8)) {
-            writer.write('[');
-            for (int i = 0; i < nodes.size(); i++) {
-                if (i > 0) {
-                    writer.write(',');
-                }
-                Object node = nodes.get(i);
-                writer.write(node instanceof MapNode ? ((MapNode) node).toJson() : ((TopicNode) node).toJson());
-            }
-            writer.write(']');
+            writer.write(modelJson(nodes));
         }
+    }
+
+    /**
+     * The normalized model as the JSON array {@code dita2graph-core build
+     * --input} reads: {@code core/dita2graph-core/tests/java_model.rs}
+     * checks the Rust model reads every field of it back.
+     */
+    static String modelJson(List<Object> nodes) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < nodes.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            Object node = nodes.get(i);
+            sb.append(node instanceof MapNode ? ((MapNode) node).toJson() : ((TopicNode) node).toJson());
+        }
+        return sb.append(']').toString();
     }
 
     /**
@@ -171,7 +183,7 @@ public class ExtractTask extends Task {
      */
     private String resolveCoreBinary() throws BuildException {
         try {
-            String coreBin = CoreBinary.resolve(System.getenv("DITA2GRAPH_CORE_BIN"),
+            String coreBin = CoreBinary.resolve(env.apply("DITA2GRAPH_CORE_BIN"),
                     pluginDir == null || pluginDir.isEmpty() ? null : new File(pluginDir),
                     System.getProperty("os.name"), System.getProperty("os.arch"));
             log("dita2graph:extract: running " + coreBin, Project.MSG_VERBOSE);
