@@ -102,10 +102,9 @@ the files published on GitHub Pages
   and this page to a browser;
 - `ns.ttl` and `shapes.ttl` always give Turtle.
 
-The browser redirects to the HTML documentation come with
-[perma-id/w3id.org#7161](https://github.com/perma-id/w3id.org/pull/7161):
-until it is merged, a browser asking for `ns` or a version IRI gets this
-page. Each release of the vocabulary is a `d2g-X.Y.Z` tag on the commit
+The browser redirects to the HTML documentation came with
+[perma-id/w3id.org#7161](https://github.com/perma-id/w3id.org/pull/7161).
+Each release of the vocabulary is a `d2g-X.Y.Z` tag on the commit
 that sets its `owl:versionIRI`; pushing it publishes the release, its
 HTML documentation included, and a published version never changes.
 
