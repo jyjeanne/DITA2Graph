@@ -2,7 +2,7 @@
 
 The live integration harness for `docs/plugin-specification.md` §8.2's
 Kotlin DSL example, pointed at this repo's own `../sample-docs/` and
-`../plugin/org.dita.dita2graph`. Not a template for downstream consumers
+`../plugin/io.github.jyjeanne.dita2graph`. Not a template for downstream consumers
 (who would put `build.gradle.kts` in their own DITA content repo) — this
 is what closed Phase 0 finding 4 (`../docs/dev/phase-0-findings.md`):
 does a live DITA-OT run actually resolve `sample-docs/`, dispatch to our
@@ -11,11 +11,9 @@ transtype, and produce a real bundle the way the spec assumes?
 ## Requirements
 
 Gradle 9.0+ (wrapper pinned to 9.6.1, run via `./gradlew`), a JDK on
-`PATH` or `JAVA_HOME` (the spec targets Java 25, §1.1; this harness has
-been run against JDK 21 in a sandbox without JDK 25 available — DITA-OT
-4.4 itself only requires 17+, so this doesn't affect the DITA-OT-side
-findings, only means JDK 25-specific behavior is unverified), and
-`lib/dita2graph-core.jar` built (`../plugin/org.dita.dita2graph/java`,
+`PATH` or `JAVA_HOME` (Java 17 or later, the Java DITA-OT 4.4 runs on,
+§1.1), and
+`lib/dita2graph-core.jar` built (`../plugin/io.github.jyjeanne.dita2graph/java`,
 `./gradlew jar`) plus the `dita2graph-core` Rust binary on `PATH` or
 pointed at via `DITA2GRAPH_CORE_BIN` for `buildKnowledgeGraph` to
 actually produce output.
@@ -102,7 +100,7 @@ DITA-OT's build, confirmed directly rather than assumed).
 
 ## Local-install detail: plugins need a ZIP
 
-`installDita2Graph` zips `../plugin/org.dita.dita2graph` via the
+`installDita2Graph` zips `../plugin/io.github.jyjeanne.dita2graph` via the
 `zipDita2GraphPlugin` task before installing it —
 `DitaOtInstallPluginTask`'s local-install path needs a path to a `.zip`,
 not a plugin source directory (confirmed the hard way: pointing it at

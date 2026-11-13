@@ -5,7 +5,7 @@ import com.github.jyjeanne.DitaLinkCheckTask
 import com.github.jyjeanne.DitaOtTask
 
 // Real, runnable version of docs/plugin-specification.md §8.2's example,
-// pointed at this repo's own sample-docs/ and plugin/org.dita.dita2graph
+// pointed at this repo's own sample-docs/ and plugin/io.github.jyjeanne.dita2graph
 // -- the integration harness for Phase 0 finding 4
 // (docs/dev/phase-0-findings.md): does a live DITA-OT run actually
 // resolve sample-docs/ the way §2.2/§3.2 assume?
@@ -25,7 +25,7 @@ val sampleDocsInvalid = layout.projectDirectory.dir("../sample-docs-invalid")
 val sampleDocsNested = layout.projectDirectory.dir("../sample-docs-nested")
 val sampleDocsMapref = layout.projectDirectory.dir("../sample-docs-mapref")
 val sampleDocsRelations = layout.projectDirectory.dir("../sample-docs-relations")
-val pluginDir = layout.projectDirectory.dir("../plugin/org.dita.dita2graph")
+val pluginDir = layout.projectDirectory.dir("../plugin/io.github.jyjeanne.dita2graph")
 
 val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
     version(ditaOtVersion)
@@ -33,16 +33,49 @@ val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
 
 // DitaOtInstallPluginTask's "local" install path needs a ZIP file, not a
 // bare directory -- same as `dita install` itself (confirmed directly:
-// "Failed to expand .../org.dita.dita2graph to .../plugin", the same
+// "Failed to expand .../io.github.jyjeanne.dita2graph to .../plugin", the same
 // error java.util.zip gives trying to read a directory as a zip stream).
 // dita-ot-gradle's own "absolute path" wording for local installs means
 // a path to a .zip, not a plugin directory (docs/dev/phase-0-findings.md
 // finding 7).
+//
+// The ZIP holds what DITA-OT runs, as the release ships it to the plugin
+// registry: plugin.xml, build.xml, cfg/, bin/ and lib/dita2graph-core.jar,
+// with the licences, but not java/ (the jar's sources and Gradle build).
+// -PcoreBinaries=<dir> adds the dita2graph-core build of each platform,
+// <dir>/<os>-<arch>/, under bin/ (lib/README.md): release.yml passes
+// them; without it, the plugin runs DITA2GRAPH_CORE_BIN or PATH's.
+// Timestamps and order are fixed so the same files give the same ZIP,
+// and the same registry checksum.
 val zipPlugin = tasks.register<Zip>("zipDita2GraphPlugin") {
-    from(pluginDir)
-    archiveFileName.set("org.dita.dita2graph.zip")
+    archiveFileName.set("io.github.jyjeanne.dita2graph.zip")
     destinationDirectory.set(layout.buildDirectory.dir("plugin-zip"))
-    into("org.dita.dita2graph")
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    val jar = pluginDir.file("lib/dita2graph-core.jar").asFile
+    doFirst {
+        check(jar.isFile) { "$jar is missing: run ./gradlew jar in ${pluginDir.dir("java").asFile}" }
+    }
+    into("io.github.jyjeanne.dita2graph") {
+        from(pluginDir) {
+            exclude("java/**", "lib/README.md", "lib/.gitignore")
+        }
+        from(layout.projectDirectory.dir("..")) {
+            include("LICENSE", "LICENSE-APACHE", "LICENSE-MIT", "NOTICE")
+        }
+        providers.gradleProperty("coreBinaries").orNull?.let { binaries ->
+            from(binaries) {
+                into("bin")
+            }
+        }
+        // Executable for whoever unzips it by hand; dita install drops
+        // the bit anyway, and ExtractTask sets it back.
+        eachFile {
+            if (path.startsWith("io.github.jyjeanne.dita2graph/bin/")) {
+                permissions { unix("rwxr-xr-x") }
+            }
+        }
+    }
 }
 
 val installDita2Graph = tasks.register<DitaOtInstallPluginTask>("installDita2Graph") {

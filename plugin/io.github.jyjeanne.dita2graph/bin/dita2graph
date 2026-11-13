@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Standalone CLI entry point (docs/plugin-specification.md §2.1): runs
+# extraction outside a full DITA-OT publish, e.g. in CI or for
+# incremental graph updates. Delegates to the `dita2graph-core` Rust
+# binary (§3.4, core/dita2graph-core): the one DITA2GRAPH_CORE_BIN names,
+# else the build the release ZIP ships next to this script for the
+# platform (<os>-<arch>/), else a build of this repository, made with:
+#   cargo build --release -p dita2graph-core
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+case "$(uname -s)" in
+  Linux) OS=linux ;;
+  Darwin) OS=macos ;;
+  *) OS=unknown ;;
+esac
+case "$(uname -m)" in
+  x86_64 | amd64) ARCH=x86_64 ;;
+  aarch64 | arm64) ARCH=aarch64 ;;
+  *) ARCH=unknown ;;
+esac
+
+CORE_BIN="${DITA2GRAPH_CORE_BIN:-}"
+if [ -z "${CORE_BIN}" ]; then
+  for candidate in "${SCRIPT_DIR}/${OS}-${ARCH}/dita2graph-core" \
+                   "${REPO_ROOT}/target/release/dita2graph-core" \
+                   "${REPO_ROOT}/target/debug/dita2graph-core"; do
+    if [ -f "${candidate}" ]; then
+      CORE_BIN="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [ -z "${CORE_BIN}" ]; then
+  echo "dita2graph: no dita2graph-core build for ${OS}-${ARCH}." >&2
+  echo "Set DITA2GRAPH_CORE_BIN, or build it: cargo build --release -p dita2graph-core" >&2
+  exit 2
+fi
+
+# dita install drops the execute bit of the shipped build.
+[ -x "${CORE_BIN}" ] || chmod +x "${CORE_BIN}"
+exec "${CORE_BIN}" "$@"

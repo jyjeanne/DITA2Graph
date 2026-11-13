@@ -13,7 +13,7 @@ This product includes software adapted from third-party projects:
   shape).
 
 - The Gradle build patterns in `gradle-build/` and
-  `plugin/org.dita.dita2graph/java/`'s use of
+  `plugin/io.github.jyjeanne.dita2graph/java/`'s use of
   `io.github.jyjeanne.dita-ot-gradle` (https://github.com/jyjeanne/dita-ot-gradle,
   Apache License 2.0) are a dependency, not vendored/copied code, and
   are used under that project's own license terms via its published

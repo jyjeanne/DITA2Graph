@@ -1,0 +1,248 @@
+name: Package
+
+# Builds the plugin ZIP the DITA-OT plugin registry points at: the
+# plugin, plus a dita2graph-core build for each platform under
+# bin/<os>-<arch>/ (plugin/io.github.jyjeanne.dita2graph/lib/README.md),
+# so `dita install` is all a user needs. Then installs that ZIP into a
+# stock DITA-OT on Java 17, the Java DITA-OT 4.x runs on, on Linux
+# (x86_64 and aarch64), macOS and Windows, and runs the dita2graph
+# transtype with no other dita2graph-core on the machine.
+#
+# release.yml calls it on a release tag and publishes what it built; on
+# main it checks that a change to the plugin or the core still packages.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to package"
+        type: string
+        required: true
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "plugin/**"
+      - "core/**"
+      - "mcp/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "gradle-build/**"
+      - ".github/workflows/package.yml"
+
+env:
+  DITA_OT_VERSION: "4.4.1"
+
+jobs:
+  binaries:
+    name: Binaries (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds link against glibc 2.28 (RHEL 8, Debian 10,
+          # Ubuntu 18.10 and later), not the runner's: cargo-zigbuild
+          # links against the glibc version named after the target.
+          - platform: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            glibc: "2.28"
+          - platform: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            glibc: "2.28"
+          - platform: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - platform: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - platform: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        if: matrix.glibc
+        with:
+          python-version: "3.12"
+
+      - name: Install cargo-zigbuild
+        if: matrix.glibc
+        run: python -m pip install cargo-zigbuild==0.19.8 ziglang==0.13.0
+
+      # The dist profile (Cargo.toml) strips the binaries and links them
+      # with LTO: the ZIP carries five dita2graph-core builds.
+      - name: Build dita2graph-core and dita2graph-mcp
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.glibc }}" ]; then
+            cargo zigbuild --profile dist --locked --target "${{ matrix.target }}.${{ matrix.glibc }}" \
+              -p dita2graph-core -p dita2graph-mcp
+          else
+            cargo build --profile dist --locked --target "${{ matrix.target }}" \
+              -p dita2graph-core -p dita2graph-mcp
+          fi
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          mkdir -p "binaries/${{ matrix.platform }}"
+          for bin in dita2graph-core dita2graph-mcp; do
+            cp "target/${{ matrix.target }}/dist/$bin$ext" "binaries/${{ matrix.platform }}/"
+          done
+          ls -l "binaries/${{ matrix.platform }}"
+
+      # Only where the runner can run the build: the aarch64 Linux one
+      # runs in the install job below, the x86_64 macOS one nowhere.
+      - name: Run the build
+        if: matrix.platform == 'linux-x86_64' || matrix.platform == 'macos-aarch64' || matrix.platform == 'windows-x86_64'
+        shell: bash
+        run: binaries/${{ matrix.platform }}/dita2graph-core --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}
+          path: binaries/
+          if-no-files-found: error
+
+  plugin:
+    name: Plugin ZIP
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: binaries
+          merge-multiple: true
+
+      - name: Keep the dita2graph-core builds
+        run: |
+          set -euo pipefail
+          for dir in binaries/*/; do
+            platform=$(basename "$dir")
+            mkdir -p "core-binaries/$platform"
+            cp "$dir"dita2graph-core* "core-binaries/$platform/"
+          done
+          find core-binaries -type f | sort
+
+      - name: Build lib/dita2graph-core.jar
+        working-directory: plugin/io.github.jyjeanne.dita2graph/java
+        run: ./gradlew test jar --no-daemon
+
+      - name: Build the plugin ZIP
+        working-directory: gradle-build
+        run: ./gradlew zipDita2GraphPlugin -PcoreBinaries="$GITHUB_WORKSPACE/core-binaries" --no-daemon
+
+      - name: Check what the ZIP ships
+        run: |
+          set -euo pipefail
+          ZIP=gradle-build/build/plugin-zip/io.github.jyjeanne.dita2graph.zip
+          unzip -Z -l "$ZIP"
+          entries=$(unzip -Z1 "$ZIP")
+          for file in plugin.xml build.xml lib/dita2graph-core.jar LICENSE NOTICE \
+                      bin/linux-x86_64/dita2graph-core bin/linux-aarch64/dita2graph-core \
+                      bin/macos-x86_64/dita2graph-core bin/macos-aarch64/dita2graph-core \
+                      bin/windows-x86_64/dita2graph-core.exe; do
+            grep -qx "io.github.jyjeanne.dita2graph/$file" <<< "$entries" \
+              || { echo "::error::the ZIP has no $file"; exit 1; }
+          done
+          if grep -q '/java/' <<< "$entries"; then
+            echo "::error::the ZIP ships the Java sources"
+            exit 1
+          fi
+          # plugin.xml's version is the release's (tag.yml checks it
+          # against Cargo.toml and the tag).
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          grep -q "<plugin id=\"io.github.jyjeanne.dita2graph\" version=\"$cargo_version\">" \
+            plugin/io.github.jyjeanne.dita2graph/plugin.xml \
+            || { echo "::error::plugin.xml's version is not Cargo.toml's $cargo_version"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zip
+          path: gradle-build/build/plugin-zip/io.github.jyjeanne.dita2graph.zip
+          if-no-files-found: error
+
+  install:
+    name: dita install (${{ matrix.os }})
+    needs: plugin
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-zip
+          path: plugin-zip
+
+      - name: Download DITA-OT ${{ env.DITA_OT_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o dita-ot.zip \
+            "https://github.com/dita-ot/dita-ot/releases/download/$DITA_OT_VERSION/dita-ot-$DITA_OT_VERSION.zip"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z x -bd dita-ot.zip > /dev/null
+          else
+            unzip -q dita-ot.zip
+          fi
+
+      - name: Install the plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            "dita-ot-$DITA_OT_VERSION/bin/dita.bat" install "$(pwd -W)/plugin-zip/io.github.jyjeanne.dita2graph.zip"
+          else
+            "dita-ot-$DITA_OT_VERSION/bin/dita" install "$PWD/plugin-zip/io.github.jyjeanne.dita2graph.zip"
+          fi
+
+      # No DITA2GRAPH_CORE_BIN and no dita2graph-core on PATH: the
+      # transtype has to run the build the plugin ships, which dita
+      # install left without its execute bit on Linux and macOS.
+      - name: Run the dita2graph transtype
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset DITA2GRAPH_CORE_BIN
+          if command -v dita2graph-core; then
+            echo "::error::dita2graph-core is on PATH"
+            exit 1
+          fi
+          dita="dita-ot-$DITA_OT_VERSION/bin/dita"
+          if [ "$RUNNER_OS" = Windows ]; then dita="$dita.bat"; fi
+          "$dita" --input=sample-docs/user-guide.ditamap --format=dita2graph --output=out \
+            --args.dita2graph.rdf=true --args.dita2graph.rdf.base=https://example.org/docs/
+          test -f out/okf/topics/installing-product.md
+          test -f out/graph.json
+          test -f out/rag/chunks.jsonl
+          grep -q '<https://example.org/docs/map/user-guide>' out/rdf/graph.ttl

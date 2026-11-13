@@ -42,7 +42,7 @@ fallback decision, not a silent deviation).
 
 ### Phase 1 — DITA-OT plugin skeleton + normalized model
 
-`org.dita.dita2graph` installs via `dita --install`, dispatches, and
+`io.github.jyjeanne.dita2graph` installs via `dita --install`, dispatches, and
 produces the normalized DITA model end to end against a live DITA-OT
 4.4 (findings 5–7 caught and fixed seven real integration bugs along
 the way — illegal `--` in XML comments, nonexistent extension points,

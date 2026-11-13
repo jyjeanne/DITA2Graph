@@ -29,8 +29,8 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | `docs/plugin-specification.md` | Design spec, complete |
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). Every tool marks a topic the map uses only as a resource with `[resource-only: not a published page]`. `--sparql` adds `query_graph`, read-only SPARQL over the RDF export (opt-in, see the RDF row). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
-| `plugin/org.dita.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16). It also records the declarations writers search for (finding 20): the map's key definitions, with the submap that writes each; the keys each topic uses, resolved in the key scopes of the topicrefs naming it (`@conkeyref` read from the source, since DITA-OT resolves it away); external `http(s)` links; `coderef` sample files, kept only when DITAVAL left them in; `copy-to` copies; and each topic's type from `@class` and its resource-only role. A composite `.dita` file's nested topics add their text to the file's topic |
-| `plugin/org.dita.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all seven, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
+| `plugin/io.github.jyjeanne.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16). It also records the declarations writers search for (finding 20): the map's key definitions, with the submap that writes each; the keys each topic uses, resolved in the key scopes of the topicrefs naming it (`@conkeyref` read from the source, since DITA-OT resolves it away); external `http(s)` links; `coderef` sample files, kept only when DITAVAL left them in; `copy-to` copies; and each topic's type from `@class` and its resource-only role. A composite `.dita` file's nested topics add their text to the file's topic |
+| `plugin/io.github.jyjeanne.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all seven, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
 | `sample-docs-nested/` | A fixture exercising nested `topicref`/`topichead`/`topicgroup` and the `related-links` exclusion (finding 11) |
@@ -293,13 +293,12 @@ diff tool shows which topics, links and keys appeared or went away.
 
 ## Toolchain requirements
 
-Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 25
-(latest LTS)**, **Rust latest stable** (currently 1.97.1, pinned in
-`rust-toolchain.toml` — `rustup` picks it up automatically). `.java-version`
-at the repo root pins the Java requirement for tooling that reads it.
-`plugin/org.dita.dita2graph/java` currently compiles at `--release 21`
-(no JDK 25 available where this was built/tested — see that
-subproject's README).
+Per `docs/plugin-specification.md` §1.1: **Gradle 9.0 minimum**, **Java 17
+or later**, **Rust latest stable** (currently 1.97.1, pinned in
+`rust-toolchain.toml` — `rustup` picks it up automatically).
+`plugin/io.github.jyjeanne.dita2graph/java` compiles at `--release 17`, the
+Java DITA-OT 4.x runs on, whatever JDK builds it; `.java-version` at the
+repo root says 17 for tooling that reads it.
 
 ## Quickstart (what works today)
 
@@ -313,7 +312,7 @@ set of example questions to ask over MCP — see
 cargo build --release --workspace
 
 # Build the DITA-OT plugin's Java side
-(cd plugin/org.dita.dita2graph/java && ./gradlew jar)
+(cd plugin/io.github.jyjeanne.dita2graph/java && ./gradlew jar)
 
 # Install the plugin and run it against the sample project, via the real
 # Gradle/Kotlin DSL harness. First run downloads DITA-OT 4.4 (~50MB
@@ -456,9 +455,26 @@ Requires a `node` binary on `PATH` (Node.js itself is not vendored).
 The `gradle-build/` harness above is a demo pointed at this repo's own
 `sample-docs/`, not a template to copy into your own project. To run
 against your own DITA content instead, install the plugin into your own
-DITA-OT and invoke it directly — see `docs/plugin-specification.md` §15
-(Appendix A: Quickstart) for the full sequence (`dita --install`, then
-`dita --format dita2graph`).
+DITA-OT (4.4 or later, on Java 17 or later) and invoke it directly:
+
+```bash
+# From the DITA-OT plugin registry, once it lists the plugin
+dita install io.github.jyjeanne.dita2graph
+# Or from the ZIP of a GitHub release
+dita install https://github.com/jyjeanne/DITA2Graph/releases/download/v0.2.0/io.github.jyjeanne.dita2graph-0.2.0.zip
+
+dita --input=path/to/root.ditamap --format=dita2graph --output=out
+```
+
+The plugin ZIP ships `dita2graph-core` for Linux (x86_64 and aarch64,
+glibc 2.28 or later), macOS (Intel and Apple silicon) and Windows
+(x86_64). On another platform, build it (`cargo build --release -p
+dita2graph-core`) and point `DITA2GRAPH_CORE_BIN` at it. The MCP server,
+`dita2graph-mcp`, is a separate download from the same release.
+Before 0.2.0 the plugin id was `org.dita.dita2graph`: uninstall it
+first (`dita uninstall org.dita.dita2graph`), since both declare the
+`dita2graph` transtype. `docs/tutorial.md` Part 2 walks through the rest, and
+`docs/dev/releasing.md` covers how a release reaches the registry.
 
 ## Using DITA2Graph with other tools
 
@@ -624,19 +640,19 @@ another engine implementing SHACL-SPARQL, checks `graph.ttl` against
 ## Repository layout
 
 ```
-Roadmap.md                      # phase-by-phase status and what's next
-docs/plugin-specification.md    # design spec, source of truth
-docs/architecture.md            # component/class/activity/sequence diagrams
-docs/dev/phase-0-findings.md    # spike results and decisions made from them
-docs/semantic-model.md          # RDF export: d2g vocabulary, IRIs, SHACL shapes
-core/dita2graph-core/           # Rust: normalized model, OKF writer, RDF export, CLI (§3)
-core/dita2graph-core/ontology/  # d2g ontology (OWL 2 RL) and SHACL shapes, embedded in the binary
-mcp/dita2graph-mcp/             # Rust: MCP server (§5)
-plugin/org.dita.dita2graph/     # DITA-OT plugin: plugin.xml/build.xml/cfg (§2)
-plugin/org.dita.dita2graph/java # Java: ExtractTask, builds lib/dita2graph-core.jar
-gradle-build/                   # Live Gradle/Kotlin DSL integration harness (§8)
-sample-docs/                    # fixture DITA project used by tests/demos
-sample-docs-nested/             # fixture: nested topicref/topichead/topicgroup (finding 11)
-sample-docs-mapref/             # fixture: mapref/anchorref/navref map composition (findings 14, 16)
-sample-docs-relations/          # fixture: applies-to/generated-from relation inference (finding 15)
+Roadmap.md                                # phase-by-phase status and what's next
+docs/plugin-specification.md              # design spec, source of truth
+docs/architecture.md                      # component/class/activity/sequence diagrams
+docs/dev/phase-0-findings.md              # spike results and decisions made from them
+docs/semantic-model.md                    # RDF export: d2g vocabulary, IRIs, SHACL shapes
+core/dita2graph-core/                     # Rust: normalized model, OKF writer, RDF export, CLI (§3)
+core/dita2graph-core/ontology/            # d2g ontology (OWL 2 RL) and SHACL shapes, embedded in the binary
+mcp/dita2graph-mcp/                       # Rust: MCP server (§5)
+plugin/io.github.jyjeanne.dita2graph/     # DITA-OT plugin: plugin.xml/build.xml/cfg (§2)
+plugin/io.github.jyjeanne.dita2graph/java # Java: ExtractTask, builds lib/dita2graph-core.jar
+gradle-build/                             # Live Gradle/Kotlin DSL integration harness (§8)
+sample-docs/                              # fixture DITA project used by tests/demos
+sample-docs-nested/                       # fixture: nested topicref/topichead/topicgroup (finding 11)
+sample-docs-mapref/                       # fixture: mapref/anchorref/navref map composition (findings 14, 16)
+sample-docs-relations/                    # fixture: applies-to/generated-from relation inference (finding 15)
 ```

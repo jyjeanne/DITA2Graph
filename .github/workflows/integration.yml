@@ -22,13 +22,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21" # matches plugin/org.dita.dita2graph/java/build.gradle.kts's --release 21
+          java-version: "21" # builds the --release 17 jar (plugin/io.github.jyjeanne.dita2graph/java/build.gradle.kts)
 
       - name: Build dita2graph-core and dita2graph-mcp (release)
         run: cargo build --release -p dita2graph-core -p dita2graph-mcp --locked
 
       - name: Build lib/dita2graph-core.jar
-        working-directory: plugin/org.dita.dita2graph/java
+        working-directory: plugin/io.github.jyjeanne.dita2graph/java
         run: ./gradlew jar --no-daemon
 
       - name: Run the full pipeline against sample-docs/

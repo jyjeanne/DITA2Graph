@@ -219,7 +219,7 @@ Status of the Phase 0 exit criteria from `docs/plugin-specification.md`
    file — "absolute path" in its own docs means a path *to a `.zip`*,
    not a plugin directory — confirmed the same way the very first XML-
    comment bug was: `dita install <directory>` fails with "Failed to
-   expand .../org.dita.dita2graph to .../plugin", the same error
+   expand .../io.github.jyjeanne.dita2graph to .../plugin", the same error
    `java.util.zip` gives trying to read a directory as a zip stream.
    Fixed by adding a `Zip` task (`zipDita2GraphPlugin`) to
    `gradle-build/build.gradle.kts` ahead of `installDita2Graph`, and
@@ -263,10 +263,10 @@ Status of the Phase 0 exit criteria from `docs/plugin-specification.md`
   `keyref`; and `installing-product-prereqs` itself carries no
   `audience`/`product`, since the source `.dita` file never declared
   any).
-- `plugin/org.dita.dita2graph`: `plugin.xml`/`build.xml`/`cfg/*.xml`/
+- `plugin/io.github.jyjeanne.dita2graph`: `plugin.xml`/`build.xml`/`cfg/*.xml`/
   `bin/dita2graph`/**`lib/dita2graph-core.jar`** per §2.1 — the plugin is
   now **complete and verified end-to-end**, not just installable.
-  `plugin/org.dita.dita2graph/java/` is a small standalone Gradle project
+  `plugin/io.github.jyjeanne.dita2graph/java/` is a small standalone Gradle project
   building `ExtractTask` (the `dita2graph:extract` Ant task) and its
   helpers: parses DITA-OT's resolved `.job.xml` plus temp-directory
   topics/maps into the normalized model (§3.2), then shells out to
@@ -300,14 +300,14 @@ now reflects findings 6/7 and the completed `ExtractTask`.
 ## Next steps (top of the Phase 1 backlog)
 
 1. ~~Download and install DITA-OT 4.4; run `dita --install` against
-   `plugin/org.dita.dita2graph`; confirm it installs without error.~~
+   `plugin/io.github.jyjeanne.dita2graph`; confirm it installs without error.~~
    Done (findings 5–7) — installs and runs cleanly with the real jar.
 2. ~~Run `dita --input sample-docs/user-guide.ditamap --format dita2graph`
    ... and compare DITA-OT's resolved intermediate output against the
    hand-authored `normalized-model.sample.json`, to close finding 4.~~
    Done (findings 4–7) — the real extractor's output was inspected
    directly and passes `okf_validator`.
-3. ~~Write the actual Java Ant task (`org.dita.dita2graph.tasks
+3. ~~Write the actual Java Ant task (`io.github.jyjeanne.dita2graph.tasks
    .ExtractTask`) and build a real `lib/dita2graph-core.jar` ...~~ Done
    (findings 6–7): `dita --format dita2graph` and
    `./gradlew buildKnowledgeGraph` both produce a real, validated OKF
@@ -345,7 +345,7 @@ What's left for a complete MVP (§11), now that extraction itself works:
   finding 10). All five `args.dita2graph.*` parameters are now
   functionally wired end to end.
 - ~~CI (§8.3, §12 Phase 4) doesn't yet run any of `gradle-build/`'s tasks
-  or `plugin/org.dita.dita2graph/java`'s tests — only the Rust workspace
+  or `plugin/io.github.jyjeanne.dita2graph/java`'s tests — only the Rust workspace
   is covered by `.github/workflows/rust.yml` so far.~~ Closed by finding
   8, below. Still missing: plugin-integration tests via DITA-OT's own
   test framework, and a broader regression corpus beyond
@@ -448,7 +448,7 @@ What's left for a complete MVP (§11), now that extraction itself works:
     is a `<param name="args.*" desc="..." type="...">` child of
     `<transtype>`, with `<val>`/`<val default="true">` children for
     `type="enum"`. Added the matching five `<param>` declarations to
-    `org.dita.dita2graph`'s `<transtype>`. Hit the recurring `--`
+    `io.github.jyjeanne.dita2graph`'s `<transtype>`. Hit the recurring `--`
     (em dash, not a literal double-hyphen CLI flag this time) inside an
     XML comment bug for a third time writing the explanatory comment —
     same fix.

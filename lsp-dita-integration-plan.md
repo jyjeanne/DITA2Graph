@@ -86,7 +86,7 @@ of new code.
 
 ### 2.1 DITA2Graph (this repo)
 
-- A **DITA-OT plugin** (`plugin/org.dita.dita2graph`) registers a
+- A **DITA-OT plugin** (`plugin/io.github.jyjeanne.dita2graph`) registers a
   `dita2graph` transtype. `dita --format dita2graph` runs DITA-OT's
   normal preprocessing (key/conref/keyref resolution, DITAVAL filtering,
   map flattening) and then dispatches to a Java `ExtractTask`.

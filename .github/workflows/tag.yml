@@ -83,6 +83,20 @@ jobs:
             exit 1
           fi
 
+      # The plugin carries the same version (plugin.xml), and the DITA-OT
+      # registry entry of the release is written from this version's entry
+      # in io.github.jyjeanne.dita2graph.json (release.yml).
+      - name: Confirm plugin.xml and the registry entries match
+        run: |
+          if ! grep -q "<plugin id=\"io.github.jyjeanne.dita2graph\" version=\"$VERSION\">" plugin/io.github.jyjeanne.dita2graph/plugin.xml; then
+            echo "::error::plugin/io.github.jyjeanne.dita2graph/plugin.xml's version isn't $VERSION. Bump it, merge that to main, then re-run this workflow."
+            exit 1
+          fi
+          if ! jq -e --arg vers "$VERSION" 'any(.[]; .vers == $vers)' io.github.jyjeanne.dita2graph.json > /dev/null; then
+            echo "::error::io.github.jyjeanne.dita2graph.json has no entry for $VERSION. Add it, merge that to main, then re-run this workflow."
+            exit 1
+          fi
+
       - name: Reject an already-existing tag
         run: |
           if git rev-parse "$TAG" >/dev/null 2>&1; then

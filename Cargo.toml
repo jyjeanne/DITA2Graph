@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
@@ -36,3 +36,12 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # No RocksDB and no HTTP client (a SERVICE clause cannot reach out).
 oxigraph = { version = "0.5", default-features = false }
 regex = "1"
+
+# The binaries the release ships (.github/workflows/release.yml): the
+# plugin ZIP carries one dita2graph-core per platform, so size matters
+# more than build time there. Day-to-day builds keep `release`.
+[profile.dist]
+inherits = "release"
+strip = true
+lto = true
+codegen-units = 1

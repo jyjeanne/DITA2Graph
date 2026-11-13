@@ -55,7 +55,7 @@ key resolution, and OKF output are reproducible across environments:
 | OKF standard | **v0.2** | [OKF v0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) — see §4.1 for how DITA2Graph maps onto it. |
 | MCP | 2024-11-05 protocol revision | JSON-RPC 2.0 over stdio (HTTP transport planned, §6.3/§13). |
 | Gradle | **9.0 minimum** (currently building against 9.6.x) | Required, not just recommended — `dita-ot-gradle` itself only reaches "full support" at 9.0+ (§8); older Gradle isn't a supported target. |
-| Java (toolkit + DITA2Graph's own Java code) | **25 (latest LTS)** | DITA-OT 4.4 itself only requires Java 17+; 25 is a floor DITA2Graph sets for its own code (`lib/dita2graph-core.jar`, once written) and for the Gradle build's toolchain, pinned in the repo-root `.java-version`. |
+| Java (toolkit + DITA2Graph's own Java code) | **17** | `lib/dita2graph-core.jar` runs inside DITA-OT's own JVM, and DITA-OT 4.4 runs on Java 17+ (its `lib/dost.jar` is Java 17 bytecode), so the jar is compiled with `--release 17`: a newer target fails there with an `UnsupportedClassVersionError`. Any JDK 17 or later builds it; the repo-root `.java-version` says 17. |
 | Rust (`dita2graph-core`, `dita2graph-mcp`) | **Latest stable** (currently 1.97.1) | Pinned exactly in the repo-root `rust-toolchain.toml`; edition 2024, `rust-version = "1.97"` in `Cargo.toml`. Rust has no LTS concept — "latest stable" means re-pinning periodically (§6.5's pinning discipline), not a one-time floor. |
 
 Pinning DITA-OT 4.4 and DITA 1.3 means the normalized model in §3.2 can
@@ -66,7 +66,7 @@ assumptions like the rows above them — they get bumped independently
 (e.g. re-pinning Rust every so often) without touching DITA-OT/DITA/OKF/MCP
 compatibility.
 
-**Compatibility policy:** `org.dita.dita2graph`, `dita2graph-core`, and
+**Compatibility policy:** `io.github.jyjeanne.dita2graph`, `dita2graph-core`, and
 `dita2graph-mcp` are versioned independently with semver, but released
 together against a single tested DITA-OT/OKF pair per minor release (e.g.
 `dita2graph 0.x` ↔ DITA-OT 4.4 ↔ OKF v0.2). A DITA-OT major-version bump or
@@ -145,7 +145,7 @@ transformation type.
 ### 2.1 Plugin layout
 
 ```
-org.dita.dita2graph/
+io.github.jyjeanne.dita2graph/
 │
 ├── plugin.xml
 ├── build.xml
@@ -154,16 +154,24 @@ org.dita.dita2graph/
 │   └── messages.xml
 │
 ├── java/                    # Gradle project that builds lib/dita2graph-core.jar
-│   └── src/main/java/org/dita/dita2graph/tasks/...
+│   └── src/main/java/io/github/jyjeanne/dita2graph/tasks/...
 │
 ├── lib/
 │   └── dita2graph-core.jar   # built artifact, gitignored — see java/README.md
 │
 └── bin/
-    └── dita2graph
+    ├── dita2graph
+    └── <os>-<arch>/          # release ZIP only: linux-x86_64, linux-aarch64,
+        └── dita2graph-core   # macos-x86_64, macos-aarch64, windows-x86_64 (.exe)
 ```
 
-- **plugin.xml** — declares the plugin id (`org.dita.dita2graph`), a
+The release ZIP (`.github/workflows/package.yml`) leaves `java/` out and
+adds a `dita2graph-core` build per platform under `bin/`, which the
+`dita2graph:extract` task runs unless `DITA2GRAPH_CORE_BIN` names
+another (`lib/README.md`). The plugin id follows DITA-OT's reverse
+domain naming; `org.dita.*` belongs to DITA-OT's own plugins.
+
+- **plugin.xml** — declares the plugin id (`io.github.jyjeanne.dita2graph`), a
   top-level `<transtype name="dita2graph" desc="..."/>` element
   registering the transtype itself, and `<feature>` elements wiring
   `build.xml` into the Ant build (`ant.import`), the classpath
@@ -200,21 +208,22 @@ org.dita.dita2graph/
   raises consistent, documented diagnostics through DITA-OT's own logger
   instead of ad hoc `System.out` output.
 - **java/** — a standalone Gradle project building `lib/dita2graph-core.jar`:
-  `org.dita.dita2graph.tasks.ExtractTask` (the `dita2graph:extract` Ant
+  `io.github.jyjeanne.dita2graph.tasks.ExtractTask` (the `dita2graph:extract` Ant
   task) and its helpers, which parse DITA-OT's resolved job data into
   the normalized model (§3.2) and shell out to the `dita2graph-core`
   Rust binary (§3.4). Covered by a real unit test against a fixture
   shaped like actual DITA-OT 4.4 output; see `java/README.md`.
 - **lib/dita2graph-core.jar** — the thin Java bridge `java/` builds,
-  shelling out to the Rust core engine described in section 3 (found via
-  the `DITA2GRAPH_CORE_BIN` env var or `PATH` — not a repo-relative
-  path, since an installed plugin zip has no `target/` directory of its
-  own; bundling the platform-specific Rust binary for a real release
-  remains Phase 4/5 work). Not committed — a gitignored build artifact,
+  shelling out to the Rust core engine described in section 3: the
+  binary the `DITA2GRAPH_CORE_BIN` env var names, else the build the
+  release ZIP ships for the platform in `bin/<os>-<arch>/`, else the one
+  on `PATH` — never a repo-relative path, since an installed plugin ZIP
+  has no `target/` directory of its own. Compiled for Java 17, the Java
+  DITA-OT 4.x runs on. Not committed — a gitignored build artifact,
   reproducible via `java/`.
 - **bin/dita2graph** — standalone CLI entry point for running extraction
   outside of a full DITA-OT publish (e.g. in CI, or for incremental graph
-  updates).
+  updates). It runs the same `dita2graph-core` as the task.
 
 ### 2.2 Responsibilities
 
@@ -1499,7 +1508,7 @@ DITA-OT/OKF baseline in §1.1.
 |---|---|
 | DITA processing | DITA-OT 4.4 |
 | DITA standard | DITA 1.3 |
-| Plugin (DITA-OT integration) | Java 25 (LTS) / Ant / Gradle 9.0+ |
+| Plugin (DITA-OT integration) | Java 17 bytecode / Ant / Gradle 9.0+ |
 | Build automation | Gradle 9.0 minimum, currently building against 9.6.x, Kotlin DSL (`build.gradle.kts`) preferred over Groovy (via `dita-ot-gradle`, see section 8) |
 | Graph engine | Rust (latest stable, currently 1.97.1, edition 2024) — own OKF bundle writer; reuses `okf-core` (config) and `okf-validator` (validation) from `okf-rs` as-is, not `okf-dita`/`okf-generator` (§3) |
 | Knowledge format | OKF v0.2 |
@@ -1518,7 +1527,7 @@ invoking `dita` directly, DITA2Graph is designed to slot into
 [`jyjeanne/dita-ot-gradle`](https://github.com/jyjeanne/dita-ot-gradle) — a
 Gradle plugin (`io.github.jyjeanne.dita-ot-gradle`) that manages DITA-OT
 itself: downloading it, installing plugins into it (including
-`org.dita.dita2graph`), validating content, and running transformations,
+`io.github.jyjeanne.dita2graph`), validating content, and running transformations,
 all as ordinary Gradle tasks with up-to-date checking and configuration
 cache support.
 
@@ -1534,7 +1543,7 @@ rather than relying on whatever Gradle happens to be on a machine's `PATH`.
   pinned DITA-OT release, so CI machines and developer laptops build against
   an identical toolkit version.
 - **Plugin installation as a build step.** `DitaOtInstallPluginTask` can
-  install `org.dita.dita2graph` from a local path, URL, or registry entry
+  install `io.github.jyjeanne.dita2graph` from a local path, URL, or registry entry
   as part of `./gradlew build`, so the graph-generation plugin doesn't need
   to be pre-installed on every machine.
 - **Validation before graph generation.** `DitaOtValidateTask` and
@@ -1581,7 +1590,7 @@ val downloadDitaOt = tasks.register<DitaOtDownloadTask>("downloadDitaOt") {
 val installDita2Graph = tasks.register<DitaOtInstallPluginTask>("installDita2Graph") {
     dependsOn(downloadDitaOt)
     ditaOtDir(layout.buildDirectory.dir("dita-ot/dita-ot-4.4"))
-    plugins("org.dita.dita2graph")   // local path, URL, or registry id
+    plugins("io.github.jyjeanne.dita2graph")   // local path, URL, or registry id
     force.set(false)
 }
 
@@ -1661,11 +1670,11 @@ script, not the CLI):
 > { }` is used throughout rather than `by tasks.registering(Type::class)`,
 > which Gradle 9.6 deprecates as incompatible with Gradle 10.
 >
-> **Local-development note:** the `plugins("org.dita.dita2graph")` call
+> **Local-development note:** the `plugins("io.github.jyjeanne.dita2graph")` call
 > above assumes installing from the plugin registry (once published) or
 > a pre-built ZIP — that's what `DitaOtInstallPluginTask`'s "local" path
 > actually expects. Pointing it straight at a plugin *source directory*
-> (e.g. this repo's own `plugin/org.dita.dita2graph/` while developing)
+> (e.g. this repo's own `plugin/io.github.jyjeanne.dita2graph/` while developing)
 > fails with "Failed to expand ... to .../plugin", the same error
 > `java.util.zip` gives reading a directory as a zip stream — confirmed
 > the hard way (finding 7). `gradle-build/build.gradle.kts` shows the
@@ -1699,7 +1708,7 @@ tasks.register('downloadDitaOt', com.github.jyjeanne.DitaOtDownloadTask) {
 tasks.register('installDita2Graph', com.github.jyjeanne.DitaOtInstallPluginTask) {
     dependsOn downloadDitaOt
     ditaOtDir = layout.buildDirectory.dir('dita-ot/dita-ot-4.4')
-    plugins = ['org.dita.dita2graph']   // local path, URL, or registry id
+    plugins = ['io.github.jyjeanne.dita2graph']   // local path, URL, or registry id
     force = false
 }
 
@@ -1923,7 +1932,7 @@ afterthought:
 For a first minimum viable product, pinned to DITA-OT 4.4 / DITA 1.3 /
 OKF v0.2:
 
-1. DITA-OT plugin (`org.dita.dita2graph`) registering a new transtype and
+1. DITA-OT plugin (`io.github.jyjeanne.dita2graph`) registering a new transtype and
    extracting the normalized DITA model described in section 3.2.
 2. Extraction of DITA map/topic relationships (`contains`, `references`,
    `requires`, `generated-from`) into the OKF model, reusing/adapting
@@ -2000,7 +2009,7 @@ preserved, exactly matching §3.2's assumptions.
 
 ### Phase 1 — DITA-OT plugin skeleton + normalized model (2–3 weeks)
 
-**Goal:** `org.dita.dita2graph` installs cleanly and runs end-to-end on a
+**Goal:** `io.github.jyjeanne.dita2graph` installs cleanly and runs end-to-end on a
 sample map, producing the normalized DITA model (§3.2) — no OKF or MCP
 yet.
 
@@ -2013,7 +2022,7 @@ steps; the normalized model JSON for the sample map validates against a
 JSON Schema for §3.2 and correctly reflects resolved keys, `conref`, and
 one DITAVAL-filtered topic.
 
-**Status:** done, in substance. `plugin/org.dita.dita2graph/{plugin.xml,
+**Status:** done, in substance. `plugin/io.github.jyjeanne.dita2graph/{plugin.xml,
 build.xml, cfg/dita2graph.xml, cfg/messages.xml, bin/dita2graph,
 lib/dita2graph-core.jar}` and `sample-docs/` (a 3-topic ditamap with
 `keyref`, one cross-reference, and `audience`/`product` profiling) exist,
@@ -2022,8 +2031,8 @@ and the whole pipeline is **verified end-to-end against a live DITA-OT
 --format dita2graph --input sample-docs/user-guide.ditamap` and
 `./gradlew buildKnowledgeGraph` (in `gradle-build/`) both install the
 plugin, run DITA-OT's real preprocessing, execute
-`org.dita.dita2graph.tasks.ExtractTask` (built by
-`plugin/org.dita.dita2graph/java/`), and produce a real,
+`io.github.jyjeanne.dita2graph.tasks.ExtractTask` (built by
+`plugin/io.github.jyjeanne.dita2graph/java/`), and produce a real,
 `okf_validator`-passing OKF bundle. Findings 5–7 caught and fixed seven
 real bugs the spec/harness had gotten wrong along the way: illegal `--`
 in XML comments, two nonexistent extension points, the `dita2` +
@@ -2614,7 +2623,7 @@ the MVP scope (§11) is implemented:
 
 ```bash
 # 1. Install DITA-OT 4.4 and the DITA2Graph plugin (§2)
-dita --install org.dita.dita2graph
+dita install io.github.jyjeanne.dita2graph
 
 # 2. (Optional) Build with Gradle instead of the raw CLI (§8)
 ./gradlew buildKnowledgeGraph

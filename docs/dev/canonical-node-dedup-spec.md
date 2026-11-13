@@ -158,7 +158,7 @@ frontmatter key.
    scans) to make sure the merge didn't narrow generated-from's scope
    down to the body subtree the way body-text extraction is deliberately
    scoped — 10/10 tests pass, `./gradlew clean test` under
-   `plugin/org.dita.dita2graph/java/`.
+   `plugin/io.github.jyjeanne.dita2graph/java/`.
 2. **Fixture, live DITA-OT 4.4**: verified via the existing
    `buildKnowledgeGraphRelations` Gradle task against
    `sample-docs-relations/` — no new fixture directory needed, the

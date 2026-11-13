@@ -13,12 +13,9 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          # 21, not the spec's Java 25 floor (docs/plugin-specification.md
-          # §1.1): matches plugin/org.dita.dita2graph/java/build.gradle.kts's
-          # own --release 21, chosen because JDK 25 wasn't available where
-          # this was first built and tested (see that project's README).
-          # Bump both together once a real JDK 25 is available.
+          # Any JDK 17+ builds the jar: build.gradle.kts compiles it at
+          # --release 17, the Java DITA-OT 4.x runs on (§1.1).
           java-version: "21"
       - name: gradlew test jar
-        working-directory: plugin/org.dita.dita2graph/java
+        working-directory: plugin/io.github.jyjeanne.dita2graph/java
         run: ./gradlew test jar --no-daemon

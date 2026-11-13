@@ -18,8 +18,8 @@ explicitly rather than glossed over.
 - **Rust** (latest stable — `rustup` picks up the pinned version from
   `rust-toolchain.toml` automatically) to build `dita2graph-core` and
   `dita2graph-mcp`.
-- **Java 25** (or 21 — see `plugin/org.dita.dita2graph/java/README.md`)
-  and **Gradle 9.0+** to build the plugin's Java extractor.
+- **Java 17 or later** and **Gradle 9.0+** to build the plugin's Java
+  extractor (see `plugin/io.github.jyjeanne.dita2graph/java/README.md`).
 - [Claude Code](https://claude.ai/code) (or another MCP-capable client)
   if you want to ask questions through an agent rather than raw
   JSON-RPC.
@@ -49,7 +49,7 @@ cd gradle-build
 
 First run downloads DITA-OT 4.4 (~50MB compressed) into
 `gradle-build/build/dita-ot/` and caches it for later runs. This task
-zips `plugin/org.dita.dita2graph`, installs it into that DITA-OT copy,
+zips `plugin/io.github.jyjeanne.dita2graph`, installs it into that DITA-OT copy,
 validates `sample-docs/user-guide.ditamap`, checks its links, then runs
 the `dita2graph` transtype end to end.
 
@@ -141,16 +141,31 @@ the same pipeline against a real project you already have, using
 DITA-OT's plugin mechanism directly (§2, §15 Appendix A of
 `docs/plugin-specification.md`).
 
-### 2.1 Package and install the plugin
+### 2.1 Install the plugin
 
-DITA-OT's local plugin install expects a `.zip`, not a bare directory
-(confirmed directly — installing a directory fails with a
-`java.util.zip` error, see `docs/dev/phase-0-findings.md` finding 7):
+Install a release: from the DITA-OT plugin registry once it lists the
+plugin, or from the ZIP of a GitHub release. Either way, the ZIP ships
+`dita2graph-core` for Linux, macOS and Windows, so nothing else is
+needed:
 
 ```bash
-cd plugin/org.dita.dita2graph
-zip -r /tmp/org.dita.dita2graph.zip . -x '.gitignore'
-dita --install /tmp/org.dita.dita2graph.zip
+dita install io.github.jyjeanne.dita2graph
+# or
+dita install https://github.com/jyjeanne/DITA2Graph/releases/download/v0.2.0/io.github.jyjeanne.dita2graph-0.2.0.zip
+```
+
+To install this checkout instead, package it with the Gradle harness:
+DITA-OT's local plugin install expects a `.zip`, not a bare directory
+(confirmed directly — installing a directory fails with a
+`java.util.zip` error, see `docs/dev/phase-0-findings.md` finding 7).
+That ZIP has no `dita2graph-core` of its own, so point
+`DITA2GRAPH_CORE_BIN` at the one built above:
+
+```bash
+(cd plugin/io.github.jyjeanne.dita2graph/java && ./gradlew jar)
+(cd gradle-build && ./gradlew zipDita2GraphPlugin)
+dita install "$PWD/gradle-build/build/plugin-zip/io.github.jyjeanne.dita2graph.zip"
+export DITA2GRAPH_CORE_BIN="$PWD/target/release/dita2graph-core"
 ```
 
 Confirm it registered:

@@ -32,7 +32,7 @@ practice of documenting real gaps rather than hiding them.
 ## Component diagram — system architecture
 
 How the pieces are deployed and what crosses which boundary: the DITA
-repository feeds DITA-OT, DITA-OT dispatches to the `org.dita.dita2graph`
+repository feeds DITA-OT, DITA-OT dispatches to the `io.github.jyjeanne.dita2graph`
 plugin, the plugin's Java `ExtractTask` shells out to the Rust
 `dita2graph-core` binary, which writes the OKF bundle and RAG index to
 the filesystem, which `dita2graph-mcp` reads back and serves to AI
@@ -49,7 +49,7 @@ flowchart TB
         Preprocess["preprocess2 / build-init<br/>resolves keys, conrefs, topicref hierarchy,<br/>applies DITAVAL filtering"]
     end
 
-    subgraph Plugin["org.dita.dita2graph — DITA-OT Plugin"]
+    subgraph Plugin["io.github.jyjeanne.dita2graph — DITA-OT Plugin"]
         AntXml["plugin.xml / build.xml / cfg<br/>registers transtype dita2graph,<br/>declares args.dita2graph.* params"]
         ExtractTask["ExtractTask (Java)<br/>dita2graph:extract Ant task<br/>lib/dita2graph-core.jar"]
         AntXml -->|dispatches| ExtractTask
@@ -81,7 +81,7 @@ flowchart TB
 
     Repo --> Preprocess
     Preprocess -->|resolved map + job data| ExtractTask
-    ExtractTask -->|shells out, normalized model JSON<br/>via DITA2GRAPH_CORE_BIN| CoreCli
+    ExtractTask -->|shells out, normalized model JSON<br/>bin/&lt;os&gt;-&lt;arch&gt; or DITA2GRAPH_CORE_BIN| CoreCli
     CoreCli -->|writes| OkfDir
     CoreCli -->|writes| RagDir
     CoreCli -->|writes, optional| McpToml
@@ -305,7 +305,7 @@ flowchart TD
     NavrefCheck -- yes --> WarnNavref["Log DITA2GRAPH warning<br/>(detected, not resolved — finding 16)"]
     NavrefCheck -- no --> Emit
     WarnNavref --> Emit["Serialize normalized model<br/>Vec&lt;NormalizedNode&gt; as JSON"]
-    Emit --> Handoff(["Shell out to dita2graph-core<br/>(DITA2GRAPH_CORE_BIN)"])
+    Emit --> Handoff(["Shell out to dita2graph-core<br/>(the shipped build or DITA2GRAPH_CORE_BIN)"])
 ```
 
 ### Graph generation (`dita2graph-core build`, Rust)
