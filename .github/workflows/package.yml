@@ -66,9 +66,13 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      # The components rust-toolchain.toml lists: left out, rustup adds
+      # them on the first cargo call, which failed on a Linux runner with
+      # "detected conflict: 'bin/cargo-fmt'".
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: ${{ matrix.target }}
+          components: rustfmt, clippy
 
       - uses: actions/setup-python@v5
         if: matrix.glibc
