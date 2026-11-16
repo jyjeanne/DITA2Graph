@@ -3,3 +3,7 @@
 /presentation/DITA2Graph-DITA-OT-Day-2026.pptx
 /presentation/DITA2Graph-Pole-Innovation-avant-evaluation.pptx
 /presentation/DITA2Graph-Pole-Innovation.pptx
+
+# IDE settings, and a directory named "C:" a Windows tool created by mistake
+/.idea/
+/C/
