@@ -20,10 +20,10 @@ the plugin directory without `java/`, the licences, and a
 | `windows-x86_64` | `windows-latest`, MSVC | yes |
 
 The binaries use the `dist` Cargo profile (stripped, LTO): on Windows
-it takes `dita2graph-core` from 22 MB to 9 MB. `ExtractTask` runs the binary for the current
-platform (`lib/README.md`) and makes it executable first, because `dita
-install` extracts the ZIP with `java.util.zip`, which drops the Unix
-permission bits. The workflow then runs `dita install` on the ZIP in a
+it takes `dita2graph-core` from 22 MB to 9 MB. `ExtractTask` runs the
+binary for the current platform (`lib/README.md`) and makes it
+executable first, because `dita install` extracts the ZIP with
+`java.util.zip`, which drops the Unix permission bits. The workflow then runs `dita install` on the ZIP in a
 stock DITA-OT 4.4.1 on Java 17 on Linux (x86_64 and aarch64), macOS and
 Windows. Each run builds `sample-docs/` with no other `dita2graph-core`
 on the machine.
