@@ -11,6 +11,8 @@
         "name": "org.dita.base",
         "req": ">=4.4.0"
       }
-    ]
+    ],
+    "url": "https://github.com/jyjeanne/DITA2Graph/releases/download/v0.2.0/io.github.jyjeanne.dita2graph-0.2.0.zip",
+    "cksum": "cc2876bb77b6e0d886a003cf5e02996b4d0d1bb0ed91f1dd1f121ac5a0d482c9"
   }
 ]
