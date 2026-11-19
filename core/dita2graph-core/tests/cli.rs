@@ -80,6 +80,8 @@ fn the_plugin_model_builds_every_output_and_validates() {
             "true",
             "--rdf-base",
             "https://example.org/user-guide/",
+            "--wikilinks",
+            "true",
         ],
     );
     assert_eq!(
@@ -110,6 +112,29 @@ fn the_plugin_model_builds_every_output_and_validates() {
     let okf = out.join("okf");
     let validate = core(&["validate", "--bundle", okf.to_str().unwrap()]);
     assert_eq!(validate.status.code(), Some(0));
+
+    // --wikilinks true: the relations, typed, as front matter properties.
+    let concept = fs::read_to_string(okf.join("topics/installing.md")).unwrap();
+    let front: serde_yaml::Value = serde_yaml::from_str(
+        concept
+            .trim_start_matches("---\n")
+            .split("\n---")
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    for (relation, target) in [
+        ("requires", "[[prerequisites]]"),
+        ("references", "[[settings]]"),
+        ("generated-from", "[[shared]]"),
+        ("copy-of", "[[install-source]]"),
+    ] {
+        let targets = front[relation].as_sequence().expect(relation);
+        assert!(
+            targets.iter().any(|t| t.as_str() == Some(target)),
+            "{relation}: {targets:?}"
+        );
+    }
 
     let query = core(&[
         "query",
@@ -198,8 +223,10 @@ fn a_model_that_is_not_json_is_an_internal_error_with_exit_code_2() {
 #[test]
 fn a_flag_value_other_than_true_or_false_is_an_internal_error() {
     let dir = tempfile::tempdir().unwrap();
-    let output = build(&java_model(), dir.path(), &["--emit-rdf", "yes"]);
+    for flag in ["--emit-rdf", "--wikilinks"] {
+        let output = build(&java_model(), dir.path(), &[flag, "yes"]);
 
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--emit-rdf"));
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(flag));
+    }
 }

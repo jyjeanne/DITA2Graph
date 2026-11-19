@@ -46,7 +46,7 @@ pub use model::{
     Audience, Author, Link, Metadata, NormalizedMap, NormalizedNode, NormalizedTopic, Product,
     Relation, TopicType,
 };
-pub use okf::{BundleSummary, write_bundle, write_bundle_with};
+pub use okf::{BundleOptions, BundleSummary, write_bundle, write_bundle_with};
 pub use rag::{RagSummary, write_rag_index};
 pub use rdf::{RdfSummary, write_rdf};
 pub use relations::{infer_applies_to, infer_related_to};

@@ -272,8 +272,9 @@ Key parameters:
 | `args.dita2graph.include-drafts` | `false` | Include topics flagged `status="draft"` |
 | `args.dita2graph.rdf` | `false` | Whether to also write the graph as RDF under `rdf/` (§2.4): `graph.ttl`, the `d2g` ontology and its SHACL shapes ([semantic-model.md](semantic-model.md)). Forwarded to `dita2graph-core build --emit-rdf` |
 | `args.dita2graph.rdf.base` | *(none)* | Base IRI of the RDF export's nodes, e.g. `https://docs.example.com/user-guide/`. Without it the IRIs use the placeholder `https://dita2graph.invalid/<map id>/` and `DITA2GRAPH083W` is logged. Forwarded to `--rdf-base` |
+| `args.dita2graph.wikilinks` | `false` | Whether each concept's front matter also holds its relations as top-level properties of `[[wikilinks]]` (§4.4), the typed links Obsidian and its Breadcrumbs and ExcaliBrain plugins read. Forwarded to `dita2graph-core build --wikilinks` |
 
-All seven parameters above are declared as `<param>` children of the
+All eight parameters above are declared as `<param>` children of the
 `dita2graph` `<transtype>` in `plugin.xml`, required for DITA-OT's own
 CLI parser to accept a `--args.dita2graph.*` override at all — a real,
 previously-unverified gap, not just a documentation nicety: confirmed
@@ -742,6 +743,7 @@ onto OKF frontmatter:
 | The file the author edits, for a copy DITA-OT writes under another name (`copy-to`, branch filtering), whose `resource` is the copy's own path (§3.2's `authoredFile`); planned: `conref`/`conkeyref` origin, resolved `keyref` | `sources` (provenance, OKF spec §5.1): `[{ resource: <file> }]` |
 | `dita2graph-core` version + generation timestamp | `generated: { by, at }` |
 | Relation taxonomy edges (§4.3) not covered by a plain link | `relations` — a DITA2Graph **extension** field (spec explicitly allows producer-defined keys) |
+| Every relation (§4.3), with `args.dita2graph.wikilinks=true` | One top-level property per relation (`contains`, `references`, `requires`, `generated-from`...) listing its targets as `[[wikilinks]]`, also an extension (§4.4) |
 
 Structural relationships that OKF *does* define natively — a standard
 markdown link from one concept to another — are used wherever the DITA
@@ -881,6 +883,31 @@ metadata:
   - - installing
     - on Linux
 ```
+
+With `args.dita2graph.wikilinks=true` (`--wikilinks true`), the front
+matter also lists every relation of the concept, not only the three in
+`relations`, as a top-level property named after the relation, each
+target once, as a `[[wikilink]]` to its concept:
+
+```yaml
+references:
+- '[[configuration]]'
+requires:
+- '[[installing-product-prereqs]]'
+```
+
+This is for Obsidian, opened on `okf/` as a vault: it reads links in
+top-level properties (properties panel, backlinks, graph view), and so do
+the plugins that draw typed links, such as Breadcrumbs (edge fields named
+after the relations) and ExcaliBrain (through Dataview). None of them
+reads into a nested mapping such as `relations`, which stays as it is.
+The link is the concept's id, its file name, which Obsidian resolves
+wherever the file sits (an id with a dot, such as
+`ID--topics-extending.dita`, included); a concept named `index` gets its
+folder (`[[topics/index]]`), since the bundle's own `index.md` has the
+same name. `okf_validator` only follows markdown links, and the body
+keeps them. Turning the option on or off rewrites every concept file:
+the options are part of the fingerprint `build-state.json` keeps.
 
 `# Content` is the topic's whitespace-normalized body text, nested
 topics of a composite file included, with `](` escaped as `]\(` so that

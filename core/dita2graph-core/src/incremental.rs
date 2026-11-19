@@ -35,6 +35,7 @@
 //! (see that module's docs for why the two use different mechanisms).
 
 use crate::model::NormalizedNode;
+use crate::okf::BundleOptions;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -55,7 +56,9 @@ const RENDER_VERSION: u32 = 4;
 /// `Serialize` impl) -- covers everything that affects its *own*
 /// rendered concept file (title, body, links, audience/product, etc.),
 /// so any change relevant to that file's content changes this hash,
-/// and so does [`RENDER_VERSION`].
+/// and so do [`RENDER_VERSION`] and the bundle's options (front matter
+/// wikilinks). Default options are left out of the hash, so a bundle
+/// built before the options existed is not rewritten for them.
 /// Built on `DefaultHasher` (SipHash) rather than a dedicated hash
 /// crate: this value is never compared across a Rust toolchain upgrade
 /// in a way that would be *unsafe* if it changed -- `DefaultHasher`'s
@@ -66,10 +69,13 @@ const RENDER_VERSION: u32 = 4;
 /// under-approximating it never happens, since a hash collision would
 /// need two different serializations to hash equal, not just look
 /// similar.
-fn content_hash(node: &NormalizedNode) -> Result<String> {
+fn content_hash(node: &NormalizedNode, options: BundleOptions) -> Result<String> {
     let bytes = serde_json::to_vec(node).context("serializing node for content hash")?;
     let mut hasher = DefaultHasher::new();
     RENDER_VERSION.hash(&mut hasher);
+    if options != BundleOptions::default() {
+        options.hash(&mut hasher);
+    }
     bytes.hash(&mut hasher);
     Ok(format!("{:016x}", hasher.finish()))
 }
@@ -117,11 +123,12 @@ fn is_unchanged(
     previous: &BuildState,
     node: &NormalizedNode,
     index: &BTreeMap<&str, (&str, &str)>,
+    options: BundleOptions,
 ) -> Result<bool> {
     let Some(state) = previous.get(node.id()) else {
         return Ok(false);
     };
-    if state.content_hash != content_hash(node)? {
+    if state.content_hash != content_hash(node, options)? {
         return Ok(false);
     }
     for link in node.links() {
@@ -167,8 +174,9 @@ pub(crate) fn can_skip(
     node: &NormalizedNode,
     index: &BTreeMap<&str, (&str, &str)>,
     path: &Path,
+    options: BundleOptions,
 ) -> Result<bool> {
-    Ok(path.exists() && is_unchanged(previous, node, index)?)
+    Ok(path.exists() && is_unchanged(previous, node, index, options)?)
 }
 
 /// Writes `<output_dir>/build-state.json`: every current node's
@@ -177,13 +185,17 @@ pub(crate) fn can_skip(
 /// discipline `graph.json`/`graph.db` already follow), so an id removed
 /// since the last build doesn't linger and compare "unchanged" against a
 /// topic that no longer exists.
-pub(crate) fn write_state(nodes: &[NormalizedNode], output_dir: &Path) -> Result<()> {
+pub(crate) fn write_state(
+    nodes: &[NormalizedNode],
+    output_dir: &Path,
+    options: BundleOptions,
+) -> Result<()> {
     let mut state = BuildState::with_capacity(nodes.len());
     for node in nodes {
         state.insert(
             node.id().to_string(),
             NodeState {
-                content_hash: content_hash(node)?,
+                content_hash: content_hash(node, options)?,
                 title: node.title().to_string(),
                 bundle_dir: node.bundle_dir().to_string(),
             },
@@ -197,6 +209,8 @@ pub(crate) fn write_state(nodes: &[NormalizedNode], output_dir: &Path) -> Result
 mod tests {
     use super::*;
     use crate::model::{Link, NormalizedTopic, Relation, TopicType};
+
+    const PLAIN: BundleOptions = BundleOptions { wikilinks: false };
 
     fn topic(id: &str, title: &str) -> NormalizedNode {
         NormalizedNode::Topic(NormalizedTopic {
@@ -246,14 +260,32 @@ mod tests {
     fn identical_nodes_hash_identically() {
         let a = topic("t", "Title");
         let b = topic("t", "Title");
-        assert_eq!(content_hash(&a).unwrap(), content_hash(&b).unwrap());
+        assert_eq!(
+            content_hash(&a, PLAIN).unwrap(),
+            content_hash(&b, PLAIN).unwrap()
+        );
     }
 
     #[test]
     fn a_changed_field_changes_the_hash() {
         let a = topic("t", "Title");
         let b = topic("t", "Different Title");
-        assert_ne!(content_hash(&a).unwrap(), content_hash(&b).unwrap());
+        assert_ne!(
+            content_hash(&a, PLAIN).unwrap(),
+            content_hash(&b, PLAIN).unwrap()
+        );
+    }
+
+    /// Turning the front matter wikilinks on or off changes every concept
+    /// file a build writes, so it has to change every node's hash.
+    #[test]
+    fn the_bundle_options_change_the_hash() {
+        let a = topic("t", "Title");
+        let wikilinks = BundleOptions { wikilinks: true };
+        assert_ne!(
+            content_hash(&a, PLAIN).unwrap(),
+            content_hash(&a, wikilinks).unwrap()
+        );
     }
 
     #[test]
@@ -273,30 +305,30 @@ mod tests {
     fn write_then_load_round_trips_and_reports_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![topic("a", "A"), topic("b", "B")];
-        write_state(&nodes, dir.path()).unwrap();
+        write_state(&nodes, dir.path(), PLAIN).unwrap();
 
         let loaded = load_state(dir.path());
         assert_eq!(loaded.len(), 2);
         let index = index_of(&nodes);
-        assert!(is_unchanged(&loaded, &nodes[0], &index).unwrap());
-        assert!(is_unchanged(&loaded, &nodes[1], &index).unwrap());
+        assert!(is_unchanged(&loaded, &nodes[0], &index, PLAIN).unwrap());
+        assert!(is_unchanged(&loaded, &nodes[1], &index, PLAIN).unwrap());
     }
 
     #[test]
     fn is_unchanged_is_false_for_an_id_never_seen_before() {
         let previous = BuildState::new();
         let nodes = vec![topic("new", "New")];
-        assert!(!is_unchanged(&previous, &nodes[0], &index_of(&nodes)).unwrap());
+        assert!(!is_unchanged(&previous, &nodes[0], &index_of(&nodes), PLAIN).unwrap());
     }
 
     #[test]
     fn is_unchanged_is_false_once_the_nodes_own_content_changes() {
         let dir = tempfile::tempdir().unwrap();
-        write_state(&[topic("t", "Original")], dir.path()).unwrap();
+        write_state(&[topic("t", "Original")], dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         let nodes = vec![topic("t", "Changed")];
-        assert!(!is_unchanged(&previous, &nodes[0], &index_of(&nodes)).unwrap());
+        assert!(!is_unchanged(&previous, &nodes[0], &index_of(&nodes), PLAIN).unwrap());
     }
 
     /// The correctness case this module's own docs call out:
@@ -307,14 +339,14 @@ mod tests {
     fn is_unchanged_is_false_when_a_link_targets_title_changes() {
         let dir = tempfile::tempdir().unwrap();
         let old_nodes = vec![topic_linking_to("a", "A", "b"), topic("b", "Old Title")];
-        write_state(&old_nodes, dir.path()).unwrap();
+        write_state(&old_nodes, dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         // a is byte-for-byte identical to before; only b's title changed.
         let new_nodes = vec![topic_linking_to("a", "A", "b"), topic("b", "New Title")];
         let index = index_of(&new_nodes);
         assert!(
-            !is_unchanged(&previous, &new_nodes[0], &index).unwrap(),
+            !is_unchanged(&previous, &new_nodes[0], &index, PLAIN).unwrap(),
             "a must be re-rendered so it stops showing b's stale title"
         );
     }
@@ -327,7 +359,7 @@ mod tests {
             topic("b", "B"),
             topic("c", "C"),
         ];
-        write_state(&old_nodes, dir.path()).unwrap();
+        write_state(&old_nodes, dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         // c changes; a doesn't link to c, so a should still be skippable.
@@ -337,7 +369,7 @@ mod tests {
             topic("c", "Changed C"),
         ];
         let index = index_of(&new_nodes);
-        assert!(is_unchanged(&previous, &new_nodes[0], &index).unwrap());
+        assert!(is_unchanged(&previous, &new_nodes[0], &index, PLAIN).unwrap());
     }
 
     /// A link to an id that never exists as a real node (an unresolved
@@ -350,7 +382,7 @@ mod tests {
     fn is_unchanged_stays_true_across_a_link_that_is_dangling_both_times() {
         let dir = tempfile::tempdir().unwrap();
         let old_nodes = vec![topic_linking_to("a", "A", "nonexistent")];
-        write_state(&old_nodes, dir.path()).unwrap();
+        write_state(&old_nodes, dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         // a is byte-for-byte identical; "nonexistent" is still not a real
@@ -358,7 +390,7 @@ mod tests {
         let new_nodes = vec![topic_linking_to("a", "A", "nonexistent")];
         let index = index_of(&new_nodes);
         assert!(
-            is_unchanged(&previous, &new_nodes[0], &index).unwrap(),
+            is_unchanged(&previous, &new_nodes[0], &index, PLAIN).unwrap(),
             "a repeatedly-dangling link must not permanently disable the skip"
         );
     }
@@ -371,14 +403,14 @@ mod tests {
     fn is_unchanged_is_false_once_a_previously_dangling_link_resolves_to_a_real_node() {
         let dir = tempfile::tempdir().unwrap();
         let old_nodes = vec![topic_linking_to("a", "A", "b")];
-        write_state(&old_nodes, dir.path()).unwrap();
+        write_state(&old_nodes, dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         // "b" is now a real node with its own title.
         let new_nodes = vec![topic_linking_to("a", "A", "b"), topic("b", "B")];
         let index = index_of(&new_nodes);
         assert!(
-            !is_unchanged(&previous, &new_nodes[0], &index).unwrap(),
+            !is_unchanged(&previous, &new_nodes[0], &index, PLAIN).unwrap(),
             "a must be re-rendered once its dangling link resolves to a real title"
         );
     }
@@ -387,18 +419,27 @@ mod tests {
     fn can_skip_is_false_when_the_concept_file_is_missing_despite_a_hash_match() {
         let dir = tempfile::tempdir().unwrap();
         let nodes = vec![topic("t", "T")];
-        write_state(&nodes, dir.path()).unwrap();
+        write_state(&nodes, dir.path(), PLAIN).unwrap();
         let previous = load_state(dir.path());
 
         let missing_path = dir.path().join("does-not-exist.md");
-        assert!(!can_skip(&previous, &nodes[0], &index_of(&nodes), &missing_path).unwrap());
+        assert!(
+            !can_skip(
+                &previous,
+                &nodes[0],
+                &index_of(&nodes),
+                &missing_path,
+                PLAIN
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn rewriting_the_state_drops_an_id_that_no_longer_exists() {
         let dir = tempfile::tempdir().unwrap();
-        write_state(&[topic("a", "A"), topic("b", "B")], dir.path()).unwrap();
-        write_state(&[topic("a", "A")], dir.path()).unwrap();
+        write_state(&[topic("a", "A"), topic("b", "B")], dir.path(), PLAIN).unwrap();
+        write_state(&[topic("a", "A")], dir.path(), PLAIN).unwrap();
 
         let loaded = load_state(dir.path());
         assert_eq!(loaded.len(), 1);

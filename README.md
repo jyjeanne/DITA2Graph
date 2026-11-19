@@ -30,7 +30,7 @@ Java extraction → Rust OKF writer → validated bundle → MCP server.
 | `core/dita2graph-core` (Rust) | Working: normalized-model types, OKF bundle writer, `related-to`/`applies-to` relation inference (`relations.rs`, findings 13 and 15 — an ambiguous `applies-to` match is dropped and logged, not guessed), RAG content index writer (`rag/`, §13.1), `build`/`validate`/`query` CLI, passing tests |
 | `mcp/dita2graph-mcp` (Rust) | Working: JSON-RPC-over-stdio MCP server with the full §5.2 tool set plus `validate_live`, passing tests; takes a bundle root directly or via `--config <mcp-server.toml>` (written by `dita2graph-core build --mcp true`, §5.4). `validate_live` spawns a vendored [DitaCraft](https://github.com/jyjeanne/ditacraft) LSP bundle (`mcp/dita2graph-mcp/vendor/ditacraft-lsp/`, MIT) to run live, editor-grade validation against a topic's on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp). Every tool marks a topic the map uses only as a resource with `[resource-only: not a published page]`. `--sparql` adds `query_graph`, read-only SPARQL over the RDF export (opt-in, see the RDF row). §5.1's Resources (`resources/list`/`resources/read`) are not implemented |
 | `plugin/io.github.jyjeanne.dita2graph/java` (Java) | Working: `ExtractTask` parses DITA-OT's resolved output into the normalized model, shells out to `dita2graph-core`; unit tested. Walks nested map structures at any depth, not just the top level, recognizing every topicref specialization by `@class` (bookmap `chapter`/`part`/`appendix`/`notices`, `glossref`, `topichead`, `topicgroup`); a titled entry without a topic (`topichead`, navtitle-only `chapter`) becomes a `Topic Head` node, and a `processing-role="resource-only"` topicref gets no `contains` edge; skips DITA-OT's auto-generated hierarchy navigation in `related-links` (`role="parent"`/`"child"`/`"sibling"`...) but keeps relationship-table links (`role="friend"`) as `references`, and enforces `args.dita2graph.depth` to limit how many containment levels are captured (`docs/dev/phase-0-findings.md` finding 11). `mapref`/`anchorref` submap composition works with zero extra code — DITA-OT's own preprocessing flattens it into the same map tree (finding 14). Also extracts `uicontrols`/`cmdUicontrols` (for `applies-to`) and derives `generated-from` edges directly from DITA-OT's own `xtrf` source-trace attributes — a `conref`/`conkeyref`-pulled element inherits its true source's `xtrf`, distinguishing real reuse from ordinary `keyref` variable substitution (finding 15). Each `generated-from` edge names the reused fragments (their `@id` in the source topic, recovered through DITA-OT's `xtrc` traces), and a topic that reuses content also gets a `resolvedBody` with those fragments kept in place, for `read_topic` (finding 17). `<navref>` (not resolved by DITA-OT for this transtype) is detected and logged (`DITA2GRAPH060W`) instead of silently dropped (finding 16). It also records the declarations writers search for (finding 20): the map's key definitions, with the submap that writes each; the keys each topic uses, resolved in the key scopes of the topicrefs naming it (`@conkeyref` read from the source, since DITA-OT resolves it away); external `http(s)` links; `coderef` sample files, kept only when DITAVAL left them in; `copy-to` copies; and each topic's type from `@class` and its resource-only role. A composite `.dita` file's nested topics add their text to the file's topic |
-| `plugin/io.github.jyjeanne.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all seven, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
+| `plugin/io.github.jyjeanne.dita2graph` (Ant/XML) | **Verified end-to-end** against a live DITA-OT 4.4: installs, dispatches, produces a real `okf_validator`-passing bundle, and accepts `--args.dita2graph.*` CLI overrides (all eight, via `plugin.xml`'s `<param>` declarations — previously silently rejected by DITA-OT's own CLI parser, see `docs/dev/phase-0-findings.md` finding 10) |
 | `gradle-build/` | Real Gradle 9.6.1 + Kotlin DSL project; `./gradlew buildKnowledgeGraph` runs the entire pipeline for real, plus `buildKnowledgeGraphPublic`/`buildKnowledgeGraphInternal` for the DITAVAL split (§6.1) and `buildKnowledgeGraphNested`/`buildKnowledgeGraphMapref`/`buildKnowledgeGraphRelations` for map-structure and relation-inference fixtures |
 | `sample-docs/` | A small fixture DITA project, confirmed to resolve correctly and extract correctly through the full pipeline, including one `audience="internal"` topic used to prove the DITAVAL split actually filters |
 | `sample-docs-nested/` | A fixture exercising nested `topicref`/`topichead`/`topicgroup` and the `related-links` exclusion (finding 11) |
@@ -56,8 +56,9 @@ text is stored once, in its source topic (canonical-node deduplication,
 [`docs/dev/canonical-node-dedup-spec.md`](docs/dev/canonical-node-dedup-spec.md)).
 Every relation in §4.3's taxonomy (`contains`/`requires`/`references`/
 `applies-to`/`related-to`/`generated-from`, plus `copy-of`) is now real
-(findings 13, 15, 20), and all seven `args.dita2graph.*` parameters,
-including `mcp` and `rdf`, are functionally wired end to end (finding 12).
+(findings 13, 15, 20), and all eight `args.dita2graph.*` parameters,
+including `mcp`, `rdf` and `wikilinks`, are functionally wired end to end
+(finding 12).
 
 **Release status:** the MVP scope (§11) is functionally complete;
 `v0.1.0` is tagged — see **[`Roadmap.md`](Roadmap.md)** for the
@@ -486,11 +487,40 @@ part it understands. All of them name a topic by the same id.
 | Output | Format | Tools that read it |
 |---|---|---|
 | `dita2graph-mcp` | MCP over stdio | Claude Code (tested), Claude Desktop, VS Code agent mode, Cursor, custom agents (Claude Agent SDK, MCP SDKs); the MCP Inspector to call the tools by hand |
-| `okf/` | Markdown + YAML frontmatter (OKF v0.2) | `okf_validator`, Obsidian, any Markdown editor or renderer, Git diffs and code review |
+| `okf/` | Markdown + YAML frontmatter (OKF v0.2); typed `[[wikilinks]]` in the frontmatter with `args.dita2graph.wikilinks=true` | `okf_validator`, Obsidian (graph view, Breadcrumbs, ExcaliBrain), any Markdown editor or renderer, Git diffs and code review |
 | `graph.json` | JSON: `nodes` (`id`, `type`, `title`, `sourceFile`, `processingRole`) and `edges` (`from`, `to`, `relation`) | NetworkX, D3, Cytoscape.js; Gephi, yEd or Cytoscape through GraphML |
 | `graph.db` (`--store sqlite`) | SQLite: tables `nodes` and `edges` | `sqlite3`, DB Browser for SQLite, DBeaver, Datasette, pandas |
 | `rag/` | JSON Lines: `chunks.jsonl`, `embeddings.jsonl` when built | vector stores (Chroma, Qdrant, pgvector) and RAG frameworks (LangChain, LlamaIndex) |
 | `rdf/` (`--emit-rdf true`) | Turtle: the graph, the OWL 2 RL ontology, the SHACL shapes | Oxigraph, Apache Jena Fuseki, GraphDB, rdflib, pySHACL, Protégé |
+
+### Obsidian
+
+Open `okf/` as a vault. The concepts link each other with relative
+markdown links, so the graph view shows the bundle as it is; filter out
+the hub `index.md` with `-file:index`, and color by topic type with
+groups such as `[type:Task]`. Those links are untyped, and a node is
+labeled with its file name, the topic id.
+
+To see the relation types, build with `--args.dita2graph.wikilinks=true`:
+each concept's front matter then lists its relations as properties of
+`[[wikilinks]]`, one per relation (`contains`, `references`, `requires`,
+`generated-from`, `copy-of`, `related-to`, `applies-to`). An excerpt of
+"Installing plug-ins" in the DITA-OT documentation:
+
+```yaml
+generated-from:
+- '[[ID]]'
+references:
+- '[[custom-plugins]]'
+- '[[plugin-registry]]'
+```
+
+Obsidian shows them in the properties panel and the backlinks, and the
+plugins that draw typed links read them: in Breadcrumbs, declare an edge
+field per relation and put it in the group of its direction (`contains`
+down, `generated-from` up...); in ExcaliBrain (with Dataview), list them
+as parents, children or friends in its ontology settings. A rebuild
+leaves the vault's own files (`.obsidian/`, notes you add) alone.
 
 ### Other MCP clients
 

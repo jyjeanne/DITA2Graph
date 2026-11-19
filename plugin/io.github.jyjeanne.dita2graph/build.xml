@@ -35,6 +35,7 @@
     <property name="args.dita2graph.rdf" value="false"/>
     <!-- Empty: no base, the core uses its placeholder and says so (083W). -->
     <property name="args.dita2graph.rdf.base" value=""/>
+    <property name="args.dita2graph.wikilinks" value="false"/>
 
     <!-- Custom Ant task, defined by lib/dita2graph-core.jar:
            1. reads DITA-OT's resolved job.xml + temp-directory topics/maps
@@ -63,6 +64,7 @@
         includeDrafts="${args.dita2graph.include-drafts}"
         rdf="${args.dita2graph.rdf}"
         rdfBase="${args.dita2graph.rdf.base}"
+        wikilinks="${args.dita2graph.wikilinks}"
         pluginDir="${dita.plugin.io.github.jyjeanne.dita2graph.dir}"/>
   </target>
 

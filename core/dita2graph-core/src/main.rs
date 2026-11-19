@@ -15,9 +15,9 @@ use dita2graph_core::diagnostics::{
 };
 use dita2graph_core::shacl::{self, ShaclSeverity};
 use dita2graph_core::{
-    Embedder, NormalizedNode, PreviousEmbeddings, graph_view, infer_applies_to, infer_related_to,
-    query_sqlite_store, scan_bundle, write_bundle_with, write_embeddings_index, write_mcp_config,
-    write_rag_index, write_rdf, write_sqlite_view,
+    BundleOptions, Embedder, NormalizedNode, PreviousEmbeddings, graph_view, infer_applies_to,
+    infer_related_to, query_sqlite_store, scan_bundle, write_bundle_with, write_embeddings_index,
+    write_mcp_config, write_rag_index, write_rdf, write_sqlite_view,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -96,6 +96,13 @@ struct BuildArgs {
     /// and DITA2GRAPH083W says so.
     #[arg(long)]
     rdf_base: Option<String>,
+    /// Whether each concept's front matter also holds its relations as
+    /// top-level properties of `[[wikilinks]]` (`contains`, `references`,
+    /// `generated-from`...), the typed links Obsidian and its Breadcrumbs
+    /// and ExcaliBrain plugins read (§2.3's `args.dita2graph.wikilinks`).
+    /// Accepts "true"/"false".
+    #[arg(long, default_value = "false")]
+    wikilinks: String,
     /// Path to an ONNX sentence-embedding model (§13.1's node-level
     /// embeddings). Optional -- when given, must be paired with
     /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
@@ -141,6 +148,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
         mcp,
         emit_rdf,
         rdf_base,
+        wikilinks,
         embedding_model,
         embedding_tokenizer,
     } = args;
@@ -156,6 +164,9 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     let emit_graph_json = parse_bool_arg(&emit_graph_json, "--emit-graph-json")?;
     let mcp = parse_bool_arg(&mcp, "--mcp")?;
     let emit_rdf = parse_bool_arg(&emit_rdf, "--emit-rdf")?;
+    let bundle_options = BundleOptions {
+        wikilinks: parse_bool_arg(&wikilinks, "--wikilinks")?,
+    };
     // A bad base fails the build before anything is written.
     if emit_rdf && let Some(base) = &rdf_base {
         dita2graph_core::rdf::check_base(base)?;
@@ -192,6 +203,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
         &output,
         generated_at,
         graph.as_ref().filter(|_| emit_graph_json),
+        bundle_options,
     )?;
     println!(
         "wrote {} topics, {} maps, {} edges to {} ({} unchanged, skipped)",
@@ -650,6 +662,7 @@ mod tests {
             mcp: "false".into(),
             emit_rdf: "false".into(),
             rdf_base: None,
+            wikilinks: "false".into(),
             embedding_model: None,
             embedding_tokenizer: None,
         }

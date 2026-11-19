@@ -63,12 +63,13 @@ class ExtractTaskTest {
         task.setMcp("true");
         task.setRdf("true");
         task.setRdfBase("  https://example.org/docs/  ");
+        task.setWikilinks("true");
         task.execute();
 
         List<String> args = coreArguments();
         assertEquals(List.of("build", "--input", args.get(2), "--output", outputDir.toString(),
                 "--store", "none", "--emit-graph-json", "false", "--mcp", "true",
-                "--emit-rdf", "true", "--rdf-base", "https://example.org/docs/"), args);
+                "--emit-rdf", "true", "--wikilinks", "true", "--rdf-base", "https://example.org/docs/"), args);
 
         // The model the core reads, in UTF-8 whatever the platform's charset.
         String model = Files.readString(Path.of(args.get(2)), StandardCharsets.UTF_8);
@@ -86,7 +87,7 @@ class ExtractTaskTest {
 
         List<String> args = coreArguments();
         assertEquals(List.of("--store", "sqlite", "--emit-graph-json", "true", "--mcp", "false",
-                "--emit-rdf", "false"), args.subList(5, args.size()));
+                "--emit-rdf", "false", "--wikilinks", "false"), args.subList(5, args.size()));
     }
 
     @Test

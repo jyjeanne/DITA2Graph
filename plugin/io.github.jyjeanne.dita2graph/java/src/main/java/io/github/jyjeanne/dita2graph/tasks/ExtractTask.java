@@ -21,12 +21,14 @@ import java.util.function.Function;
  * {@link DitaModelExtractor}, and shells out to the {@code dita2graph-core}
  * Rust binary (§3.4) to write the OKF bundle.
  *
- * <p>{@code emitGraphJson}, {@code mcp} and {@code rdf} are forwarded to
- * the Rust core's {@code --emit-graph-json}, {@code --mcp} and {@code
- * --emit-rdf} flags, and a non-empty {@code rdfBase} to {@code
- * --rdf-base}. {@code mcp} writes an {@code mcp/mcp-server.toml} that
- * {@code dita2graph-mcp --config} can read (§5.4); {@code rdf} writes
- * {@code rdf/} (docs/semantic-model.md). {@code depth} ("max relationship traversal
+ * <p>{@code emitGraphJson}, {@code mcp}, {@code rdf} and {@code wikilinks}
+ * are forwarded to the Rust core's {@code --emit-graph-json}, {@code
+ * --mcp}, {@code --emit-rdf} and {@code --wikilinks} flags, and a
+ * non-empty {@code rdfBase} to {@code --rdf-base}. {@code mcp} writes an
+ * {@code mcp/mcp-server.toml} that {@code dita2graph-mcp --config} can
+ * read (§5.4); {@code rdf} writes {@code rdf/} (docs/semantic-model.md);
+ * {@code wikilinks} adds each concept's relations to its front matter as
+ * {@code [[wikilinks]]}. {@code depth} ("max relationship traversal
  * depth captured in the graph", §2.3) is parsed here and passed to
  * {@link DitaModelExtractor}'s {@code maxDepth}, limiting how many
  * levels of map containment its {@code contains} edges go, now that
@@ -44,6 +46,7 @@ public class ExtractTask extends Task {
     private String includeDrafts;
     private String rdf;
     private String rdfBase;
+    private String wikilinks;
     private String pluginDir;
     /** The environment {@code DITA2GRAPH_CORE_BIN} is read from; a test sets its own. */
     Function<String, String> env = System::getenv;
@@ -82,6 +85,10 @@ public class ExtractTask extends Task {
 
     public void setRdfBase(String rdfBase) {
         this.rdfBase = rdfBase;
+    }
+
+    public void setWikilinks(String wikilinks) {
+        this.wikilinks = wikilinks;
     }
 
     public void setPluginDir(String pluginDir) {
@@ -138,7 +145,8 @@ public class ExtractTask extends Task {
                 "--store", resolvedStore,
                 "--emit-graph-json", resolvedEmitGraphJson,
                 "--mcp", resolvedMcp,
-                "--emit-rdf", (rdf == null || rdf.isEmpty()) ? "false" : rdf));
+                "--emit-rdf", (rdf == null || rdf.isEmpty()) ? "false" : rdf,
+                "--wikilinks", (wikilinks == null || wikilinks.isEmpty()) ? "false" : wikilinks));
         // An empty base (build.xml's default) means none: the core then
         // uses its placeholder and logs DITA2GRAPH083W.
         if (rdfBase != null && !rdfBase.trim().isEmpty()) {

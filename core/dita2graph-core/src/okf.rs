@@ -50,6 +50,24 @@ struct Frontmatter {
     generated: Generated,
     #[serde(skip_serializing_if = "Option::is_none")]
     relations: Option<BTreeMap<String, Vec<String>>>,
+    /// With [`BundleOptions::wikilinks`]: every relation of the node as a
+    /// top-level property named after it (`contains`, `references`,
+    /// `generated-from`...), its targets as `[[wikilinks]]`. Obsidian reads
+    /// links in top-level properties, and so do the plugins that draw typed
+    /// links from them (Breadcrumbs, ExcaliBrain through Dataview); none of
+    /// them reads into a nested mapping such as `relations`.
+    #[serde(flatten)]
+    wikilinks: BTreeMap<String, Vec<String>>,
+}
+
+/// How [`write_bundle_with`] writes the concept files, beyond what the
+/// nodes hold. Part of each node's fingerprint (`crate::incremental`), so
+/// changing an option rewrites every concept file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BundleOptions {
+    /// Also write each relation as a top-level front matter property of
+    /// `[[wikilinks]]` (`args.dita2graph.wikilinks`, `--wikilinks`).
+    pub wikilinks: bool,
 }
 
 #[derive(Serialize)]
@@ -100,17 +118,25 @@ pub fn write_bundle(
     emit_graph_json: bool,
 ) -> Result<BundleSummary> {
     let graph = emit_graph_json.then(|| crate::graph_view::graph_view(nodes));
-    write_bundle_with(nodes, output_dir, generated_at, graph.as_ref())
+    write_bundle_with(
+        nodes,
+        output_dir,
+        generated_at,
+        graph.as_ref(),
+        BundleOptions::default(),
+    )
 }
 
 /// [`write_bundle`] with the node/edge view already built, so a build
 /// that also writes `graph.db` builds it once; `graph.json` is written
-/// when `graph` is given.
+/// when `graph` is given. `options` says how the concept files are
+/// written.
 pub fn write_bundle_with(
     nodes: &[NormalizedNode],
     output_dir: &Path,
     generated_at: DateTime<Utc>,
     graph: Option<&crate::graph_view::GraphView>,
+    options: BundleOptions,
 ) -> Result<BundleSummary> {
     let bundle_dir = output_dir.join("okf");
     fs::create_dir_all(bundle_dir.join("topics")).context("creating okf/topics")?;
@@ -129,10 +155,10 @@ pub fn write_bundle_with(
     for node in nodes {
         let subdir = node.bundle_dir();
         let path = bundle_dir.join(subdir).join(format!("{}.md", node.id()));
-        if crate::incremental::can_skip(&previous_state, node, &index, &path)? {
+        if crate::incremental::can_skip(&previous_state, node, &index, &path, options)? {
             summary.concepts_unchanged += 1;
         } else {
-            let content = render_concept(node, &index, generated_at)?;
+            let content = render_concept(node, &index, generated_at, options)?;
             fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
             match node {
                 NormalizedNode::Topic(_) => summary.topics_written += 1,
@@ -142,7 +168,7 @@ pub fn write_bundle_with(
         summary.edges_written += node.links().len();
     }
 
-    crate::incremental::write_state(nodes, output_dir)?;
+    crate::incremental::write_state(nodes, output_dir, options)?;
 
     write_okf_toml(&bundle_dir)?;
     write_index(&bundle_dir, nodes, generated_at)?;
@@ -157,6 +183,7 @@ fn render_concept(
     node: &NormalizedNode,
     index: &BTreeMap<&str, (&str, &str)>,
     generated_at: DateTime<Utc>,
+    options: BundleOptions,
 ) -> Result<String> {
     let description = match node {
         NormalizedNode::Topic(t) => t.shortdesc.clone(),
@@ -173,12 +200,25 @@ fn render_concept(
     };
 
     let mut relations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut wikilinks: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for link in node.links() {
         if link.relation.needs_frontmatter_extension() {
             relations
                 .entry(link.relation.as_str().to_string())
                 .or_default()
                 .push(link.target.clone());
+        }
+        if options.wikilinks {
+            let target_dir = index
+                .get(link.target.as_str())
+                .map_or("topics", |(dir, _)| *dir);
+            let targets = wikilinks
+                .entry(link.relation.as_str().to_string())
+                .or_default();
+            let target = wikilink(target_dir, &link.target);
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -208,6 +248,7 @@ fn render_concept(
         } else {
             Some(relations)
         },
+        wikilinks,
     };
 
     let yaml = serde_yaml::to_string(&frontmatter).context("serializing frontmatter")?;
@@ -339,6 +380,20 @@ fn render_declarations(node: &NormalizedNode, body: &mut String) {
 /// `]\(` renders the same text and is no link.
 fn escape_link_syntax(text: &str) -> String {
     text.replace("](", "]\\(")
+}
+
+/// The `[[wikilink]]` to the concept `target_id` in `target_dir`
+/// (`"topics"`/`"maps"`). Obsidian resolves a bare name to the note of
+/// that file name wherever it sits, so the id alone is enough, except for
+/// a concept named like the bundle's own `index.md`, which gets its
+/// folder. An id with a dot (`ID--topics-extending.dita`) still resolves
+/// to its `.md` note.
+fn wikilink(target_dir: &str, target_id: &str) -> String {
+    if target_id.eq_ignore_ascii_case("index") {
+        format!("[[{target_dir}/{target_id}]]")
+    } else {
+        format!("[[{target_id}]]")
+    }
 }
 
 /// A markdown link from a concept in `from_dir` (`"topics"`/`"maps"`) to
@@ -769,6 +824,109 @@ mod tests {
         // `references` is a plain body link, not a frontmatter `relations` entry.
         assert!(!prereqs.contains("relations:"));
         assert!(prereqs.contains("# References"));
+    }
+
+    fn front_matter(path: &Path) -> serde_yaml::Value {
+        let concept = fs::read_to_string(path).unwrap();
+        let front = concept.split("\n---").next().unwrap();
+        serde_yaml::from_str(front.trim_start_matches("---")).unwrap()
+    }
+
+    fn wikilinks(yaml: &serde_yaml::Value, key: &str) -> Vec<String> {
+        yaml[key]
+            .as_sequence()
+            .unwrap_or_else(|| panic!("no `{key}` list in {yaml:?}"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// `--wikilinks true`: every relation, not only the three `relations`
+    /// holds, becomes a top-level property of `[[wikilinks]]`, once per
+    /// target, for Obsidian and the plugins that read typed links there.
+    /// `relations` and the body stay as they are, and the bundle still
+    /// passes okf_validator, which only follows markdown links.
+    #[test]
+    fn wikilinks_put_every_relation_in_the_front_matter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut nodes = sample_nodes();
+        if let NormalizedNode::Topic(t) = &mut nodes[1] {
+            for relation in [Relation::GeneratedFrom, Relation::GeneratedFrom] {
+                t.links.push(Link {
+                    relation,
+                    target: "configuration".into(),
+                    fragments: vec!["warning-note".into()],
+                });
+            }
+        }
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        let options = BundleOptions { wikilinks: true };
+        write_bundle_with(&nodes, dir.path(), generated_at, None, options).unwrap();
+
+        let okf = dir.path().join("okf");
+        let task = front_matter(&okf.join("topics/installing-product.md"));
+        assert_eq!(wikilinks(&task, "requires"), ["[[configuration]]"]);
+        assert_eq!(
+            wikilinks(&task, "contains"),
+            ["[[installing-product-prereqs]]"]
+        );
+        assert_eq!(wikilinks(&task, "generated-from"), ["[[configuration]]"]);
+        assert_eq!(
+            task["relations"]["requires"][0].as_str(),
+            Some("configuration")
+        );
+
+        let prereqs = front_matter(&okf.join("topics/installing-product-prereqs.md"));
+        assert_eq!(wikilinks(&prereqs, "references"), ["[[configuration]]"]);
+        assert!(prereqs.get("relations").is_none(), "{prereqs:?}");
+
+        let map = front_matter(&okf.join("maps/user-guide.md"));
+        assert_eq!(
+            wikilinks(&map, "contains"),
+            ["[[installing-product]]", "[[configuration]]"]
+        );
+        let configuration = front_matter(&okf.join("topics/configuration.md"));
+        assert!(configuration.get("references").is_none());
+
+        let concept = fs::read_to_string(okf.join("topics/installing-product.md")).unwrap();
+        assert!(concept.contains("# Requires\n\n- [Configuration Overview](configuration.md)"));
+        let report = validate_bundle(&okf).unwrap();
+        assert!(!report.has_errors(), "{:#?}", report.issues);
+
+        // Without the option, no wikilink anywhere.
+        let plain = tempfile::tempdir().unwrap();
+        write_bundle(&nodes, plain.path(), generated_at, false).unwrap();
+        let concept =
+            fs::read_to_string(plain.path().join("okf/topics/installing-product.md")).unwrap();
+        assert!(!concept.contains("[["), "{concept}");
+    }
+
+    #[test]
+    fn a_wikilink_names_the_note_and_the_folder_only_for_index() {
+        assert_eq!(wikilink("topics", "configuration"), "[[configuration]]");
+        assert_eq!(
+            wikilink("topics", "ID--topics-extending.dita"),
+            "[[ID--topics-extending.dita]]"
+        );
+        assert_eq!(wikilink("maps", "user-guide"), "[[user-guide]]");
+        assert_eq!(wikilink("topics", "index"), "[[topics/index]]");
+    }
+
+    /// Turning the option on after a build rewrites every concept file,
+    /// although no node changed.
+    #[test]
+    fn turning_wikilinks_on_rewrites_an_unchanged_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes = sample_nodes();
+        let generated_at: DateTime<Utc> = "2026-08-03T00:00:00Z".parse().unwrap();
+        write_bundle(&nodes, dir.path(), generated_at, false).unwrap();
+
+        let options = BundleOptions { wikilinks: true };
+        let summary = write_bundle_with(&nodes, dir.path(), generated_at, None, options).unwrap();
+        assert_eq!(summary.concepts_unchanged, 0);
+        assert_eq!((summary.topics_written, summary.maps_written), (3, 1));
+        let again = write_bundle_with(&nodes, dir.path(), generated_at, None, options).unwrap();
+        assert_eq!(again.concepts_unchanged, 4);
     }
 
     #[test]
