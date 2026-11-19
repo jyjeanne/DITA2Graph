@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="dita2graph-viewer">
+<title>DITA2Graph graph</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1f2328; --muted: #656d76; --line: #d8dee4;
+  --accent: #6639ba; --dim: 0.18; --hover: #f0f0ee; --canvas-bg: #fbfbfa; --label: #1f2328;
+  --label-halo: rgba(251, 251, 250, 0.9); --edge-alpha: 0.55; --on-accent: #ffffff; --map: #1f2328;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --panel: #1c1f24; --text: #e6edf3; --muted: #8d96a0; --line: #30363d;
+    --accent: #b392f0; --hover: #262a30; --canvas-bg: #111316; --label: #e6edf3;
+    --label-halo: rgba(17, 19, 22, 0.9); --edge-alpha: 0.6; --on-accent: #15171a; --map: #e6edf3;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid; grid-template-columns: 300px 1fr 0; background: var(--bg); color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden;
+}
+body.has-selection { grid-template-columns: 300px 1fr 340px; }
+aside { background: var(--panel); overflow-y: auto; padding: 14px 16px; }
+#panel { border-right: 1px solid var(--line); }
+#details { border-left: 1px solid var(--line); display: none; }
+body.has-selection #details { display: block; }
+h1 { font-size: 15px; margin: 0 0 2px; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 6px; }
+.small { color: var(--muted); font-size: 12px; }
+input[type=search], select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: inherit;
+}
+.row { display: flex; align-items: center; gap: 8px; padding: 2px 4px; border-radius: 4px; cursor: pointer; user-select: none; }
+.row:hover { background: var(--hover); }
+.row .count { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row.off { opacity: .45; }
+.row.off .label { text-decoration: line-through; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.line-swatch { width: 18px; height: 3px; border-radius: 2px; flex: none; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; border: 0; padding: 5px; background: var(--bg); color: var(--text); font: inherit; cursor: pointer; }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+button.plain {
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px;
+  padding: 5px 9px; font: inherit; cursor: pointer;
+}
+button.plain:hover { background: var(--hover); }
+.buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+label.check { display: flex; gap: 8px; align-items: center; padding: 2px 4px; cursor: pointer; }
+#results { margin-top: 4px; }
+#results .row { padding: 3px 4px; }
+#results .type { color: var(--muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+main { position: relative; min-width: 0; }
+canvas { display: block; width: 100%; height: 100%; background: var(--canvas-bg); cursor: grab; }
+canvas.dragging { cursor: grabbing; }
+#tooltip {
+  position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px; display: none; max-width: 320px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.15);
+}
+#status {
+  position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px;
+  background: var(--panel); padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line);
+}
+#help { position: absolute; right: 12px; bottom: 10px; color: var(--muted); font-size: 12px; }
+#details h1 { font-size: 16px; margin-bottom: 6px; }
+.meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 8px 0; font-size: 12px; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; word-break: break-word; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; border: 1px solid var(--line); }
+.links .rel { display: flex; align-items: center; gap: 6px; margin: 10px 0 2px; font-weight: 600; }
+.links ul { list-style: none; margin: 0; padding: 0 0 0 4px; }
+.links li { padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.links li:hover { background: var(--hover); }
+.links .frag { color: var(--muted); font-size: 11px; }
+a { color: var(--accent); }
+#close { float: right; }
+</style>
+</head>
+<body>
+<aside id="panel">
+  <h1 id="map-title">DITA2Graph</h1>
+  <div class="small" id="summary"></div>
+
+  <h2>Find a topic</h2>
+  <input type="search" id="search" placeholder="Title or id" autocomplete="off">
+  <div id="results"></div>
+
+  <h2>Color topics by</h2>
+  <div class="seg" id="color-by">
+    <button data-mode="chapter" class="on">Chapter</button>
+    <button data-mode="type">Topic type</button>
+  </div>
+  <label class="check" style="margin-top:6px"><input type="checkbox" id="cluster" checked> Gather each chapter</label>
+  <label class="check"><input type="checkbox" id="hide-resource"> Hide resource-only topics</label>
+
+  <h2>Groups</h2>
+  <div id="groups"></div>
+
+  <h2>Relations between topics</h2>
+  <div id="relations"></div>
+  <h2>Declarations: keys, URLs, files</h2>
+  <div id="declarations"></div>
+
+  <h2>Focus</h2>
+  <select id="depth">
+    <option value="0">Whole graph</option>
+    <option value="1">Selected topic and its neighbors</option>
+    <option value="2">Up to 2 links away</option>
+    <option value="3">Up to 3 links away</option>
+  </select>
+  <div class="buttons">
+    <button class="plain" id="fit">Fit to view</button>
+    <button class="plain" id="relayout">Lay out again</button>
+  </div>
+  <p class="small">Drag the background to pan, the wheel to zoom, a node to move it. Click a node for its links; double-click to focus on it. Esc clears the selection.</p>
+</aside>
+<main>
+  <canvas id="canvas"></canvas>
+  <div id="tooltip"></div>
+  <div id="status"></div>
+</main>
+<aside id="details"></aside>
+<script id="graph-data" type="application/json">__DITA2GRAPH_DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("graph-data").textContent);
+
+// Relations between topics, then what topics and maps declare.
+const RELATIONS = {
+  "contains": { color: "#8c959f", label: "contains (table of contents)" },
+  "references": { color: "#2f81f7", label: "references (xref, related links)" },
+  "requires": { color: "#e5534b", label: "requires (prerequisite)" },
+  "generated-from": { color: "#e8912d", label: "generated-from (conref reuse)" },
+  "copy-of": { color: "#a371f7", label: "copy-of (copy-to)" },
+  "related-to": { color: "#3fb950", label: "related-to (shared product)" },
+  "applies-to": { color: "#1abc9c", label: "applies-to (UI control)" },
+};
+const DECLARATIONS = {
+  "uses-key": { color: "#b08800", label: "uses-key" },
+  "defines-key": { color: "#9a6700", label: "defines-key" },
+  "key-target": { color: "#bf8700", label: "key-target" },
+  "links-to": { color: "#6e7781", label: "links-to (URL)" },
+  "includes-code": { color: "#57606a", label: "includes-code (sample file)" },
+};
+const TYPE_COLORS = {
+  "DITA Map": "#1f2328", "Concept": "#2f81f7", "Task": "#3fb950", "Reference": "#e8912d",
+  "Topic": "#a371f7", "Topic Head": "#8c959f", "Glossary Entry": "#db61a2",
+  "Troubleshooting": "#e5534b", "Key": "#bf8700", "External Resource": "#6e7781", "File": "#57606a",
+};
+const DECLARED_TYPES = new Set(["Key", "External Resource", "File"]);
+// The map in the text color of the theme, dark on light, light on dark.
+TYPE_COLORS["DITA Map"] = getComputedStyle(document.documentElement).getPropertyValue("--map").trim() || "#1f2328";
+
+// ---- model -------------------------------------------------------------
+const nodes = DATA.nodes.map((n, i) => ({
+  ...n, i, x: NaN, y: NaN, vx: 0, vy: 0, deg: 0, fixed: false,
+  declared: DECLARED_TYPES.has(n.type), visible: false,
+}));
+const byId = new Map(nodes.map(n => [n.id, n]));
+const edges = DATA.edges
+  .filter(e => byId.has(e.from) && byId.has(e.to) && e.from !== e.to)
+  .map(e => ({ ...e, s: byId.get(e.from), t: byId.get(e.to), visible: false }));
+for (const e of edges) if (RELATIONS[e.relation]) { e.s.deg++; e.t.deg++; }
+const out = new Map(), inc = new Map();
+for (const e of edges) {
+  if (!out.has(e.s)) out.set(e.s, []);
+  if (!inc.has(e.t)) inc.set(e.t, []);
+  out.get(e.s).push(e); inc.get(e.t).push(e);
+}
+const relationCount = {};
+for (const e of edges) relationCount[e.relation] = (relationCount[e.relation] || 0) + 1;
+// Two nodes linked by several relations (a topic that references another
+// and reuses its content): each edge bends its own way, so every color
+// shows. The sign follows the edge's direction, which flips the normal.
+{
+  const pairs = new Map();
+  for (const e of edges) {
+    const key = e.s.i < e.t.i ? e.s.i + ":" + e.t.i : e.t.i + ":" + e.s.i;
+    if (!pairs.has(key)) pairs.set(key, []);
+    pairs.get(key).push(e);
+  }
+  const order = Object.keys(RELATIONS).concat(Object.keys(DECLARATIONS));
+  for (const list of pairs.values()) {
+    list.sort((a, b) => order.indexOf(a.relation) - order.indexOf(b.relation));
+    list.forEach((e, k) => { e.bend = (k - (list.length - 1) / 2) * (e.s.i < e.t.i ? 1 : -1); });
+  }
+}
+
+const state = {
+  colorBy: "chapter", cluster: true, hideResource: false, depth: 0, selected: null, hover: null,
+  relations: new Set(Object.keys(RELATIONS)), hiddenGroups: new Set(),
+};
+
+// ---- groups and colors -------------------------------------------------
+// Up to ten chapters, a categorical palette; more, hues around the wheel,
+// alternately darker and lighter so neighbors stay apart.
+const PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#b07aa1",
+  "#edc948", "#76b7b2", "#ff9da7", "#9c755f", "#3b3b98"];
+function chapterColor(i, n) {
+  if (n <= PALETTE.length) return PALETTE[i];
+  const hue = (i * 360 / n + 200) % 360;
+  return `hsl(${hue.toFixed(0)}, 62%, ${i % 2 ? 42 : 58}%)`;
+}
+const chapterColors = DATA.chapters.map((_, i) => chapterColor(i, DATA.chapters.length));
+function groupOf(n) {
+  if (state.colorBy === "type") return "t:" + n.type;
+  if (n.declared) return "t:" + n.type;
+  if (n.type === "DITA Map") return "map";
+  return n.chapter != null ? "c:" + n.chapter : "none";
+}
+function groupLabel(g) {
+  if (g === "map") return "Map";
+  if (g === "none") return "Not in the table of contents";
+  if (g.startsWith("c:")) return DATA.chapters[+g.slice(2)].title;
+  const t = g.slice(2);
+  return { "Key": "Keys", "External Resource": "External URLs", "File": "Files" }[t] || t;
+}
+function groupColor(g) {
+  if (g === "map") return TYPE_COLORS["DITA Map"];
+  if (g === "none") return "#8c959f";
+  if (g.startsWith("c:")) return chapterColors[+g.slice(2)];
+  return TYPE_COLORS[g.slice(2)] || "#8c959f";
+}
+function nodeColor(n) { return groupColor(groupOf(n)); }
+function edgeColor(rel) { return (RELATIONS[rel] || DECLARATIONS[rel] || { color: "#999" }).color; }
+
+// ---- visibility --------------------------------------------------------
+function enabled(e) { return state.relations.has(e.relation); }
+function candidate(n) {
+  if (n.declared) return true;
+  if (state.hiddenGroups.has(groupOf(n))) return false;
+  if (state.hideResource && n.role === "resource-only" && n !== state.selected) return false;
+  return true;
+}
+function computeVisibility() {
+  let keep = new Set(nodes.filter(candidate));
+  state.levels = null;
+  if (state.selected && state.depth > 0) {
+    keep.add(state.selected);
+    // How many links away from the selection each node is.
+    const level = new Map([[state.selected, 0]]);
+    let frontier = [state.selected];
+    for (let d = 1; d <= state.depth; d++) {
+      const next = [];
+      for (const n of frontier) {
+        for (const e of incident(n)) {
+          if (!enabled(e)) continue;
+          const m = e.s === n ? e.t : e.s;
+          if (keep.has(m) && !level.has(m)) { level.set(m, d); next.push(m); }
+        }
+      }
+      frontier = next;
+    }
+    keep = new Set(level.keys());
+    state.levels = level;
+  }
+  // A key, URL or file only shows with a link to a node that shows.
+  const linked = new Set();
+  for (const e of edges) {
+    if (enabled(e) && keep.has(e.s) && keep.has(e.t)) {
+      if (!e.s.declared || !e.t.declared) { linked.add(e.s); linked.add(e.t); }
+    }
+  }
+  for (const n of nodes) n.visible = keep.has(n) && (!n.declared || linked.has(n) || n === state.selected);
+  let shownEdges = 0;
+  for (const e of edges) { e.visible = enabled(e) && e.s.visible && e.t.visible; if (e.visible) shownEdges++; }
+  for (const n of nodes) if (n.visible && Number.isNaN(n.x)) place(n);
+  const shownNodes = nodes.filter(n => n.visible).length;
+  document.getElementById("status").textContent =
+    `${shownNodes} of ${nodes.length} nodes, ${shownEdges} of ${edges.length} links shown`;
+}
+
+function incident(n) { return (out.get(n) || []).concat(inc.get(n) || []); }
+// Leaves the focus layout, then recomputes what shows and lays the focus
+// out again: after any change of selection, depth, relation or group.
+function refresh(heat) {
+  leaveFocus();
+  computeVisibility();
+  if (state.levels) enterFocus();
+  reheat(heat);
+}
+
+// ---- layout ------------------------------------------------------------
+const topicCount = nodes.filter(n => !n.declared).length;
+const RADIUS = 60 * Math.sqrt(topicCount + 10);
+// Chapter centers around a circle, each given room for its size.
+const chapterCenters = (() => {
+  const size = DATA.chapters.map(() => 0);
+  for (const n of nodes) if (n.chapter != null) size[n.chapter]++;
+  const room = size.map(s => Math.sqrt(s) + 1), total = room.reduce((a, b) => a + b, 0) || 1;
+  const r = Math.max(RADIUS * 0.9, total * 40 / (2 * Math.PI));
+  let at = -Math.PI / 2;
+  return room.map(w => {
+    const a = at + Math.PI * w / total;
+    at += 2 * Math.PI * w / total;
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+  });
+})();
+function chapterCenter(c) { return chapterCenters[c]; }
+// The focus: the selection in the middle, the nodes one link away on a
+// first ring, ordered by the relation that links them so each relation
+// makes its own arc, those further away on outer rings next to the node
+// that brings them. The whole-graph positions come back on leaving.
+const RELATION_ORDER = Object.keys(RELATIONS).concat(Object.keys(DECLARATIONS));
+let savedLayout = null;
+function enterFocus() {
+  const sel = state.selected, levels = state.levels;
+  savedLayout = new Map(nodes.map(n => [n, [n.x, n.y, n.fixed]]));
+  if (Number.isNaN(sel.x)) place(sel);
+  const cx = sel.x, cy = sel.y;
+  const rings = [];
+  for (const [n, d] of levels) if (d > 0) (rings[d] = rings[d] || []).push(n);
+  const angle = new Map([[sel, 0]]), radii = [0];
+  const relationTo = n => {
+    let best = RELATION_ORDER.length;
+    for (const e of incident(n)) {
+      if ((e.s === sel || e.t === sel) && enabled(e)) best = Math.min(best, RELATION_ORDER.indexOf(e.relation));
+    }
+    return best;
+  };
+  const parentAngle = (n, d) => {
+    for (const e of incident(n)) {
+      const m = e.s === n ? e.t : e.s;
+      if (enabled(e) && levels.get(m) === d - 1 && angle.has(m)) return angle.get(m);
+    }
+    return 0;
+  };
+  for (let d = 1; d < rings.length; d++) {
+    const ring = rings[d] || [];
+    const key = new Map(ring.map(n => [n, d === 1 ? relationTo(n) : parentAngle(n, d)]));
+    ring.sort((a, b) => key.get(a) - key.get(b) || a.title.localeCompare(b.title));
+    radii[d] = Math.max(radii[d - 1] + 220, ring.length * 30 / (2 * Math.PI));
+    ring.forEach((n, i) => {
+      const a = (2 * Math.PI * i) / ring.length - Math.PI / 2;
+      angle.set(n, a);
+      n.x = cx + Math.cos(a) * radii[d]; n.y = cy + Math.sin(a) * radii[d];
+      n.vx = n.vy = 0; n.fixed = false;
+    });
+  }
+  sel.fixed = true;
+  state.focus = { x: cx, y: cy, radii };
+}
+function leaveFocus() {
+  if (!savedLayout) return;
+  for (const [n, [x, y, fixed]] of savedLayout) { n.x = x; n.y = y; n.fixed = fixed; n.vx = n.vy = 0; }
+  savedLayout = null;
+  state.focus = null;
+}
+function jitter(r) { return (Math.random() - 0.5) * r; }
+function place(n) {
+  // A topic around its chapter's center, the map in the middle, anything
+  // else next to a node already placed.
+  if (n.chapter != null) {
+    const c = chapterCenter(n.chapter);
+    n.x = c.x + jitter(RADIUS * 0.3); n.y = c.y + jitter(RADIUS * 0.3);
+    return;
+  }
+  if (n.type === "DITA Map") { n.x = jitter(10); n.y = jitter(10); return; }
+  for (const e of (out.get(n) || []).concat(inc.get(n) || [])) {
+    const m = e.s === n ? e.t : e.s;
+    if (!Number.isNaN(m.x)) { n.x = m.x + jitter(60); n.y = m.y + jitter(60); return; }
+  }
+  n.x = jitter(RADIUS * 1.6); n.y = jitter(RADIUS * 1.6);
+}
+function initialLayout() {
+  for (const n of nodes) { n.x = NaN; n.y = NaN; n.vx = n.vy = 0; n.fixed = false; }
+  for (const n of nodes) if (!n.declared) place(n);
+}
+let alpha = 1;
+function tick() {
+  const shown = nodes.filter(n => n.visible);
+  const cell = 90, repulse = 2600 * alpha;
+  const grid = new Map();
+  for (const n of shown) {
+    const key = Math.floor(n.x / cell) + "," + Math.floor(n.y / cell);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(n);
+  }
+  for (const n of shown) {
+    const gx = Math.floor(n.x / cell), gy = Math.floor(n.y / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const bucket = grid.get((gx + dx) + "," + (gy + dy));
+      if (!bucket) continue;
+      for (const m of bucket) {
+        if (m.i <= n.i) continue;
+        let x = n.x - m.x, y = n.y - m.y, d2 = x * x + y * y;
+        if (d2 > cell * cell * 2) continue;
+        if (d2 < 1) { x = Math.random() - 0.5; y = Math.random() - 0.5; d2 = 1; }
+        const f = repulse / d2;
+        n.vx += x * f / Math.sqrt(d2); n.vy += y * f / Math.sqrt(d2);
+        m.vx -= x * f / Math.sqrt(d2); m.vy -= y * f / Math.sqrt(d2);
+      }
+    }
+  }
+  const focus = state.focus;
+  for (const e of edges) {
+    if (!e.visible) continue;
+    const length = e.relation === "contains" ? 45 : (e.s.declared || e.t.declared) ? 30 : 70;
+    let strength = focus ? 0.005 : e.relation === "contains" ? 0.08 : 0.03;
+    // Gathered chapters: a link across two of them pulls little.
+    if (!focus && state.cluster && e.s.chapter != null && e.t.chapter != null && e.s.chapter !== e.t.chapter) strength *= 0.1;
+    const x = e.t.x - e.s.x, y = e.t.y - e.s.y, d = Math.sqrt(x * x + y * y) || 1;
+    const f = (d - length) / d * strength * alpha;
+    e.s.vx += x * f; e.s.vy += y * f; e.t.vx -= x * f; e.t.vy -= y * f;
+  }
+  for (const n of shown) {
+    if (!focus) {
+      let cx = 0, cy = 0, pull = 0.004;
+      if (state.cluster && n.chapter != null) {
+        const c = chapterCenter(n.chapter); cx = c.x; cy = c.y; pull = 0.08;
+      }
+      n.vx += (cx - n.x) * pull * alpha; n.vy += (cy - n.y) * pull * alpha;
+    }
+    if (n.fixed) { n.vx = n.vy = 0; continue; }
+    n.vx *= 0.6; n.vy *= 0.6;
+    const v = Math.hypot(n.vx, n.vy);
+    if (v > 40) { n.vx *= 40 / v; n.vy *= 40 / v; }
+    n.x += n.vx; n.y += n.vy;
+    if (focus) {
+      // Each node stays on its ring, free to slide along it.
+      const level = state.levels.get(n) || 0, x = n.x - focus.x, y = n.y - focus.y;
+      const d = Math.hypot(x, y) || 1, r = focus.radii[level];
+      n.x = focus.x + x / d * r; n.y = focus.y + y / d * r;
+    }
+  }
+  alpha *= 0.985;
+}
+function reheat(a) { alpha = Math.max(alpha, a); requestDraw(); }
+
+// ---- view --------------------------------------------------------------
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const view = { x: 0, y: 0, k: 1 };
+let width = 0, height = 0, dpr = 1;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  width = canvas.clientWidth; height = canvas.clientHeight;
+  canvas.width = width * dpr; canvas.height = height * dpr;
+  requestDraw();
+}
+function toScreen(n) { return { x: (n.x - view.x) * view.k + width / 2, y: (n.y - view.y) * view.k + height / 2 }; }
+function toWorld(sx, sy) { return { x: (sx - width / 2) / view.k + view.x, y: (sy - height / 2) / view.k + view.y }; }
+function radius(n) {
+  if (n.type === "DITA Map") return 11;
+  if (n.declared) return 3;
+  return 4 + Math.min(9, Math.sqrt(n.deg) * 1.1);
+}
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function fit() {
+  const shown = nodes.filter(n => n.visible);
+  if (!shown.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of shown) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+  view.x = (x0 + x1) / 2; view.y = (y0 + y1) / 2;
+  // Room for the labels on the sides; no closer than a readable size.
+  const w = Math.max(width - 360, width * 0.5), h = Math.max(height - 80, height * 0.6);
+  view.k = Math.min(state.focus ? 1.3 : 2, w / Math.max(x1 - x0, 50), h / Math.max(y1 - y0, 50));
+  requestDraw();
+}
+function neighborsOf(n) {
+  const s = new Set();
+  for (const e of (out.get(n) || []).concat(inc.get(n) || [])) if (e.visible) s.add(e.s === n ? e.t : e.s);
+  return s;
+}
+function draw() {
+  const bg = css("--canvas-bg"), labelColor = css("--label"), halo = css("--label-halo");
+  const edgeAlpha = parseFloat(css("--edge-alpha")) || 0.55;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height);
+  ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * (width / 2 - view.x * view.k), dpr * (height / 2 - view.y * view.k));
+  const sel = state.selected && state.selected.visible ? state.selected : null;
+  const near = sel ? neighborsOf(sel) : null;
+  // Edges, one path per relation; those of the selection drawn over them.
+  const byRelation = new Map();
+  for (const e of edges) {
+    if (!e.visible) continue;
+    if (!byRelation.has(e.relation)) byRelation.set(e.relation, []);
+    byRelation.get(e.relation).push(e);
+  }
+  const lineWidth = 1.1 / view.k;
+  let shownEdges = 0;
+  for (const list of byRelation.values()) shownEdges += list.length;
+  // Many edges: each one lighter, so the mass does not hide the colors.
+  const crowd = Math.min(1, Math.sqrt(1500 / Math.max(shownEdges, 1)));
+  const arrows = view.k > 0.7 && shownEdges < 4000;
+  for (const [rel, list] of byRelation) {
+    ctx.strokeStyle = edgeColor(rel); ctx.fillStyle = edgeColor(rel);
+    ctx.globalAlpha = (sel ? edgeAlpha * (state.focus ? 0.6 : 0.25) : edgeAlpha) * crowd;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
+    for (const e of list) path(e);
+    ctx.stroke();
+    if (arrows) for (const e of list) arrow(e, 4.5 / view.k);
+  }
+  if (sel) {
+    ctx.globalAlpha = 1; ctx.lineWidth = 2.2 / view.k;
+    for (const e of incident(sel)) {
+      if (!e.visible) continue;
+      ctx.strokeStyle = edgeColor(e.relation); ctx.fillStyle = edgeColor(e.relation);
+      ctx.beginPath(); path(e); ctx.stroke();
+      arrow(e, 7 / view.k);
+    }
+  }
+  // Nodes: a resource-only topic is hollow, it is not a published page.
+  for (const n of nodes) {
+    if (!n.visible) continue;
+    const dim = sel && n !== sel && !near.has(n);
+    ctx.globalAlpha = dim ? (state.focus ? 0.55 : 0.25) : 1;
+    const r = radius(n), color = nodeColor(n);
+    ctx.beginPath();
+    if (n.declared) ctx.rect(n.x - r, n.y - r, 2 * r, 2 * r); else ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+    if (n.role === "resource-only") {
+      ctx.fillStyle = bg; ctx.fill();
+      ctx.strokeStyle = color; ctx.lineWidth = 2 / view.k; ctx.stroke();
+    } else {
+      ctx.fillStyle = color; ctx.fill();
+    }
+    if (n === sel || n === state.hover) {
+      ctx.globalAlpha = 1; ctx.strokeStyle = css("--accent"); ctx.lineWidth = 3 / view.k;
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 4 / view.k, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // Labels: the selection and its neighbors, else every node once zoomed in.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.font = "12px system-ui, -apple-system, 'Segoe UI', sans-serif";
+  ctx.textBaseline = "middle";
+  const shownCount = nodes.reduce((c, n) => c + (n.visible ? 1 : 0), 0);
+  const all = view.k * Math.sqrt(1000 / Math.max(shownCount, 1)) > 1.6;
+  const focus = state.focus;
+  for (const n of nodes) {
+    if (!n.visible) continue;
+    const important = n === sel || n === state.hover || (near && near.has(n)) || n.type === "DITA Map";
+    const show = important || (focus
+      ? shownCount <= 60 || state.levels.get(n) <= 1 || view.k > 1.1
+      : !sel && all && !n.declared);
+    if (!show) continue;
+    const p = toScreen(n);
+    if (p.x < -300 || p.x > width + 300 || p.y < -20 || p.y > height + 20) continue;
+    const text = n.title.length > 48 ? n.title.slice(0, 46) + "…" : n.title;
+    // On the left half of a focus, the label goes left of its node.
+    const left = focus && n !== sel && n.x < focus.x - 1;
+    ctx.textAlign = left ? "right" : "left";
+    const x = left ? p.x - radius(n) * view.k - 4 : p.x + radius(n) * view.k + 4;
+    ctx.lineWidth = 4; ctx.strokeStyle = halo; ctx.strokeText(text, x, p.y);
+    ctx.fillStyle = labelColor; ctx.fillText(text, x, p.y);
+  }
+  ctx.textAlign = "left";
+}
+// The control point of a bent edge, or null for a straight one.
+function control(e) {
+  if (!e.bend) return null;
+  const x = e.t.x - e.s.x, y = e.t.y - e.s.y, d = Math.hypot(x, y) || 1;
+  const off = e.bend * Math.min(14 / view.k, d * 0.3);
+  return { x: (e.s.x + e.t.x) / 2 - y / d * off, y: (e.s.y + e.t.y) / 2 + x / d * off };
+}
+function path(e) {
+  ctx.moveTo(e.s.x, e.s.y);
+  const c = control(e);
+  if (c) ctx.quadraticCurveTo(c.x, c.y, e.t.x, e.t.y); else ctx.lineTo(e.t.x, e.t.y);
+}
+function arrow(e, size) {
+  // Along the last stretch: from the control point of a bent edge.
+  const from = control(e) || e.s;
+  const x = e.t.x - from.x, y = e.t.y - from.y, d = Math.hypot(x, y);
+  if (d < 1) return;
+  const ux = x / d, uy = y / d, r = radius(e.t) + 1 / view.k;
+  const tx = e.t.x - ux * r, ty = e.t.y - uy * r;
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - ux * size - uy * size * 0.5, ty - uy * size + ux * size * 0.5);
+  ctx.lineTo(tx - ux * size + uy * size * 0.5, ty - uy * size - ux * size * 0.5);
+  ctx.closePath(); ctx.fill();
+}
+let frameRequested = false;
+function requestDraw() {
+  if (frameRequested) return;
+  frameRequested = true;
+  requestAnimationFrame(() => {
+    frameRequested = false;
+    if (alpha > 0.01) {
+      const shown = nodes.reduce((c, n) => c + (n.visible ? 1 : 0), 0);
+      const steps = shown > 1500 ? 1 : shown > 400 ? 2 : 4;
+      for (let s = 0; s < steps; s++) tick();
+      requestDraw();
+    }
+    draw();
+  });
+}
+
+// ---- pointer -----------------------------------------------------------
+const tooltip = document.getElementById("tooltip");
+function nodeAt(sx, sy) {
+  const w = toWorld(sx, sy);
+  let best = null, bestD = Infinity;
+  for (const n of nodes) {
+    if (!n.visible) continue;
+    const d = Math.hypot(n.x - w.x, n.y - w.y), r = radius(n) + 4 / view.k;
+    if (d < r && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+let drag = null;
+canvas.addEventListener("pointerdown", ev => {
+  canvas.setPointerCapture(ev.pointerId);
+  const n = nodeAt(ev.offsetX, ev.offsetY);
+  drag = { n, x: ev.offsetX, y: ev.offsetY, vx: view.x, vy: view.y, moved: false };
+  canvas.classList.add("dragging");
+});
+canvas.addEventListener("pointermove", ev => {
+  if (drag) {
+    const dx = ev.offsetX - drag.x, dy = ev.offsetY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (drag.n) {
+      const w = toWorld(ev.offsetX, ev.offsetY);
+      drag.n.x = w.x; drag.n.y = w.y; drag.n.fixed = true; reheat(0.2);
+    } else {
+      view.x = drag.vx - dx / view.k; view.y = drag.vy - dy / view.k;
+    }
+    requestDraw();
+    return;
+  }
+  const n = nodeAt(ev.offsetX, ev.offsetY);
+  if (n !== state.hover) { state.hover = n; requestDraw(); }
+  if (n) {
+    const group = groupLabel(groupOf(n));
+    tooltip.innerHTML = `<b>${esc(n.title)}</b><br><span class="small">${esc(n.type)} · ${esc(group)}</span>`;
+    tooltip.style.display = "block";
+    tooltip.style.left = Math.min(ev.offsetX + 14, width - 330) + "px";
+    tooltip.style.top = (ev.offsetY + 14) + "px";
+  } else tooltip.style.display = "none";
+});
+canvas.addEventListener("pointerup", ev => {
+  canvas.classList.remove("dragging");
+  if (drag && !drag.moved) select(drag.n);
+  else if (drag && drag.n) drag.n.fixed = true;
+  drag = null;
+});
+canvas.addEventListener("pointerleave", () => { tooltip.style.display = "none"; state.hover = null; requestDraw(); });
+canvas.addEventListener("dblclick", ev => {
+  const n = nodeAt(ev.offsetX, ev.offsetY);
+  if (!n) return;
+  if (state.depth === 0) setDepth(1);
+  select(n, true);
+});
+canvas.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  const before = toWorld(ev.offsetX, ev.offsetY);
+  view.k = Math.max(0.05, Math.min(8, view.k * Math.exp(-ev.deltaY * 0.0015)));
+  const after = toWorld(ev.offsetX, ev.offsetY);
+  view.x += before.x - after.x; view.y += before.y - after.y;
+  requestDraw();
+}, { passive: false });
+window.addEventListener("keydown", ev => { if (ev.key === "Escape") select(null); });
+window.addEventListener("resize", resize);
+
+// ---- selection and details ---------------------------------------------
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function select(n, center) {
+  state.selected = n || null;
+  document.body.classList.toggle("has-selection", !!n);
+  saveHash();
+  if (state.depth > 0) { refresh(0.5); setTimeout(fit, 450); }
+  renderDetails();
+  setTimeout(resize, 0);
+  if (n && center && !Number.isNaN(n.x)) { view.x = n.x; view.y = n.y; }
+  requestDraw();
+}
+function renderDetails() {
+  const box = document.getElementById("details");
+  const n = state.selected;
+  if (!n) { box.innerHTML = ""; return; }
+  const chapter = n.chapter != null ? DATA.chapters[n.chapter].title : (n.declared ? "" : "Not in the table of contents");
+  let html = `<button class="plain" id="close" title="Esc">Close</button><h1>${esc(n.title)}</h1>`;
+  html += `<dl class="meta"><dt>Type</dt><dd>${esc(n.type)}</dd><dt>Id</dt><dd>${esc(n.id)}</dd>`;
+  if (chapter) html += `<dt>Chapter</dt><dd>${esc(chapter)}</dd>`;
+  if (n.file) html += `<dt>File</dt><dd>${esc(n.file)}</dd>`;
+  html += `</dl>`;
+  if (n.role) html += `<p><span class="badge">${esc(n.role)}</span> <span class="small">not a page of the publication</span></p>`;
+  if (n.dir) html += `<p><a href="okf/${esc(n.dir)}/${encodeURIComponent(n.id)}.md">Open the concept file</a></p>`;
+  html += `<div class="links">` + linkList("Links from this " + (n.declared ? "node" : "topic"), out.get(n) || [], e => e.t)
+    + linkList("Links to it", inc.get(n) || [], e => e.s) + `</div>`;
+  box.innerHTML = html;
+  box.querySelector("#close").onclick = () => select(null);
+  box.querySelectorAll("li[data-id]").forEach(li => li.onclick = () => {
+    const m = byId.get(li.dataset.id);
+    reveal(m); select(m, true);
+  });
+}
+function linkList(title, list, other) {
+  if (!list.length) return "";
+  const groups = new Map();
+  for (const e of list) { if (!groups.has(e.relation)) groups.set(e.relation, []); groups.get(e.relation).push(e); }
+  let html = `<h2>${esc(title)}</h2>`;
+  for (const [rel, es] of groups) {
+    html += `<div class="rel"><span class="line-swatch" style="background:${edgeColor(rel)}"></span>${esc(rel)} <span class="small">(${es.length})</span></div><ul>`;
+    for (const e of es.slice(0, 60)) {
+      const m = other(e);
+      const frag = e.fragments && e.fragments.length ? ` <span class="frag">${esc(e.fragments.join(", "))}</span>` : "";
+      html += `<li data-id="${esc(m.id)}">${esc(m.title)}${frag}</li>`;
+    }
+    if (es.length > 60) html += `<li class="small">+${es.length - 60} more</li>`;
+    html += `</ul>`;
+  }
+  return html;
+}
+function reveal(n) {
+  // A topic chosen from a list shows even if its group or role was hidden.
+  if (!n || n.declared) return;
+  state.hiddenGroups.delete(groupOf(n));
+  if (n.role === "resource-only") { state.hideResource = false; document.getElementById("hide-resource").checked = false; }
+  refresh(0.3); renderGroups();
+}
+
+// ---- controls ----------------------------------------------------------
+function relationRows(boxId, defs) {
+  const box = document.getElementById(boxId);
+  box.innerHTML = "";
+  for (const [rel, def] of Object.entries(defs)) {
+    if (!relationCount[rel]) continue;
+    const row = document.createElement("div");
+    row.className = "row" + (state.relations.has(rel) ? "" : " off");
+    row.innerHTML = `<span class="line-swatch" style="background:${def.color}"></span><span class="label">${esc(def.label)}</span><span class="count">${relationCount[rel]}</span>`;
+    row.onclick = () => {
+      if (state.relations.has(rel)) state.relations.delete(rel); else state.relations.add(rel);
+      row.classList.toggle("off");
+      refresh(0.4); renderGroups(); renderDetails();
+    };
+    box.appendChild(row);
+  }
+}
+function renderGroups() {
+  const counts = new Map();
+  for (const n of nodes) {
+    if (n.declared && !n.visible) continue;
+    const g = groupOf(n);
+    counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  const order = [...counts.keys()].sort((a, b) => {
+    const rank = g => g === "map" ? -2 : g.startsWith("c:") ? +g.slice(2) : g === "none" ? 1e6 : 1e5;
+    return rank(a) - rank(b) || groupLabel(a).localeCompare(groupLabel(b));
+  });
+  const box = document.getElementById("groups");
+  box.innerHTML = "";
+  for (const g of order) {
+    const row = document.createElement("div");
+    row.className = "row" + (state.hiddenGroups.has(g) ? " off" : "");
+    row.innerHTML = `<span class="swatch" style="background:${groupColor(g)}"></span><span class="label">${esc(groupLabel(g))}</span><span class="count">${counts.get(g)}</span>`;
+    row.title = "Click to hide or show";
+    row.onclick = () => {
+      if (state.hiddenGroups.has(g)) state.hiddenGroups.delete(g); else state.hiddenGroups.add(g);
+      refresh(0.4); renderGroups();
+    };
+    box.appendChild(row);
+  }
+}
+function setDepth(d) {
+  state.depth = d;
+  document.getElementById("depth").value = String(d);
+  saveHash();
+  refresh(0.6);
+  setTimeout(fit, 500);
+}
+function setColorBy(mode) {
+  state.colorBy = mode;
+  document.querySelectorAll("#color-by button").forEach(x => x.classList.toggle("on", x.dataset.mode === mode));
+  state.hiddenGroups.clear();
+  saveHash();
+  refresh(0.2); renderGroups(); renderDetails();
+}
+document.querySelectorAll("#color-by button").forEach(b => b.onclick = () => setColorBy(b.dataset.mode));
+// The view in the address: #topic=<id>&depth=<n>&color=type, to link to it.
+function saveHash() {
+  const p = new URLSearchParams();
+  if (state.selected) p.set("topic", state.selected.id);
+  if (state.depth) p.set("depth", state.depth);
+  if (state.colorBy !== "chapter") p.set("color", state.colorBy);
+  const hash = p.toString();
+  try { history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search); } catch (_) {}
+}
+function loadHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get("color") === "type") setColorBy("type");
+  const depth = Math.max(0, Math.min(3, parseInt(p.get("depth") || "0", 10) || 0));
+  const n = byId.get(p.get("topic") || "");
+  if (depth) { state.depth = depth; document.getElementById("depth").value = String(depth); }
+  if (n) { reveal(n); select(n, true); }
+}
+document.getElementById("cluster").onchange = ev => { state.cluster = ev.target.checked; reheat(0.6); };
+document.getElementById("hide-resource").onchange = ev => {
+  state.hideResource = ev.target.checked; refresh(0.3); renderGroups();
+};
+document.getElementById("depth").onchange = ev => setDepth(+ev.target.value);
+document.getElementById("fit").onclick = fit;
+document.getElementById("relayout").onclick = () => {
+  savedLayout = null; state.focus = null;
+  initialLayout(); refresh(1); setTimeout(fit, 800);
+};
+const search = document.getElementById("search");
+search.oninput = () => {
+  const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+  const box = document.getElementById("results");
+  box.innerHTML = "";
+  if (!words.length) return;
+  const hits = nodes.filter(n => !n.declared)
+    .filter(n => words.every(w => (n.title + " " + n.id).toLowerCase().includes(w)))
+    .slice(0, 12);
+  for (const n of hits) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="swatch" style="background:${nodeColor(n)}"></span><span class="label">${esc(n.title)}</span><span class="type">${esc(n.type)}</span>`;
+    row.onclick = () => { reveal(n); select(n, true); };
+    box.appendChild(row);
+  }
+  if (!hits.length) box.innerHTML = `<div class="small">No topic matches.</div>`;
+};
+
+// ---- start -------------------------------------------------------------
+document.getElementById("map-title").textContent = DATA.title;
+document.title = DATA.title + " — DITA2Graph";
+document.getElementById("summary").textContent =
+  `${topicCount} maps and topics, ${edges.length} links. ${DATA.generated}.`;
+relationRows("relations", RELATIONS);
+relationRows("declarations", DECLARATIONS);
+initialLayout();
+computeVisibility();
+renderGroups();
+resize();
+for (let s = 0; s < 120; s++) tick();
+fit();
+loadHash();
+requestDraw();
+</script>
+</body>
+</html>

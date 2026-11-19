@@ -30,6 +30,9 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once per run: `Build`'s many flags make it larger than the other
+// variants, at no cost worth a `Box` (clippy::large_enum_variant).
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Build an OKF bundle from a normalized DITA model (§3.2), then
@@ -103,6 +106,12 @@ struct BuildArgs {
     /// Accepts "true"/"false".
     #[arg(long, default_value = "false")]
     wikilinks: String,
+    /// Whether to also write graph.html, the graph in one self-contained
+    /// page a browser opens from disk: relations colored by type, topics
+    /// by chapter or type (§2.3's `args.dita2graph.viewer`). Accepts
+    /// "true"/"false".
+    #[arg(long, default_value = "false")]
+    viewer: String,
     /// Path to an ONNX sentence-embedding model (§13.1's node-level
     /// embeddings). Optional -- when given, must be paired with
     /// `--embedding-tokenizer`; when omitted, no `rag/embeddings.jsonl`
@@ -149,6 +158,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
         emit_rdf,
         rdf_base,
         wikilinks,
+        viewer,
         embedding_model,
         embedding_tokenizer,
     } = args;
@@ -167,6 +177,7 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     let bundle_options = BundleOptions {
         wikilinks: parse_bool_arg(&wikilinks, "--wikilinks")?,
     };
+    let viewer = parse_bool_arg(&viewer, "--viewer")?;
     // A bad base fails the build before anything is written.
     if emit_rdf && let Some(base) = &rdf_base {
         dita2graph_core::rdf::check_base(base)?;
@@ -196,8 +207,9 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     // normalized model rather than each re-deriving it.
     let generated_at = build_time()?;
 
-    // graph.json and graph.db hold the same node/edge view: built once.
-    let graph = (emit_graph_json || store == "sqlite").then(|| graph_view(&nodes));
+    // graph.json, graph.db and graph.html hold the same node/edge view:
+    // built once.
+    let graph = (emit_graph_json || store == "sqlite" || viewer).then(|| graph_view(&nodes));
     let summary = write_bundle_with(
         &nodes,
         &output,
@@ -213,6 +225,24 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
         output.join("okf").display(),
         summary.concepts_unchanged
     );
+
+    // A later build without --viewer removes the page, so it never shows
+    // an older graph than okf/.
+    if let (true, Some(graph)) = (viewer, graph.as_ref()) {
+        let written = dita2graph_core::viewer::write_viewer(&nodes, graph, &output, generated_at)?;
+        println!(
+            "wrote the graph viewer ({} node(s), {} edge(s), {} chapter(s)) to {}",
+            written.nodes,
+            written.edges,
+            written.chapters,
+            output.join(dita2graph_core::viewer::VIEWER_FILE).display()
+        );
+    } else if dita2graph_core::viewer::remove_stale_viewer(&output)? {
+        println!(
+            "removed stale {} (this build didn't request --viewer)",
+            output.join(dita2graph_core::viewer::VIEWER_FILE).display()
+        );
+    }
 
     // Captured *before* write_rag_index overwrites rag/chunks.jsonl --
     // this is the only chance to see what the previous build's chunk
@@ -663,6 +693,7 @@ mod tests {
             emit_rdf: "false".into(),
             rdf_base: None,
             wikilinks: "false".into(),
+            viewer: "false".into(),
             embedding_model: None,
             embedding_tokenizer: None,
         }
@@ -694,6 +725,32 @@ mod tests {
         let code = run_build(build_args(&input_path, &output)).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(!output.join("rdf").exists());
+    }
+
+    /// `--viewer true` writes graph.html, even without graph.json; a later
+    /// build without it removes the page rather than leave an older graph.
+    #[test]
+    fn run_build_writes_the_viewer_on_request_and_removes_it_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("normalized-model.json");
+        fs::write(&input_path, serde_json::to_string(&sample_nodes()).unwrap()).unwrap();
+        let output = dir.path().join("out");
+        let page = output.join(dita2graph_core::viewer::VIEWER_FILE);
+
+        let code = run_build(BuildArgs {
+            viewer: "true".into(),
+            emit_graph_json: "false".into(),
+            ..build_args(&input_path, &output)
+        })
+        .unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(!output.join("graph.json").exists());
+        let html = fs::read_to_string(&page).unwrap();
+        assert!(html.contains("\"id\":\"installing-product\""), "{html}");
+
+        let code = run_build(build_args(&input_path, &output)).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(!page.exists());
     }
 
     #[test]

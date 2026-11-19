@@ -36,6 +36,7 @@ pub mod relations;
 pub mod secrets;
 pub mod shacl;
 pub mod store;
+pub mod viewer;
 
 pub use embeddings::{
     Embedder, EmbeddingSummary, PreviousEmbeddings, cosine_similarity, write_embeddings_index,

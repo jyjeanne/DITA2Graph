@@ -15,4 +15,5 @@
   <param name="rdf" default="false"/>
   <param name="rdf.base" default=""/>
   <param name="wikilinks" default="false"/>
+  <param name="viewer" default="false"/>
 </dita2graph-config>

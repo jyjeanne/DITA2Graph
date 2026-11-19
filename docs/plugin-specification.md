@@ -273,8 +273,9 @@ Key parameters:
 | `args.dita2graph.rdf` | `false` | Whether to also write the graph as RDF under `rdf/` (§2.4): `graph.ttl`, the `d2g` ontology and its SHACL shapes ([semantic-model.md](semantic-model.md)). Forwarded to `dita2graph-core build --emit-rdf` |
 | `args.dita2graph.rdf.base` | *(none)* | Base IRI of the RDF export's nodes, e.g. `https://docs.example.com/user-guide/`. Without it the IRIs use the placeholder `https://dita2graph.invalid/<map id>/` and `DITA2GRAPH083W` is logged. Forwarded to `--rdf-base` |
 | `args.dita2graph.wikilinks` | `false` | Whether each concept's front matter also holds its relations as top-level properties of `[[wikilinks]]` (§4.4), the typed links Obsidian and its Breadcrumbs and ExcaliBrain plugins read. Forwarded to `dita2graph-core build --wikilinks` |
+| `args.dita2graph.viewer` | `false` | Whether to also write `graph.html` (§2.4), the graph in one self-contained page a browser opens from disk: relations colored by type, topics by chapter or type. Forwarded to `dita2graph-core build --viewer` |
 
-All eight parameters above are declared as `<param>` children of the
+All nine parameters above are declared as `<param>` children of the
 `dita2graph` `<transtype>` in `plugin.xml`, required for DITA-OT's own
 CLI parser to accept a `--args.dita2graph.*` override at all — a real,
 previously-unverified gap, not just a documentation nicety: confirmed
@@ -301,7 +302,8 @@ output/
  │       └── configuration.md
  ├── graph.json              # Flattened nodes+edges view of the bundle, for tooling/debug
  ├── graph.db                  # SQLite index of the same nodes+edges (opt-in, §7/§3.3)
- ├── build-state.json         # Per-id fingerprints for incremental rebuild (§3.3) -- hashes only,
+ ├── graph.html               # The graph in one self-contained page (opt-in, args.dita2graph.viewer)
+├── build-state.json         # Per-id fingerprints for incremental rebuild (§3.3) -- hashes only,
  │                              # no topic content, so it needs no secret scan of its own (§6.4)
  ├── rag/                     # Content-search artifact (§13.1), same extraction pass as okf/
  │   ├── chunks.jsonl           # One enriched, plain-text record per topic
@@ -350,6 +352,20 @@ all. `rdf/` is written only when `args.dita2graph.rdf=true`, from the same
 normalized model, and goes through the same secret scan as `rag/` (§6.4);
 like `graph.db`, a later build without it removes the export's files, so
 `rdf/` never describes an older graph than `okf/`.
+
+`graph.html` is written only when `args.dita2graph.viewer=true`: the
+nodes and edges of `graph.json`, with each topic's title and chapter (the
+map's top-level entry it sits under, nearest one down the `contains`
+edges), embedded in one page with its own script, no library and no
+network, so a browser opens it from disk. It draws each relation in its
+own color with a switch to show or hide it (the declarations, keys, URLs
+and sample files, hidden at first), colors the topics by chapter or by
+type, with a legend that hides a group on a click, draws a resource-only
+topic hollow, and offers a search, the neighbors of a topic up to three
+links away, and the links of the selected topic, grouped by relation.
+`#topic=<id>&depth=<n>&color=type` in the address opens it on a topic. It
+holds titles, not topic text. A later build without the option removes a
+`graph.html` it wrote (one without its `generator` mark stays).
 
 ### 2.5 Error handling, logging, and exit codes
 
@@ -896,7 +912,10 @@ requires:
 - '[[installing-product-prereqs]]'
 ```
 
-This is for Obsidian, opened on `okf/` as a vault: it reads links in
+This is for Obsidian, opened on the output directory as a vault (not on
+`okf/`: Obsidian and its plugins write notes at the vault's root, such as
+ExcaliBrain's `excalibrain.md`, and the build's validation of `okf/` fails
+on a note without OKF front matter): it reads links in
 top-level properties (properties panel, backlinks, graph view), and so do
 the plugins that draw typed links, such as Breadcrumbs (edge fields named
 after the relations) and ExcaliBrain (through Dataview). None of them

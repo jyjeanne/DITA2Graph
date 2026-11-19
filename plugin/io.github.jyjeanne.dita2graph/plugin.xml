@@ -63,6 +63,10 @@
       <val>true</val>
       <val default="true">false</val>
     </param>
+    <param name="args.dita2graph.viewer" desc="Whether to also write graph.html, the graph in one self-contained page a browser opens from disk, without a server or a network: relations colored by type, with a switch for each, topics colored by chapter or by type, search, and a focus on the neighbors of a topic." type="enum">
+      <val>true</val>
+      <val default="true">false</val>
+    </param>
   </transtype>
 
   <!-- Imports build.xml's dita2graph target into the Ant build, the same
