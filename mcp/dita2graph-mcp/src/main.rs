@@ -1376,6 +1376,82 @@ mod tests {
         assert_eq!(search("git"), "no topics matched `git`");
     }
 
+    /// Bench r-o3 (Oxygen guide): "rename id" found nothing, although the
+    /// answer is "Search and Rename Actions for IDs in DITA"; a session had
+    /// to think of "rename" alone. A query of several words now also lists
+    /// the titles and ids with every word, in any order, each at the start
+    /// of a word ("valid" has no "id"), stop words left out.
+    #[test]
+    fn search_topics_finds_every_word_of_a_query_in_any_order() {
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            {"type": "map", "id": "user-guide", "title": "User Guide",
+             "sourceFile": "user-guide.ditamap",
+             "links": [{"relation": "contains", "target": "dita-search-rename-ids"},
+                       {"relation": "contains", "target": "generate-ids"},
+                       {"relation": "contains", "target": "validation"},
+                       {"relation": "contains", "target": "refactoring"}]},
+            {"type": "topic", "id": "dita-search-rename-ids", "topicType": "task",
+             "title": "Search and Rename Actions for IDs in DITA",
+             "sourceFile": "topics/dita-search-rename-ids.dita", "links": []},
+            {"type": "topic", "id": "generate-ids", "topicType": "task",
+             "title": "Generating Unique IDs", "sourceFile": "topics/generate-ids.dita", "links": []},
+            {"type": "topic", "id": "validation", "topicType": "concept",
+             "title": "Renamed Validation Rules", "sourceFile": "topics/validation.dita", "links": []},
+            {"type": "topic", "id": "refactoring", "topicType": "reference",
+             "title": "XML Refactoring", "sourceFile": "topics/refactoring.dita", "links": [],
+             "metadata": {"indexTerms": [["IDs", "rename actions"]]}}
+        ]))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        let mut cache = bundle::BundleCache::new(dir.path().to_path_buf());
+        let mut search = |query: &str| {
+            let response = handle_message(
+                &json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": { "name": "search_topics", "arguments": { "query": query } }
+                }),
+                &mut cache,
+            )
+            .unwrap();
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        let every_word = "Title or id with every word of `rename id` (1):\n\
+             Search and Rename Actions for IDs in DITA (Task) [dita-search-rename-ids]\n\n\
+             Indexed under or tagged with `rename id` (1):\n\
+             XML Refactoring (Reference) [refactoring] -- index \"IDs > rename actions\"";
+        assert_eq!(search("rename id"), every_word);
+        assert_eq!(
+            search("ID rename"),
+            every_word.replace("rename id", "id rename")
+        );
+        assert!(
+            search("how to rename an ID").contains("[dita-search-rename-ids]"),
+            "stop words left out"
+        );
+        // The phrase still comes first, and is not listed twice.
+        let phrase = search("search and rename");
+        assert!(
+            phrase.starts_with("Search and Rename Actions for IDs in DITA (Task)"),
+            "{phrase}"
+        );
+        assert_eq!(
+            phrase.matches("[dita-search-rename-ids]").count(),
+            1,
+            "{phrase}"
+        );
+        assert_eq!(
+            search("rename validation"),
+            "Title or id with every word of `rename validation` (1):\n\
+             Renamed Validation Rules (Concept) [validation]"
+        );
+        assert_eq!(search("rename xyz"), "no topics matched `rename xyz`");
+    }
+
     #[test]
     fn validate_live_checks_the_file_a_copy_is_written_from() {
         let dir = copy_bundle_root();

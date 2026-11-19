@@ -1076,7 +1076,13 @@ matching against titles/ids, then against the topics' keywords and index
 entries (a word starting with the query; those topics are listed after the
 title matches, with the entries that matched:
 [semantic-model.md](semantic-model.md#dita-metadata)), not embedding-based
-semantic search;
+semantic search. A title or id that contains the query as a phrase comes
+first; for a query of several words, the titles and ids that have every
+word, each at the start of a word and in any order, stop words such as
+`how` or `the` left out, follow under their own heading, and so do the
+keywords and index entries that have every word. "rename id" thus finds
+"Search and Rename Actions for IDs in DITA" in the Oxygen guide, which a
+benchmark session (r-o3) reached only by trying "rename" alone;
 `topicType`/`audience`/`product` filter arguments and a
 `list_key_definitions` tool were part of an earlier draft of this
 contract and were never implemented, so they're not listed here.

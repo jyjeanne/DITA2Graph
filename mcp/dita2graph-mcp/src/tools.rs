@@ -14,7 +14,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "search_topics",
-            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Then over the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query is listed after the title matches, under 'Indexed under or tagged with', with the entries that matched. Use this first to find an id before calling the other tools. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
+            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Titles and ids that contain the query as a phrase come first. For a query of several words, those that have every word (each at the start of a word, in any order, stop words such as 'how', 'to', 'the' left out) follow under 'Title or id with every word of': 'rename id' finds 'Search and Rename Actions for IDs'. Then the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query, or every word of it, is listed under 'Indexed under or tagged with', with the entries that matched. Use this first to find an id before calling the other tools. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "query": { "type": "string", "description": "Search text" } },
@@ -233,7 +233,13 @@ fn arg_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
 
 fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let query = arg_str(arguments, "query")?.to_lowercase();
+    let words = query_words(&query);
     let mut hits: Vec<String> = Vec::new();
+    // A node whose title or id has every word of a multi-word query, in
+    // any order, but not the query as one phrase: "rename id" finds
+    // "Search and Rename Actions for IDs in DITA", which a live session
+    // only reached by trying "rename" alone (bench r-o3, Oxygen guide).
+    let mut by_words: Vec<String> = Vec::new();
     // A node found by its keywords or index entries rather than its name,
     // with what matched: the author's own words for what the topic is
     // about, which its title often does not repeat.
@@ -247,50 +253,110 @@ fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             node.id,
             role_note(bundle, &node.id)
         );
-        if node.id.to_lowercase().contains(&query) || title.to_lowercase().contains(&query) {
+        let (id, title) = (node.id.to_lowercase(), title.to_lowercase());
+        if id.contains(&query) || title.contains(&query) {
             hits.push(line);
+        } else if !words.is_empty()
+            && words
+                .iter()
+                .all(|w| starts_a_word(&title, w) || starts_a_word(&id, w))
+        {
+            by_words.push(line);
         } else if !node.is_declared() {
-            let matched = metadata_matches(&bundle.metadata(&node.id), &query);
+            let matched = metadata_matches(&bundle.metadata(&node.id), &query, &words);
             if !matched.is_empty() {
                 by_metadata.push(format!("{line} -- {matched}"));
             }
         }
     }
     hits.sort();
+    by_words.sort();
     by_metadata.sort();
-    if hits.is_empty() && by_metadata.is_empty() {
+    if hits.is_empty() && by_words.is_empty() && by_metadata.is_empty() {
         return Ok(format!("no topics matched `{query}`"));
     }
-    if !by_metadata.is_empty() {
+    for (heading, mut group) in [
+        (
+            format!("Title or id with every word of `{query}`"),
+            by_words,
+        ),
+        (
+            format!("Indexed under or tagged with `{query}`"),
+            by_metadata,
+        ),
+    ] {
+        if group.is_empty() {
+            continue;
+        }
         if !hits.is_empty() {
             hits.push(String::new());
         }
-        hits.push(format!(
-            "Indexed under or tagged with `{query}` ({}):",
-            by_metadata.len()
-        ));
-        hits.append(&mut by_metadata);
+        hits.push(format!("{heading} ({}):", group.len()));
+        hits.append(&mut group);
     }
     Ok(hits.join("\n"))
 }
 
+/// Words that say nothing about a topic, left out of a multi-word query's
+/// words ("how to rename an id" looks for "rename" and "id").
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "how",
+    "i", "in", "into", "is", "it", "my", "of", "on", "or", "the", "this", "to", "what", "when",
+    "where", "which", "with",
+];
+
+/// The words of `query` a node must all have when it does not have the
+/// query as one phrase: its words, lowercased, without the stop words
+/// (all of them when there is nothing else), each once. Empty for a
+/// one-word query, which the phrase already covers. A compound with `-`,
+/// `_` or `.` stays one word: `plug-ins` split would look for "ins",
+/// which starts "installing".
+fn query_words(query: &str) -> Vec<String> {
+    let query = query.to_lowercase();
+    let tokens: Vec<&str> = query
+        .split(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        .map(|t| t.trim_matches(|c: char| matches!(c, '-' | '_' | '.')))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() < 2 {
+        return Vec::new();
+    }
+    let mut words: Vec<String> = tokens
+        .iter()
+        .filter(|t| !STOP_WORDS.contains(t))
+        .map(|t| t.to_string())
+        .collect();
+    if words.is_empty() {
+        words = tokens.iter().map(|t| t.to_string()).collect();
+    }
+    words.sort();
+    words.dedup();
+    words
+}
+
 /// What of a node's keywords and index entries has a word starting with
-/// `query` (already lowercased): `keyword "..."` and `index "term >
-/// subterm"`, the first three, then how many more; empty when nothing
-/// does. A word start, not any substring as for titles: on the Oxygen
-/// guide, `git` otherwise finds the "Digital Signature" entries.
-fn metadata_matches(m: &dita2graph_core::Metadata, query: &str) -> String {
+/// `query` (already lowercased), or, for a multi-word query, every one of
+/// its `words` (the terms of one index entry taken together):
+/// `keyword "..."` and `index "term > subterm"`, the first three, then how
+/// many more; empty when nothing does. A word start, not any substring as
+/// for titles: on the Oxygen guide, `git` otherwise finds the "Digital
+/// Signature" entries.
+fn metadata_matches(m: &dita2graph_core::Metadata, query: &str, words: &[String]) -> String {
     const SHOWN: usize = 3;
-    let matches = |term: &str| starts_a_word(&term.to_lowercase(), query);
+    let phrase = |term: &str| starts_a_word(&term.to_lowercase(), query);
+    let every_word = |term: &str| {
+        let term = term.to_lowercase();
+        !words.is_empty() && words.iter().all(|w| starts_a_word(&term, w))
+    };
     let keywords = m
         .keywords
         .iter()
-        .filter(|k| matches(k))
+        .filter(|k| phrase(k) || every_word(k))
         .map(|k| format!("keyword \"{k}\""));
     let entries = m
         .index_terms
         .iter()
-        .filter(|path| path.iter().any(|term| matches(term)))
+        .filter(|path| path.iter().any(|term| phrase(term)) || every_word(&path.join(" > ")))
         .map(|path| format!("index \"{}\"", path.join(" > ")));
     let mut matched: Vec<String> = keywords.chain(entries).collect();
     matched.dedup();
@@ -1225,10 +1291,30 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            metadata_matches(&metadata, "setup"),
+            metadata_matches(&metadata, "setup", &[]),
             "keyword \"Setup\", index \"installing > setup wizard\", index \"setup\", +2 more"
         );
-        assert_eq!(metadata_matches(&metadata, "git"), "");
+        assert_eq!(metadata_matches(&metadata, "git", &[]), "");
+        // Every word, the terms of one entry together, in any order.
+        let words = query_words("linux setup");
+        assert_eq!(
+            metadata_matches(&metadata, "linux setup", &words),
+            "index \"setup > on Linux\""
+        );
+    }
+
+    #[test]
+    fn a_query_has_words_only_when_it_has_several() {
+        assert_eq!(query_words("rename id"), ["id", "rename"]);
+        assert_eq!(query_words("how to rename an ID?"), ["id", "rename"]);
+        assert_eq!(query_words("ID/IDREF"), ["id", "idref"]);
+        assert!(query_words("plug-ins").is_empty(), "one word");
+        assert_eq!(query_words("install plug-ins."), ["install", "plug-ins"]);
+        assert_eq!(query_words("search and search"), ["search"]);
+        // Nothing but stop words: they are the words.
+        assert_eq!(query_words("how to"), ["how", "to"]);
+        assert!(query_words("rename").is_empty());
+        assert!(query_words("  ").is_empty());
     }
 
     #[test]

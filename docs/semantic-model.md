@@ -568,13 +568,15 @@ Where it goes:
   20 entries;
 - the MCP tool `search_topics`: after the topics whose title or id
   matches, the ones whose keyword or index entry has a word starting
-  with the query, under "Indexed under or tagged with", each with the
-  first three entries that matched. A word start rather than any
+  with the query, or every word of a query of several words, under
+  "Indexed under or tagged with", each with the first three entries that
+  matched. A word start rather than any
   substring, unlike titles: on the Oxygen guide, `git` would otherwise
   find the "Digital Signature" entries. On the DITA-OT documentation,
-  `plug-ins` finds 14 topics by title and 34 more by their index
-  entries; on the Oxygen guide, `content completion` finds 39 and 15
-  more.
+  `plug-ins` finds 13 topics by title and 34 more by their index
+  entries; on the Oxygen guide, `content completion` finds 34 by title,
+  15 whose id has both words (`preferences-content-completion-json`) and
+  7 by their index entries.
 
 `graph.json`, `graph.db` and the RAG chunks do not carry it:
 `search_topics` reads it from the concept files it already reads for the
