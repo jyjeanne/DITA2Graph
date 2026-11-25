@@ -436,17 +436,28 @@ impl BundleReader {
             .unwrap_or_default()
     }
 
+    /// On one line: a bundle built before the extractor normalized title
+    /// whitespace keeps a title's source line breaks (both variants of a
+    /// conditional `<title>`, one per line), which broke the one-entry-
+    /// per-line listings.
     pub fn title(&self, id: &str) -> Result<String> {
-        if let Some(title) = self.nodes.get(id).and_then(|n| n.title.clone()) {
-            return Ok(title);
+        if let Some(title) = self.nodes.get(id).and_then(|n| n.title.as_deref()) {
+            return Ok(one_line(title));
         }
         let (frontmatter, _) = self.read_concept(id)?;
-        Ok(frontmatter
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or(id)
-            .to_string())
+        Ok(one_line(
+            frontmatter
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id),
+        ))
     }
+}
+
+/// `text` with every run of whitespace, line breaks included, made one
+/// space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The mtimes `BundleCache` fingerprints a bundle by. Not just

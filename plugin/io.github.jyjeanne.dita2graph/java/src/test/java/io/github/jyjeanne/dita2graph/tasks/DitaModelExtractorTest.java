@@ -237,6 +237,26 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void titlesKeepNoSourceLineBreaks(@TempDir Path tempDir) throws Exception {
+        // DITA-OT's own docs title a topic with both audience variants, one
+        // per source line (topics/using-dita-command.dita).
+        write(tempDir, ".job.xml", JOB_XML);
+        write(tempDir, "user-guide.ditamap", MAP_XML.replace("<title>User Guide</title>", "<title>User\n    Guide</title>"));
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML.replace(
+                "<title>Configuration Overview</title>",
+                "<title>\n    <ph audience=\"novice\">First build with the <cmdname>dita</cmdname> command</ph>\n"
+                        + "    <ph audience=\"expert\">Publishing with the <cmdname>dita</cmdname> command</ph>\n  </title>"));
+        write(tempDir, "topics/installing-product-prereqs.dita", PREREQS_XML);
+        write(tempDir, "topics/installing-product.dita", INSTALLING_PRODUCT_XML);
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        assertEquals("User Guide", ((MapNode) nodes.get(0)).title);
+        assertEquals("First build with the dita command Publishing with the dita command",
+                findTopic(nodes, "configuration").title);
+    }
+
+    @Test
     void draftTopicsAreExcludedUnlessIncludeDraftsIsSet(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_DRAFT_ONLY);
         write(tempDir, "user-guide.ditamap", MAP_XML_DRAFT_ONLY);

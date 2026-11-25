@@ -419,7 +419,7 @@ final class DitaModelExtractor {
         if (mapNode.title.isEmpty()) {
             // A bookmap's title is booktitle/mainbooktitle, not title.
             for (Element booktitle : directChildren(mapRoot, "booktitle")) {
-                mapNode.title = childText(booktitle, "mainbooktitle", "").replaceAll("\\s+", " ");
+                mapNode.title = childText(booktitle, "mainbooktitle", "");
             }
         }
         if (mapNode.title.isEmpty()) {
@@ -1653,11 +1653,16 @@ final class DitaModelExtractor {
         return List.of(value.trim().split("\\s+"));
     }
 
+    /**
+     * The text of the first non-empty {@code tagName} child, whitespace-normalized: a title
+     * whose variants sit on their own source lines ({@code <ph audience="novice">},
+     * {@code <ph audience="expert">}) stays on one line.
+     */
     private static String childText(Element parent, String tagName, String fallback) {
         for (Element child : directChildren(parent, tagName)) {
             String text = child.getTextContent();
             if (text != null && !text.trim().isEmpty()) {
-                return text.trim();
+                return text.trim().replaceAll("\\s+", " ");
             }
         }
         return fallback;
