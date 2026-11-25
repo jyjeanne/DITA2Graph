@@ -82,7 +82,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "analyze_impact",
-            "description": "Find every concept that would be affected by changing a topic id -- or a key (key:<name>), an external URL or a sample file (file:<path>): a reverse graph traversal over all relations (dependents, containing maps, referrers and prerequisites, topics reusing its content, topics using a key, linking to a URL directly or through a key, or including a file), not just its direct links, closest first, with a text excerpt under each affected concept. The first line gives the total count, by relation and by level, so 'how many' needs no paging. Results are paginated (40 entries by default: pass offset for the next page). To find the topics that reuse one fragment of a conref source, pass fragment=<fragment id> with depth=1.",
+            "description": "Find the concepts that changing a topic id may affect -- or a key (key:<name>), an external URL or a sample file (file:<path>): everything that points at it directly (containing maps, referrers and prerequisites, topics using a key, linking to a URL directly or through a key, or including a file), and the topics whose content reuses it, followed through reuse chains (a topic reusing a fragment of a topic that reuses it). A concept that only links to, contains or uses a key to one of those is not changed itself: the first line counts these apart, and cascade=true lists them after the others. Closest first, with a text excerpt under each affected concept. The first line gives the total count, by relation and by level, so 'how many' needs no paging. Results are paginated (40 entries by default: pass offset for the next page). To find the topics that reuse one fragment of a conref source, pass fragment=<fragment id> with depth=1.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -90,6 +90,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
                     "depth": { "type": "integer", "description": "Max traversal depth (default 5)" },
                     "relation": { "type": "string", "description": "Optional: follow only this relation (e.g. generated-from, references, contains)" },
                     "fragment": { "type": "string", "description": "Optional: keep only the direct dependents that reuse this fragment of topicId (its element id, as shown by find_related_topics)" },
+                    "cascade": { "type": "boolean", "description": "Also list the concepts that only link to, contain or use a key to an affected one, up to depth (default false: they are only counted)" },
                     "limit": { "type": "integer", "description": "Entries per page (default 40; 0 = counts only)" },
                     "offset": { "type": "integer", "description": "Index of the first entry to return (default 0)" },
                     "excerpts": { "type": "boolean", "description": "Include a text excerpt under each entry (default true)" },
@@ -946,7 +947,7 @@ fn trace_dependencies(bundle: &BundleReader, arguments: &Value) -> Result<String
     Ok(lines.join("\n"))
 }
 
-/// Reverse BFS over *every* relation, not just `requires` like
+/// Reverse BFS over every relation, not just `requires` like
 /// [`trace_dependencies`] -- "if I change this topic, what breaks?"
 /// needs `contains` (which maps/topics include it) and `references` too,
 /// not only declared prerequisites (§13.1). Each affected concept gets a
@@ -955,6 +956,14 @@ fn trace_dependencies(bundle: &BundleReader, arguments: &Value) -> Result<String
 /// implemented as a raw excerpt handed to the calling agent rather than
 /// a server-generated summary (this tool doesn't call an LLM); the
 /// agent's own read of the excerpts is the summary.
+///
+/// Only a change of content spreads further than one hop (see
+/// [`Reach`]): following every relation to `depth` 5 counted 112 pages
+/// for the DITA-OT docs' "Installing plug-ins" page, where a writer found
+/// about twenty to rewrite. The rest only linked to, or sat in a map
+/// with, a page that links to it -- every page that reuses any fragment
+/// of the conref warehouse holding that link, among them. Those are
+/// counted apart, and `cascade` lists them.
 ///
 /// Paginated, with the totals up front: on the Oxygen XML user guide
 /// (2,040 topics), the unpaginated result for its most reused conref
@@ -970,6 +979,10 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
     let relation = arguments.get("relation").and_then(|v| v.as_str());
     let fragment = arguments.get("fragment").and_then(|v| v.as_str());
+    let cascade = arguments
+        .get("cascade")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let limit = arguments
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -983,45 +996,17 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
 
-    // Breadth-first, level by level, so a page holds the closest
-    // dependents first. Each hit: (level, the edge, the id it points at).
-    let mut visited = std::collections::HashSet::new();
-    let mut frontier = vec![topic_id.clone()];
-    let mut hits: Vec<(usize, &crate::bundle::GraphEdge, String)> = Vec::new();
-    visited.insert(topic_id.clone());
-    for level in 1..=depth {
-        let mut next = Vec::new();
-        for id in &frontier {
-            for edge in bundle.edges_to(id, relation) {
-                // The map that defines a key is where the key is written
-                // (shown on the key's line), not a dependent of it. A key
-                // naming the topic is followed: its users depend on the
-                // topic even without a link to it (abbreviated-form,
-                // keyword or term through a glossary key); the ones that
-                // also link to it are already counted, once.
-                if edge.relation == "defines-key" {
-                    continue;
-                }
-                // `fragment` only narrows the direct dependents: the
-                // fragment ids belong to `topicId`'s own content.
-                if level == 1
-                    && let Some(fragment) = fragment
-                    && !(edge.relation == "generated-from"
-                        && edge.fragments.iter().any(|f| f == fragment))
-                {
-                    continue;
-                }
-                if visited.insert(edge.from.clone()) {
-                    hits.push((level, edge, id.clone()));
-                    next.push(edge.from.clone());
-                }
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        frontier = next;
-    }
+    let affected = impact_hits(bundle, &topic_id, depth, relation, fragment, false);
+    // Following every relation reaches a superset: what it adds only
+    // points at an affected concept.
+    let affected_ids: std::collections::HashSet<&str> = affected
+        .iter()
+        .map(|(_, edge, _)| edge.from.as_str())
+        .collect();
+    let pointing: Vec<_> = impact_hits(bundle, &topic_id, depth, relation, fragment, true)
+        .into_iter()
+        .filter(|(_, edge, _)| !affected_ids.contains(edge.from.as_str()))
+        .collect();
 
     let mut scope = vec![format!("depth {depth}")];
     if let Some(relation) = relation {
@@ -1030,8 +1015,11 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     if let Some(fragment) = fragment {
         scope.push(format!("fragment {fragment}"));
     }
+    if cascade {
+        scope.push("cascade".to_string());
+    }
     let scope = scope.join(", ");
-    if hits.is_empty() {
+    if affected.is_empty() {
         return Ok(format!(
             "nothing depends on `{topic_id}` ({scope}: no incoming edges found)"
         ));
@@ -1039,12 +1027,12 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
 
     // The totals count concepts (maps and topics): a key, URL or file
     // reached on the way is listed with them but is no page.
-    let total = hits.len();
+    let is_concept = |id: &str| !bundle.node(id).is_some_and(|n| n.is_declared());
     let mut concepts = 0;
     let mut by_relation: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut by_level: std::collections::BTreeMap<usize, usize> = Default::default();
-    for (level, edge, _) in &hits {
-        if bundle.node(&edge.from).is_some_and(|n| n.is_declared()) {
+    for (level, edge, _) in &affected {
+        if !is_concept(&edge.from) {
             continue;
         }
         concepts += 1;
@@ -1053,7 +1041,7 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     }
     let join = |parts: Vec<String>| parts.join(", ");
     let mut out = format!(
-        "changing `{topic_id}` would affect {concepts} concept(s) ({scope}). By relation: {}. By level: {}.",
+        "changing `{topic_id}` may affect {concepts} concept(s) ({scope}). By relation: {}. By level: {}.",
         join(
             by_relation
                 .iter()
@@ -1062,12 +1050,33 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         ),
         join(by_level.iter().map(|(l, n)| format!("{l}: {n}")).collect())
     );
-    if total > concepts {
+    let declared = affected.len() - concepts;
+    if declared > 0 {
         out.push_str(&format!(
-            " {} key, URL or file node(s) on the way are listed too, not counted.",
-            total - concepts
+            " {declared} key, URL or file node(s) on the way are listed too, not counted."
         ));
     }
+    let pointing_concepts = pointing
+        .iter()
+        .filter(|(_, edge, _)| is_concept(&edge.from))
+        .count();
+    if pointing_concepts > 0 {
+        out.push_str(&format!(
+            " {pointing_concepts} more concept(s) only link to, contain or use a key to these, \
+             their own content unchanged: {}.",
+            if cascade {
+                "listed after them"
+            } else {
+                "pass cascade=true to list them"
+            }
+        ));
+    }
+    let hits: Vec<_> = if cascade {
+        affected.iter().chain(&pointing).collect()
+    } else {
+        affected.iter().collect()
+    };
+    let total = hits.len();
     if limit == 0 {
         return Ok(out);
     }
@@ -1091,7 +1100,11 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         .collect();
 
     let end = offset.saturating_add(limit).min(total);
-    for (level, edge, id) in &hits[offset..end] {
+    for (index, (level, edge, id)) in hits.iter().enumerate().take(end).skip(offset) {
+        // The cascade's heading, on every page that holds some of it.
+        if index == affected.len().max(offset) {
+            out.push_str("\n\nOnly linking to, containing or using a key to the concepts above:");
+        }
         let title = bundle
             .title(&edge.from)
             .unwrap_or_else(|_| edge.from.clone());
@@ -1123,6 +1136,97 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         ));
     }
     Ok(out)
+}
+
+/// How a change reaches a concept [`analyze_impact`] meets, which decides
+/// what depends on that concept in turn.
+#[derive(Clone, Copy)]
+enum Reach {
+    /// The changed concept itself, a `copy-to` copy of it, or a key that
+    /// names it: whatever points at it depends on the change.
+    Changed,
+    /// Its content holds part of the changed content, since it reuses
+    /// it: the topics that reuse *its* content change too, but not the
+    /// pages that link to it or the maps that contain it.
+    Reuses,
+    /// It links to, contains, requires or uses a key to a changed
+    /// concept: its own content stays the same, so nothing that points
+    /// at it depends on the change. A page that reuses a fragment of a
+    /// conref warehouse holding a link gets that link itself, so it is
+    /// met here directly, not through the warehouse.
+    Points,
+}
+
+impl Reach {
+    /// How a concept with an edge of `relation` to one reached `self`
+    /// is reached; `None` when the change does not follow that edge.
+    fn through(self, relation: &str) -> Option<Reach> {
+        match (self, relation) {
+            (Reach::Changed, "copy-of" | "key-target") => Some(Reach::Changed),
+            (Reach::Changed, "generated-from" | "includes-code") => Some(Reach::Reuses),
+            (Reach::Changed, _) => Some(Reach::Points),
+            (Reach::Reuses, "generated-from" | "copy-of") => Some(Reach::Reuses),
+            (Reach::Reuses, _) | (Reach::Points, _) => None,
+        }
+    }
+}
+
+/// [`analyze_impact`]'s breadth-first walk, level by level, so the
+/// closest dependents come first. Each hit: (level, the edge, the id it
+/// points at). `every_relation` follows every edge from every concept,
+/// as if any change spread through links and maps too.
+fn impact_hits<'a>(
+    bundle: &'a BundleReader,
+    topic_id: &str,
+    depth: usize,
+    relation: Option<&str>,
+    fragment: Option<&str>,
+    every_relation: bool,
+) -> Vec<(usize, &'a crate::bundle::GraphEdge, String)> {
+    let mut visited = std::collections::HashSet::new();
+    let mut frontier = vec![(topic_id.to_string(), Reach::Changed)];
+    let mut hits = Vec::new();
+    visited.insert(topic_id.to_string());
+    for level in 1..=depth {
+        let mut next = Vec::new();
+        for (id, reach) in &frontier {
+            for edge in bundle.edges_to(id, relation) {
+                // The map that defines a key is where the key is written
+                // (shown on the key's line), not a dependent of it. A key
+                // naming the topic is followed: its users depend on the
+                // topic even without a link to it (abbreviated-form,
+                // keyword or term through a glossary key); the ones that
+                // also link to it are already counted, once.
+                if edge.relation == "defines-key" {
+                    continue;
+                }
+                // `fragment` only narrows the direct dependents: the
+                // fragment ids belong to `topicId`'s own content.
+                if level == 1
+                    && let Some(fragment) = fragment
+                    && !(edge.relation == "generated-from"
+                        && edge.fragments.iter().any(|f| f == fragment))
+                {
+                    continue;
+                }
+                let Some(then) = reach
+                    .through(&edge.relation)
+                    .or(every_relation.then_some(Reach::Points))
+                else {
+                    continue;
+                };
+                if visited.insert(edge.from.clone()) {
+                    hits.push((level, edge, id.clone()));
+                    next.push((edge.from.clone(), then));
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    hits
 }
 
 /// Default page size of [`analyze_impact`]: 40 entries with their

@@ -1073,7 +1073,7 @@ read_topic(topicId, maxChars?)
 find_related_topics(topicId, relation?)
 explain_task(topicId)
 trace_dependencies(topicId, depth?)
-analyze_impact(topicId, depth?, relation?, fragment?, limit?, offset?, excerpts?)
+analyze_impact(topicId, depth?, relation?, fragment?, cascade?, limit?, offset?, excerpts?)
 generate_summary(topicId)
 validate_bundle()
 validate_live(topicId)
@@ -1151,13 +1151,24 @@ could return 50+ KB of output, well past what a real MCP client renders
 inline. Narrowing with `topicId` is the way to see more of a specific
 area rather than raising the cap.
 
-`analyze_impact(topicId, depth?)` is a reverse graph traversal — every
-edge that points *at* `topicId`, followed transitively up to `depth`
-(default 5) — answering "if I change this topic, what breaks?" (§13.1):
-dependents via `requires`, containing maps via `contains`, and any
-other relation a topic participates in, not just declared
-prerequisites the way `trace_dependencies` (forward, `requires`-only)
-does. Each affected concept that has a `rag/chunks.jsonl` entry also
+`analyze_impact(topicId, depth?)` is a reverse graph traversal
+answering "if I change this topic, what breaks?" (§13.1): every edge
+that points *at* `topicId` — dependents via `requires`, containing maps
+via `contains`, referrers, the users of a key that names it, and any
+other relation a topic participates in, not just declared prerequisites
+the way `trace_dependencies` (forward, `requires`-only) does. Only a
+change of content goes further, up to `depth` (default 5): the topics
+reusing a topic that reuses `topicId` (`generated-from`), and whatever
+points at a `copy-to` copy of it. A page that links to, contains or uses
+a key to a dependent keeps its own content, so it is not affected: the
+first line counts these apart, and `cascade=true` lists them after the
+others. Following every edge transitively counted 112 concepts for the
+DITA-OT docs' "Installing plug-ins" page, where about twenty needed
+rewriting: each page reusing any fragment of the conref warehouse that
+holds the link to it came in, though a page reusing the fragment with
+the link gets that link itself, and is a direct referrer. It now counts
+17, and 95 apart; on the Oxygen XML user guide's most reused warehouse,
+488 instead of 1,667. Each affected concept that has a `rag/chunks.jsonl` entry also
 gets a short text excerpt under it (truncated to 140 characters,
 newlines flattened) — a raw excerpt handed to the calling agent, not a
 server-generated summary (this tool doesn't call an LLM); the agent's
@@ -2525,11 +2536,11 @@ embedding-based ranking to already exist to pay off, and still doesn't.
 `engine.dita`, what breaks?" is a graph query — dependents, containing
 maps, `requires`/keyref referrers (§4.3) — and `analyze_impact(topicId,
 depth?)` (§5.2) answers exactly that: a reverse traversal over every
-incoming edge, transitively, up to `depth` hops (default 5), returning
-every concept that (directly or indirectly) depends on the one that
-changed. Verified against a live bundle: changing a topic three other
-concepts depend on at different hop distances reports all three, not
-just the direct dependent.
+incoming edge, then over reuse alone up to `depth` hops (default 5),
+returning every concept that depends on the one that changed directly
+or through the content it reuses. What only links to or contains one
+of those is counted apart (`cascade=true` lists it): its own content
+does not change.
 
 The content half is implemented too, in a specific and honestly-scoped
 form: each affected concept with a `rag/chunks.jsonl` entry gets a

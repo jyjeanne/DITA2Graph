@@ -945,7 +945,7 @@ mod tests {
             );
             assert!(
                 impact.contains(
-                    "would affect 2 concept(s) (depth 5). By relation: contains 1, references 1."
+                    "may affect 2 concept(s) (depth 5). By relation: contains 1, references 1."
                 ),
                 "{impact}"
             );
@@ -1045,7 +1045,7 @@ mod tests {
         );
         assert!(
             impact.starts_with(
-                "changing `api` would affect 2 concept(s) (depth 5). By relation: references 1, \
+                "changing `api` may affect 2 concept(s) (depth 5). By relation: references 1, \
                  uses-key 1. By level: 1: 1, 2: 1. 1 key, URL or file node(s) on the way are listed too, not counted."
             ),
             "{impact}"
@@ -1898,23 +1898,39 @@ mod tests {
     }
 
     #[test]
-    fn analyze_impact_finds_transitive_dependents() {
-        let dir = sample_bundle_root();
-        let response = handle_message(
-            &json!({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
-            }),
-            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
-        )
-        .unwrap();
-        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    fn analyze_impact_counts_apart_the_map_of_a_dependent() {
         // installing-product requires configuration (1 hop); user-guide
-        // contains installing-product (2 hops) -- both should show up as
-        // affected, not just the direct dependent.
-        assert!(text.contains("installing-product"), "{text}");
-        assert!(text.contains("user-guide"), "{text}");
-        assert_eq!(response["result"]["isError"], false);
+        // contains installing-product (2 hops) but not configuration: it
+        // is counted apart, and listed on request.
+        let dir = sample_bundle_root();
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "configuration", "excerpts": false }),
+        );
+        assert!(
+            text.starts_with(
+                "changing `configuration` may affect 1 concept(s) (depth 5). By relation: requires 1. \
+                 By level: 1: 1. 1 more concept(s) only link to, contain or use a key to these, \
+                 their own content unchanged: pass cascade=true to list them."
+            ),
+            "{text}"
+        );
+        assert!(text.contains("(installing-product)"), "{text}");
+        assert!(!text.contains("(user-guide)"), "{text}");
+
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "configuration", "cascade": true, "excerpts": false }),
+        );
+        assert!(
+            text.contains(
+                "\n\nOnly linking to, containing or using a key to the concepts above:\n  \
+                 User Guide (user-guide) --contains--> installing-product"
+            ),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1923,7 +1939,7 @@ mod tests {
         let response = handle_message(
             &json!({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration" } }
+                "params": { "name": "analyze_impact", "arguments": { "topicId": "configuration", "cascade": true } }
             }),
             &mut bundle::BundleCache::new(dir.path().to_path_buf()),
         )
@@ -1933,7 +1949,7 @@ mod tests {
         // (its shortdesc) -- the excerpt should appear right under it.
         assert!(text.contains("installing-product"), "{text}");
         assert!(text.contains("Steps to install the product."), "{text}");
-        // user-guide (a map) is also an affected concept (2 hops, via
+        // user-guide (a map) is listed too with cascade (2 hops, via
         // "contains installing-product") but maps aren't chunked into
         // rag/ (§13.1), so it gets no excerpt line -- just confirm the
         // overall report still lists it without crashing on the lookup.
@@ -2006,7 +2022,7 @@ mod tests {
         let first = call_tool(&dir, "analyze_impact", json!({ "topicId": "warehouse" }));
         assert!(
             first.starts_with(
-                "changing `warehouse` would affect 51 concept(s) (depth 5). By relation: contains 1, generated-from 50. By level: 1: 51."
+                "changing `warehouse` may affect 51 concept(s) (depth 5). By relation: contains 1, generated-from 50. By level: 1: 51."
             ),
             "{first}"
         );
@@ -2046,7 +2062,7 @@ mod tests {
         );
         assert!(
             text.starts_with(
-                "changing `warehouse` would affect 25 concept(s) (depth 1, fragment a). By relation: generated-from 25."
+                "changing `warehouse` may affect 25 concept(s) (depth 1, fragment a). By relation: generated-from 25."
             ),
             "{text}"
         );
@@ -2055,6 +2071,113 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("Body of"), "excerpts=false: {text}");
+    }
+
+    /// The DITA-OT docs' shape: `install` is linked from a conref
+    /// warehouse fragment that `task` reuses (and so links itself), while
+    /// `html5` reuses an unrelated fragment of the same warehouse.
+    /// `reuser` reuses `install`'s own content, `reuser-2` reuses
+    /// `reuser`'s, and `copy` is a `copy-to` copy of `install`. The rest
+    /// only link to or contain one of those.
+    fn impact_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let topic = |id: &str, title: &str, links: Value| {
+            json!({ "type": "topic", "id": id, "topicType": "task", "title": title,
+                    "sourceFile": format!("topics/{id}.dita"), "links": links })
+        };
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "root", "title": "Root", "sourceFile": "root.ditamap",
+              "links": [{ "relation": "contains", "target": "guide" }] },
+            { "type": "map", "id": "guide", "title": "Guide", "sourceFile": "guide.ditamap",
+              "links": [{ "relation": "contains", "target": "install" },
+                        { "relation": "contains", "target": "html5" }] },
+            topic("install", "Installing plug-ins", json!([])),
+            topic("warehouse", "Conref file", json!([{ "relation": "references", "target": "install" }])),
+            topic("task", "A task", json!([
+                { "relation": "references", "target": "install" },
+                { "relation": "generated-from", "target": "warehouse", "fragments": ["install-step"] }])),
+            topic("html5", "HTML5", json!([
+                { "relation": "generated-from", "target": "warehouse", "fragments": ["dita-cmd"] }])),
+            topic("migration", "Migration", json!([{ "relation": "references", "target": "task" }])),
+            topic("reuser", "Reuser", json!([
+                { "relation": "generated-from", "target": "install", "fragments": ["plug-in"] }])),
+            topic("reuser-2", "Reuser of the reuser", json!([
+                { "relation": "generated-from", "target": "reuser", "fragments": ["step"] }])),
+            topic("to-reuser", "Links to the reuser", json!([{ "relation": "references", "target": "reuser" }])),
+            topic("copy", "Copy", json!([{ "relation": "copy-of", "target": "install" }])),
+            topic("to-copy", "Novice title\n    Expert title",
+                  json!([{ "relation": "references", "target": "copy" }]))
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        dir
+    }
+
+    #[test]
+    fn analyze_impact_follows_reuse_further_but_not_links_or_maps() {
+        let dir = impact_bundle_root();
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "install", "excerpts": false }),
+        );
+        assert!(
+            text.starts_with(
+                "changing `install` may affect 7 concept(s) (depth 5). By relation: contains 1, \
+                 copy-of 1, generated-from 2, references 3. By level: 1: 5, 2: 2. 4 more concept(s) \
+                 only link to, contain or use a key to these, their own content unchanged: \
+                 pass cascade=true to list them."
+            ),
+            "{text}"
+        );
+        // Reuse chains and the copy's own referrers are followed, titles
+        // stay on one line.
+        assert!(
+            text.contains(
+                "\n  Reuser of the reuser (reuser-2) --generated-from--> reuser [fragments: step]"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  Novice title Expert title (to-copy) --references--> copy"),
+            "{text}"
+        );
+        // Neither the warehouse's other reusers, nor what links to or
+        // contains a dependent.
+        for id in ["html5", "migration", "to-reuser", "root"] {
+            assert!(!text.contains(&format!("({id})")), "{id}: {text}");
+        }
+
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "install", "cascade": true, "excerpts": false }),
+        );
+        assert!(
+            text.contains("4 more concept(s) only link to, contain or use a key to these, their own content unchanged: listed after them."),
+            "{text}"
+        );
+        let (affected, pointing) = text
+            .split_once("\n\nOnly linking to, containing or using a key to the concepts above:")
+            .expect(&text);
+        assert!(affected.contains("(reuser-2)"), "{text}");
+        for id in ["html5", "migration", "to-reuser", "root"] {
+            assert!(pointing.contains(&format!("({id})")), "{id}: {text}");
+        }
+
+        // A page that starts inside the cascade repeats its heading.
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "install", "cascade": true, "offset": 8, "limit": 2, "excerpts": false }),
+        );
+        assert!(
+            text.contains(
+                "\n\nOnly linking to, containing or using a key to the concepts above:\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("(showing 9-10 of 11"), "{text}");
     }
 
     #[test]
