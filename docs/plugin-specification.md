@@ -1064,6 +1064,18 @@ instead (e.g. `find_related_topics` instead of
 `dita://relation/{topicId}/{relationType}`), which is why this gap
 hasn't blocked real use so far. See finding 12.
 
+**Server instructions.** The `initialize` result carries `instructions`,
+which MCP clients pass on to the model (`main.rs::server_instructions`).
+They name the documentation by the bundle's root maps (the maps nothing
+contains) and its number of published topics. They also ask the model to:
+answer from the tools rather than from memory, naming the topics; say when
+the documentation does not cover a subject; treat search results as the
+best matches, not every one; look a file path up by title before calling a
+topic missing; and not say readers see a passage the tools do not show as
+published. Without them, a model only sees tool names, and a small one
+answered several questions from memory, reading a DITA-OT property as a
+setting of its own client.
+
 ### 5.2 Tools
 
 ```

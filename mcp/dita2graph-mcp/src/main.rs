@@ -356,6 +356,59 @@ fn strip_flags(args: &[String], flags: &[&str]) -> Vec<String> {
     result
 }
 
+/// What the client tells its model about this server (`instructions` in
+/// the `initialize` result): which documentation the graph holds, and
+/// how to answer from it. Without it a model only sees tool names, and a
+/// small one reads "the configuration property for plug-in directories"
+/// as a question about its own client, answering from memory (bench
+/// relevance checks, Haiku, 26 November 2026). The documentation is
+/// named by its root maps -- the maps nothing contains -- so the text
+/// fits whatever bundle the server was started on.
+fn server_instructions(bundle: Option<&bundle::BundleReader>) -> String {
+    let corpus = bundle.and_then(|bundle| {
+        let mut roots: Vec<String> = bundle
+            .all_nodes()
+            .filter(|node| node.type_ == "DITA Map" && bundle.edges_to(&node.id, None).is_empty())
+            .map(|node| {
+                let title = bundle.title(&node.id).unwrap_or_else(|_| node.id.clone());
+                format!("\"{title}\" ({})", node.id)
+            })
+            .collect();
+        roots.sort();
+        let pages = bundle
+            .all_nodes()
+            .filter(|node| {
+                !node.is_declared()
+                    && node.type_ != "DITA Map"
+                    && node.processing_role.as_deref() != Some("resource-only")
+            })
+            .count();
+        (!roots.is_empty()).then(|| format!("{}, {pages} published topics", roots.join(", ")))
+    });
+    let corpus = corpus.unwrap_or_else(|| "a DITA documentation set".to_string());
+    format!(
+        "This server holds a knowledge graph of one DITA documentation set: {corpus}. \
+         Use its tools for any question about that documentation or the product it documents: \
+         its topics, maps, keys, links, reused content, commands, settings, release history, \
+         or what changing a file would affect. A question that names a file, a property, a \
+         command or a page without saying where it comes from is about this documentation, \
+         not about the client or the tool you run in.\n\
+         - Answer from what the tools return, not from memory. Name the topics an answer rests \
+         on (title and id). If you add general knowledge, say that it is.\n\
+         - If the tools find nothing on the subject, say the documentation does not cover it \
+         before suggesting anything else.\n\
+         - search_topics and search_content return the best matches, not every one \
+         (search_content stops at 15). When a question asks for every page, search again with \
+         each spelling, older form and synonym, read the candidates with read_topic, and say \
+         how far the search went.\n\
+         - A topic's id is often not its file name. If a file path finds nothing, look the \
+         topic up by its title or by a phrase it contains before concluding it is missing.\n\
+         - A topic's text is its source text: it can hold draft comments or filtered content \
+         that a build leaves out. Do not say readers see a passage unless the tools show it.\n\
+         - Topics marked resource-only are not pages of the publication."
+    )
+}
+
 /// Dispatches one JSON-RPC message, returning the response to write (or
 /// `None` for notifications, which never get one).
 fn handle_message(request: &Value, cache: &mut bundle::BundleCache) -> Option<Value> {
@@ -367,6 +420,7 @@ fn handle_message(request: &Value, cache: &mut bundle::BundleCache) -> Option<Va
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "dita2graph-mcp", "version": env!("CARGO_PKG_VERSION") },
+            "instructions": server_instructions(cache.get().ok()),
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools::list(cache.sparql_enabled()) })),
@@ -736,6 +790,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
+        // No bundle at ".": the instructions still go out, without a name.
+        let text = response["result"]["instructions"].as_str().unwrap();
+        assert!(
+            text.contains("one DITA documentation set: a DITA documentation set."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn initialize_names_the_documentation_in_its_instructions() {
+        let dir = sample_bundle_root();
+        let response = handle_message(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let text = response["result"]["instructions"].as_str().unwrap();
+        assert!(
+            text.contains(
+                "one DITA documentation set: \"User Guide\" (user-guide), 2 published topics."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("Answer from what the tools return, not from memory."),
+            "{text}"
+        );
+        assert!(
+            text.contains("say the documentation does not cover it"),
+            "{text}"
+        );
     }
 
     #[test]
