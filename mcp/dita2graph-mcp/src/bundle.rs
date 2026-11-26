@@ -101,6 +101,19 @@ struct EmbeddingRecord {
 /// id -> embedding vector, parsed from `rag/embeddings.jsonl`.
 type EmbeddingsMap = HashMap<String, Vec<f32>>;
 
+/// A topic's or map's source file, from its concept file
+/// ([`BundleReader::source_files`]).
+#[derive(Clone)]
+pub struct SourceFile {
+    /// As the concept file has it, relative to the map's folder
+    /// (`topics/using-dita-command.dita`).
+    pub path: String,
+    pub id: String,
+    /// `path` is the file this node is a copy of (DITA `copy-to`, the
+    /// concept's `sources`), not its own.
+    pub copied_from: bool,
+}
+
 pub struct BundleReader {
     /// The directory containing `okf/` and `graph.json` (i.e. what
     /// `dita2graph-core build --output` pointed at).
@@ -138,6 +151,8 @@ pub struct BundleReader {
     embeddings_cache: RefCell<Option<Rc<EmbeddingsMap>>>,
     /// `rdf/graph.ttl` loaded for `query_graph`, on its first query.
     sparql_cache: RefCell<Option<Rc<crate::sparql::SparqlGraph>>>,
+    /// [`Self::source_files`], built on its first use.
+    source_files_cache: RefCell<Option<Rc<Vec<SourceFile>>>>,
 }
 
 impl BundleReader {
@@ -216,7 +231,58 @@ impl BundleReader {
             rag_chunks_cache: RefCell::new(None),
             sparql_cache: RefCell::new(None),
             embeddings_cache: RefCell::new(None),
+            source_files_cache: RefCell::new(None),
         })
+    }
+
+    /// The source file of every topic and map, from its concept file's
+    /// `resource` (`topics/using-dita-command.dita`), and for a copy the
+    /// file it is copied from (`sources`), in id order. What lets a tool
+    /// take a file path where it takes an id: an agent asked about a file
+    /// often has its path, not its topic id (dita2graph-demo/bench,
+    /// relevance check R4). Read once per `BundleReader`, from the concept
+    /// files `read_concept` caches anyway.
+    pub fn source_files(&self) -> Rc<Vec<SourceFile>> {
+        if let Some(cached) = self.source_files_cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let mut ids: Vec<&String> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| !node.is_declared())
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let mut files = Vec::new();
+        for id in ids {
+            let Ok((frontmatter, _)) = self.read_concept(id) else {
+                continue;
+            };
+            if let Some(path) = frontmatter.get("resource").and_then(|v| v.as_str()) {
+                files.push(SourceFile {
+                    path: path.to_string(),
+                    id: id.clone(),
+                    copied_from: false,
+                });
+            }
+            for source in frontmatter
+                .get("sources")
+                .and_then(|v| v.as_sequence())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(path) = source.get("resource").and_then(|v| v.as_str()) {
+                    files.push(SourceFile {
+                        path: path.to_string(),
+                        id: id.clone(),
+                        copied_from: true,
+                    });
+                }
+            }
+        }
+        let files = Rc::new(files);
+        *self.source_files_cache.borrow_mut() = Some(files.clone());
+        files
     }
 
     /// The original, `graph.json`-only load path -- still the sole

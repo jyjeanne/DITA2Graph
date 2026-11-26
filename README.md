@@ -403,7 +403,7 @@ Once registered, an agent can call:
 
 | Tool | What it does |
 |---|---|
-| `search_topics(query)` | Plain text match against topic/map titles and ids, the query as a phrase first, then, for several words, the titles and ids with every word in any order (`rename id` finds "Search and Rename Actions for IDs"); then against the topics' keywords and index entries (listed after, with the entries that matched) |
+| `search_topics(query)` | Plain text match against topic/map titles and ids, the query as a phrase first, then, for several words, the titles and ids with every word in any order (`rename id` finds "Search and Rename Actions for IDs"); then against the topics' keywords and index entries (listed after, with the entries that matched); a query that looks like a file (`topics/x.dita`) also finds the topics whose source file it names, and the copies the map publishes of one |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
 | `find_text(text, limit?, offset?)` | Every topic whose text contains `text`, literally, with no cap: the counts (published pages apart from resource-only topics), each occurrence in context, the reused passage (`<file>#<fragment>`) it comes from, and for a single word the near spellings the documentation has (`pluginsdir` for `plugindirs`); also the keys whose link text or target URL holds the text, with the map defining each. Complete for this exact text, not for other wordings. For "every page that shows…" and "is it spelled the same everywhere?" |
 | `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, notes for the authors (`<draft-comment>`, `<required-cleanup>`) between `[draft-comment]` and `[end draft-comment]` markers, then the reused fragments by source topic, and the topic's external links, keys and sample files |
@@ -415,6 +415,11 @@ Once registered, an agent can call:
 | `validate_bundle()` | Re-runs `okf-validator` + the secret-leak scan on demand |
 | `query_graph(query, limit?, offset?)` | Opt-in (`dita2graph-mcp --sparql`): read-only SPARQL 1.1 over the bundle's RDF export (`rdf/graph.ttl`, [`docs/semantic-model.md`](docs/semantic-model.md)), paginated, with a 10 s timeout, the `d2g` vocabulary and the bundle's prefixes predeclared. Not offered by default: its benchmark campaign showed no gain over the typed tools |
 | `validate_live(topicId)` | Runs [DitaCraft](https://github.com/jyjeanne/ditacraft)'s live LSP validation pipeline (DTD/RNG, 43 Schematron-equivalent rules, cross-reference, circular-reference, subject-scheme profiling) against the topic's *current* on-disk source — see [Live validation via DitaCraft's LSP](#live-validation-via-ditacrafts-lsp) below |
+
+Every tool that takes a `topicId` also takes the topic's source file
+path (`topics/x.dita`, or any path ending with it) or a key name, and its
+answer opens with the topic that resolved to and the copies the map
+publishes of it.
 
 Full argument shapes and behavior: `docs/plugin-specification.md` §5.2.
 

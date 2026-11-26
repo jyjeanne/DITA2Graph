@@ -14,7 +14,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "search_topics",
-            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Titles and ids that contain the query as a phrase come first. For a query of several words, those that have every word (each at the start of a word, in any order, stop words such as 'how', 'to', 'the' left out) follow under 'Title or id with every word of': 'rename id' finds 'Search and Rename Actions for IDs'. Then the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query, or every word of it, is listed under 'Indexed under or tagged with', with the entries that matched. Use this first to find an id before calling the other tools. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
+            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Titles and ids that contain the query as a phrase come first. For a query of several words, those that have every word (each at the start of a word, in any order, stop words such as 'how', 'to', 'the' left out) follow under 'Title or id with every word of': 'rename id' finds 'Search and Rename Actions for IDs'. Then the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query, or every word of it, is listed under 'Indexed under or tagged with', with the entries that matched. A query that looks like a file (topics/x.dita) also lists, under 'Source file matching', the topics whose source file it names, and the copies the map publishes of one. Use this first to find an id before calling the other tools; every tool that takes a topicId also takes a topic's source file path or a key name, and says which topic that resolved to. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "query": { "type": "string", "description": "Search text" } },
@@ -215,7 +215,9 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
     if name == "validate_live" {
         let live_config = cache.live_config().clone();
         let bundle = cache.get()?;
-        return validate_live(bundle, arguments, &live_config);
+        return with_resolved_topic(bundle, arguments, |arguments| {
+            validate_live(bundle, arguments, &live_config)
+        });
     }
     if name == "query_graph" && !cache.sparql_enabled() {
         return Err(anyhow!(
@@ -224,7 +226,7 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
     }
     let embedder = cache.embedder();
     let bundle = cache.get()?;
-    match name {
+    with_resolved_topic(bundle, arguments, |arguments| match name {
         "query_graph" => query_graph(bundle, arguments),
         "search_topics" => search_topics(bundle, arguments),
         "search_content" => search_content(bundle, arguments, embedder.as_deref()),
@@ -236,7 +238,186 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
         "analyze_impact" => analyze_impact(bundle, arguments),
         "generate_summary" => generate_summary(bundle, arguments),
         other => Err(anyhow!("unknown tool: {other}")),
+    })
+}
+
+/// Runs a tool with its `topicId` resolved when it is a topic's source
+/// file path or a key name rather than an id ([`resolve_topic_id`]), the
+/// result then opening with what it was resolved to.
+fn with_resolved_topic(
+    bundle: &BundleReader,
+    arguments: &Value,
+    run: impl FnOnce(&Value) -> Result<String>,
+) -> Result<String> {
+    let resolved = match arguments.get("topicId").and_then(|v| v.as_str()) {
+        Some(raw) => resolve_topic_id(bundle, raw)?,
+        None => None,
+    };
+    let Some(resolved) = resolved else {
+        return run(arguments);
+    };
+    let mut arguments = arguments.clone();
+    arguments["topicId"] = json!(resolved.id);
+    run(&arguments).map(|text| format!("{}\n\n{text}", resolved.note))
+}
+
+/// A `topicId` resolved from a path or a key, and the line saying so.
+struct Resolved {
+    id: String,
+    note: String,
+}
+
+/// What a `topicId` that is not an id names: a key (`using-dita-command`
+/// or `key:using-dita-command`) naming one topic, or a topic's source file
+/// (`topics/using-dita-command.dita`, `using-dita-command.dita`, or a full
+/// path ending with it), and then which copies the map publishes of it.
+/// `None` when it names neither, so the tool reports the unknown id as
+/// before; an error when it names several topics. Found by the relevance
+/// checks (dita2graph-demo/bench, R4): asked which pages change when
+/// `topics/using-dita-command.dita` is edited, Haiku never got from the
+/// path to its topic, `using-command-line-tool`, a resource-only topic
+/// the map publishes as two copies, and analysed a neighbouring one.
+fn resolve_topic_id(bundle: &BundleReader, raw: &str) -> Result<Option<Resolved>> {
+    let raw = raw.trim();
+    if raw.is_empty() || bundle.node(raw).is_some() {
+        return Ok(None);
     }
+    let name = raw.strip_prefix("key:").unwrap_or(raw);
+    let key_id = format!("key:{name}");
+    if let Some(key) = bundle.node(&key_id) {
+        let targets: Vec<&str> = bundle
+            .edges_from(&key_id, Some("key-target"))
+            .into_iter()
+            .map(|edge| edge.to.as_str())
+            .filter(|target| bundle.node(target).is_some_and(|n| !n.is_declared()))
+            .collect();
+        if let [target] = targets.as_slice() {
+            let defined = key
+                .source_file
+                .as_deref()
+                .map(|file| format!(", defined in {file},"))
+                .unwrap_or_default();
+            return Ok(Some(Resolved {
+                id: target.to_string(),
+                note: format!(
+                    "`{raw}` is the key `{name}`{defined} which names {}.{}",
+                    describe_node(bundle, target),
+                    copies_note(bundle, target)
+                ),
+            }));
+        }
+    }
+    let files = bundle.source_files();
+    let own: Vec<&crate::bundle::SourceFile> = files
+        .iter()
+        .filter(|f| !f.copied_from && names_file(raw, &f.path))
+        .collect();
+    match own.as_slice() {
+        [file] => {
+            return Ok(Some(Resolved {
+                id: file.id.clone(),
+                note: format!(
+                    "`{raw}` is the source file {} of {}.{}",
+                    file.path,
+                    describe_node(bundle, &file.id),
+                    copies_note(bundle, &file.id)
+                ),
+            }));
+        }
+        [] => {}
+        several => {
+            let listed: Vec<String> = several
+                .iter()
+                .map(|f| format!("{} ({})", describe_node(bundle, &f.id), f.path))
+                .collect();
+            return Err(anyhow!(
+                "`{raw}` matches the source files of several topics: {}. Pass one of their ids.",
+                listed.join("; ")
+            ));
+        }
+    }
+    let copies: Vec<&str> = files
+        .iter()
+        .filter(|f| f.copied_from && names_file(raw, &f.path))
+        .map(|f| f.id.as_str())
+        .collect();
+    match copies.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(Resolved {
+            id: id.to_string(),
+            note: format!(
+                "`{raw}` has no topic of its own: the map publishes it as one copy, {}.",
+                describe_node(bundle, id)
+            ),
+        })),
+        several => {
+            let listed: Vec<String> = several.iter().map(|id| describe_node(bundle, id)).collect();
+            Err(anyhow!(
+                "`{raw}` has no topic of its own: the map publishes it as {} copies, {}. Pass \
+                 one of their ids.",
+                several.len(),
+                listed.join("; ")
+            ))
+        }
+    }
+}
+
+/// `Title [id]`, with the resource-only note.
+fn describe_node(bundle: &BundleReader, id: &str) -> String {
+    format!(
+        "{} [{id}]{}",
+        bundle.title(id).unwrap_or_else(|_| id.to_string()),
+        role_note(bundle, id)
+    )
+}
+
+/// ` The pages built from it are its copies: …` when the map publishes
+/// `id` under other names (`copy-of` edges to it), empty otherwise: the
+/// copies, not the file's own topic, are what readers see.
+fn copies_note(bundle: &BundleReader, id: &str) -> String {
+    let mut copies: Vec<&str> = bundle
+        .edges_to(id, Some("copy-of"))
+        .into_iter()
+        .map(|edge| edge.from.as_str())
+        .collect();
+    copies.sort_unstable();
+    copies.dedup();
+    match copies.as_slice() {
+        [] => String::new(),
+        [copy] => format!(
+            " The map publishes it as one copy, the page readers see: {}.",
+            describe_node(bundle, copy)
+        ),
+        several => format!(
+            " The map publishes it as {} copies, the pages readers see: {}.",
+            several.len(),
+            several
+                .iter()
+                .map(|copy| describe_node(bundle, copy))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    }
+}
+
+/// `path` with `\` read as `/`, no leading `./`, ASCII-lowercased.
+fn normalize_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase()
+}
+
+/// Whether the file path `query` names `path`: the same path, or one that
+/// ends with the other at a `/` (`using-dita-command.dita`, or
+/// `C:/docs/topics/using-dita-command.dita`, for
+/// `topics/using-dita-command.dita`).
+fn names_file(query: &str, path: &str) -> bool {
+    let (query, path) = (normalize_path(query), normalize_path(path));
+    !query.is_empty()
+        && (query == path
+            || query.ends_with(&format!("/{path}"))
+            || path.ends_with(&format!("/{query}")))
 }
 
 fn arg_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
@@ -284,13 +465,39 @@ fn search_topics(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             }
         }
     }
+    // A query that looks like a file: the topics whose source file it
+    // names or is part of, and the copies made of one (relevance check R4:
+    // a session searched `topics/using-dita-command.dita` and found nothing).
+    let mut by_file: Vec<String> = Vec::new();
+    if query.contains(['.', '/', '\\']) {
+        let wanted = normalize_path(&query);
+        for file in bundle.source_files().iter() {
+            if !(normalize_path(&file.path).contains(&wanted) || names_file(&query, &file.path)) {
+                continue;
+            }
+            let type_ = bundle.node(&file.id).map_or("", |n| n.type_.as_str());
+            by_file.push(format!(
+                "{} ({type_}) [{}]{} -- {} {}",
+                bundle.title(&file.id).unwrap_or_else(|_| file.id.clone()),
+                file.id,
+                role_note(bundle, &file.id),
+                if file.copied_from {
+                    "a copy of"
+                } else {
+                    "source file"
+                },
+                file.path
+            ));
+        }
+    }
     hits.sort();
     by_words.sort();
     by_metadata.sort();
-    if hits.is_empty() && by_words.is_empty() && by_metadata.is_empty() {
+    if hits.is_empty() && by_words.is_empty() && by_metadata.is_empty() && by_file.is_empty() {
         return Ok(format!("no topics matched `{query}`"));
     }
     for (heading, mut group) in [
+        (format!("Source file matching `{query}`"), by_file),
         (
             format!("Title or id with every word of `{query}`"),
             by_words,

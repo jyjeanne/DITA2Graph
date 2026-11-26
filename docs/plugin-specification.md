@@ -1119,6 +1119,22 @@ benchmark session (r-o3) reached only by trying "rename" alone;
 `list_key_definitions` tool were part of an earlier draft of this
 contract and were never implemented, so they're not listed here.
 
+A topic's id is often not its file name: DITA-OT's own docs keep the
+topic `using-command-line-tool` in `topics/using-dita-command.dita`, a
+resource-only topic the map publishes as two copies under other names.
+So every tool that takes a `topicId` also takes the topic's source file
+path, as its concept file's `resource` has it (`topics/x.dita`, or any
+path that ends with it, `\` read as `/`), or a key name, bare or as
+`key:<name>`, that names one topic. The answer opens with what it
+resolved to, and the copies the map publishes of that topic (its
+`copy-of` dependents), which are the pages readers see. A path that
+names several topics, or a file published only as several copies, is an
+error listing their ids. `search_topics` also lists, for a query that
+looks like a file, the topics whose source file it names and the copies
+made of one. The demo's relevance checks motivated it: asked which pages
+change when `topics/using-dita-command.dita` is edited, a small model
+never got from the path to the topic, in any run.
+
 `search_content(query, topicId?, relation?, depth?)` is §13.1's
 query-routing piece, implemented: full-text search over
 `rag/chunks.jsonl`'s topic text, which `search_topics` never looks at

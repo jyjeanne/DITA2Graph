@@ -403,8 +403,10 @@ fn server_instructions(bundle: Option<&bundle::BundleReader>) -> String {
          find_text: it searches every topic, says which reused passage holds the text, and \
          lists the near spellings the documentation has. Search each older form and synonym \
          too, and say how far the search went.\n\
-         - A topic's id is often not its file name. If a file path finds nothing, look the \
-         topic up by its title or by a phrase it contains before concluding it is missing.\n\
+         - A topic's id is often not its file name. Every tool that takes a topicId also \
+         takes the topic's source file path (topics/x.dita) or a key name, and says which topic \
+         it resolved to and which copies the map publishes of it: the copies are the pages \
+         readers see.\n\
          - A topic's text is its source text. Text between [draft-comment] and \
          [end draft-comment] (or [required-cleanup] and [end required-cleanup]) is a note for \
          the authors, which the output leaves out unless the build sets args.draft: readers do \
@@ -1940,6 +1942,137 @@ mod tests {
         // Text outside the note is not marked.
         let after = call_tool(&dir, "find_text", json!({ "text": "run the build" }));
         assert!(!after.contains("a note for the authors"), "{after}");
+    }
+
+    /// dita-ot/docs' topics/using-dita-command.dita: a resource-only topic
+    /// whose id is not its file name, which the map publishes as two copies
+    /// and a key names, and whose short description another topic reuses
+    /// (relevance check R4).
+    fn source_file_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "guide", "title": "Guide", "sourceFile": "guide.ditamap",
+              "keyDefs": [{ "name": "using-dita-command", "target": "using-command-line-tool",
+                            "sourceFile": "resources/source-files.ditamap" }],
+              "links": [
+                { "relation": "contains", "target": "using-command-line-tool--topics-build-using-dita-command.dita" },
+                { "relation": "contains", "target": "using-command-line-tool--topics-first-build-using-dita-command.dita" }] },
+            { "type": "topic", "id": "using-command-line-tool", "topicType": "task",
+              "title": "Using the dita command", "processingRole": "resource-only",
+              "sourceFile": "topics/using-dita-command.dita", "links": [] },
+            { "type": "topic", "id": "using-command-line-tool--topics-build-using-dita-command.dita",
+              "topicType": "task", "title": "Publishing with the dita command",
+              "sourceFile": "topics/build-using-dita-command.dita",
+              "authoredFile": "topics/using-dita-command.dita",
+              "links": [{ "relation": "copy-of", "target": "using-command-line-tool" }] },
+            { "type": "topic", "id": "using-command-line-tool--topics-first-build-using-dita-command.dita",
+              "topicType": "task", "title": "First build with the dita command",
+              "sourceFile": "topics/first-build-using-dita-command.dita",
+              "authoredFile": "topics/using-dita-command.dita",
+              "links": [{ "relation": "copy-of", "target": "using-command-line-tool" }] },
+            { "type": "topic", "id": "migrating-ant-to-dita", "topicType": "task",
+              "title": "Migrating Ant builds to the dita command",
+              "sourceFile": "topics/migrating-ant-to-dita.dita",
+              "links": [{ "relation": "generated-from", "target": "using-command-line-tool",
+                          "fragments": ["cmdname@9"] }] }
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_topic_id_can_be_its_source_file_or_a_key() {
+        let dir = source_file_bundle_root();
+        let copies = "The map publishes it as 2 copies, the pages readers see: Publishing with \
+                      the dita command [using-command-line-tool--topics-build-using-dita-command.dita]; \
+                      First build with the dita command \
+                      [using-command-line-tool--topics-first-build-using-dita-command.dita].";
+        for path in [
+            "topics/using-dita-command.dita",
+            "using-dita-command.dita",
+            r"C:\docs\topics\using-dita-command.dita",
+        ] {
+            let impact = call_tool(
+                &dir,
+                "analyze_impact",
+                json!({ "topicId": path, "depth": 1, "excerpts": false }),
+            );
+            assert!(
+                impact.starts_with(&format!(
+                    "`{path}` is the source file topics/using-dita-command.dita of Using the dita \
+                     command [using-command-line-tool] [resource-only: not a published page]. {copies}"
+                )),
+                "{impact}"
+            );
+            // The tool ran on the resolved topic.
+            assert!(
+                impact.contains("changing `using-command-line-tool` may affect 3"),
+                "{impact}"
+            );
+        }
+        let key = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "using-dita-command" }),
+        );
+        assert!(
+            key.starts_with(
+                "`using-dita-command` is the key `using-dita-command`, defined in \
+                 resources/source-files.ditamap, which names Using the dita command \
+                 [using-command-line-tool] [resource-only: not a published page]."
+            ),
+            "{key}"
+        );
+        // An id stays an id, and a name that is neither still fails.
+        let own = call_tool(
+            &dir,
+            "generate_summary",
+            json!({ "topicId": "migrating-ant-to-dita" }),
+        );
+        assert!(!own.contains("is the source file"), "{own}");
+        let response = handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "read_topic", "arguments": { "topicId": "topics/nothing.dita" } }
+            }),
+            &mut bundle::BundleCache::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], true);
+    }
+
+    #[test]
+    fn search_topics_finds_a_topic_by_its_source_file() {
+        let dir = source_file_bundle_root();
+        let hits = call_tool(
+            &dir,
+            "search_topics",
+            json!({ "query": "topics/using-dita-command.dita" }),
+        );
+        assert!(
+            hits.contains("Source file matching `topics/using-dita-command.dita` (3):"),
+            "{hits}"
+        );
+        assert!(
+            hits.contains(
+                "Using the dita command (Task) [using-command-line-tool] [resource-only: not a \
+                 published page] -- source file topics/using-dita-command.dita"
+            ),
+            "{hits}"
+        );
+        assert!(
+            hits.contains(
+                "Publishing with the dita command (Task) \
+                 [using-command-line-tool--topics-build-using-dita-command.dita] -- a copy of \
+                 topics/using-dita-command.dita"
+            ),
+            "{hits}"
+        );
+        // A plain word is not read as a file.
+        let word = call_tool(&dir, "search_topics", json!({ "query": "migrating" }));
+        assert!(!word.contains("Source file matching"), "{word}");
     }
 
     /// The registry address in dita-ot/docs: pages show it, but a key in
