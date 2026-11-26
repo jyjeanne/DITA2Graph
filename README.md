@@ -90,7 +90,7 @@ flowchart TD
     G --> I["dita2graph-mcp server<br/>JSON-RPC over stdio"]
     H --> I
     R -.->|"--sparql"| I
-    I --> J["MCP tools<br/>search_topics · search_content · read_topic · find_related_topics<br/>explain_task · trace_dependencies · analyze_impact · generate_summary<br/>validate_bundle · validate_live · query_graph (opt-in)"]
+    I --> J["MCP tools<br/>search_topics · search_content · find_text · read_topic · find_related_topics<br/>explain_task · trace_dependencies · analyze_impact · generate_summary<br/>validate_bundle · validate_live · query_graph (opt-in)"]
     J --> K([AI agent / IDE<br/>Claude Code, Claude Desktop, custom agents])
 
     classDef fail fill:#5c1a1a,stroke:#ff6b6b,color:#fff
@@ -405,6 +405,7 @@ Once registered, an agent can call:
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids, the query as a phrase first, then, for several words, the titles and ids with every word in any order (`rename id` finds "Search and Rename Actions for IDs"); then against the topics' keywords and index entries (listed after, with the entries that matched) |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
+| `find_text(text, limit?, offset?)` | Every topic whose text contains `text`, literally, with no cap: the counts (published pages apart from resource-only topics), each occurrence in context, the reused passage (`<file>#<fragment>`) it comes from, and for a single word the near spellings the documentation has (`pluginsdir` for `plugindirs`); also the keys whose link text or target URL holds the text, with the map defining each. Complete for this exact text, not for other wordings. For "every page that shows…" and "is it spelled the same everywhere?" |
 | `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, then the reused fragments by source topic, and the topic's external links, keys and sample files |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments. On a key, URL or file node (`key:<name>`, the URL, `file:<path>`), the topics pointing to it |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |

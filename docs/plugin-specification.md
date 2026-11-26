@@ -1081,6 +1081,7 @@ setting of its own client.
 ```
 search_topics(query)
 search_content(query, topicId?, relation?, depth?)
+find_text(text, limit?, offset?)
 read_topic(topicId, maxChars?)
 find_related_topics(topicId, relation?)
 explain_task(topicId)
@@ -1130,6 +1131,31 @@ describes: cheap, deterministic graph narrowing before the more
 expensive content match, not a fuzzy search over the whole bundle.
 Degrades to a plain "no rag/chunks.jsonl found" message, not an error,
 against a bundle built before `rag/` existed.
+
+`find_text(text, limit?, offset?)` answers what a ranked search cannot:
+every topic whose text contains `text`, literally (ASCII letters
+case-insensitive), with no cap. It searches each topic's title and its
+`resolvedText` with the reuse markers taken out (`text` for a topic that
+reuses nothing), and says the list is complete. It gives the number of
+occurrences and of topics, published pages apart from resource-only
+topics; up to three occurrences per topic in context; and the reused
+passage (`<file>#<fragment>`) an occurrence comes from, so one edit can
+fix every page reusing it. For a single word it also lists the near
+spellings the documentation has: words one edit away, or two with the
+same letters moved, that neither contain the word nor are contained in
+it, so `pluginsdir` for `plugindirs` but not `uninstall` for `install`.
+It names the keys that define the text, whose link text holds it or whose
+target URL does, with the map that defines each: a page showing a text
+through a key changes with the key's definition, not with its own text.
+It also says that a list, or an empty result, covers this exact text
+only, not other wordings of the same thing.
+Results are paged by topic (50 by default). The demo's relevance checks
+motivated it: models asked whether `plugindirs` is spelled the same
+everywhere never met the `pluginsdir` two published pages show, and lists
+of "every page that shows `dita install`" stopped at `search_content`'s
+15 hits. The key line came from the same checks: a literal search for the
+plug-in registry's address led an agent to have every passage showing it
+edited by hand, never naming the key that defines it.
 
 Results are ranked, not returned in file/alphabetical order: `query` is
 split on whitespace into terms, and each matching concept gets a

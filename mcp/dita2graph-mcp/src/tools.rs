@@ -68,7 +68,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "search_content",
-            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Ranked by keyword frequency, plus cosine similarity against rag/embeddings.jsonl when this server was started with an embedding model configured -- a strong semantic match can surface even with no shared words, not just literal term overlap. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle. Excerpts are 200 characters: call read_topic on a hit to read it in full.",
+            "description": "Full-text search over rag/chunks.jsonl's topic body/summary text (§13.1) -- unlike search_topics (title/id only), this searches actual content, and each hit includes a text excerpt. Ranked by keyword frequency, plus cosine similarity against rag/embeddings.jsonl when this server was started with an embedding model configured -- a strong semantic match can surface even with no shared words, not just literal term overlap. Returns at most the top 15 matches by relevance; pass topicId (optionally with relation/depth) to narrow the search to topics reachable from that id via the graph first: the hybrid pattern in §13.1 -- cheap, deterministic graph narrowing, then content search only within that smaller set, instead of the whole bundle. Excerpts are 200 characters: call read_topic on a hit to read it in full. To list every topic that contains a given word, command or name, with no cap, use find_text.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -78,6 +78,19 @@ pub fn list(sparql: bool) -> Vec<Value> {
                     "depth": { "type": "integer", "description": "Max narrowing depth from topicId (default 3)" },
                 },
                 "required": ["query"],
+            },
+        }),
+        json!({
+            "name": "find_text",
+            "description": "Every topic whose text contains the given text, literally (ASCII letters case-insensitive), with no cap: titles, summaries and bodies, reused passages included. Use it when a question asks for every page that shows a command, a name, a property or a phrase, or whether something is spelled the same everywhere -- search_content only returns the 15 best matches. Gives the number of occurrences and of topics, published pages apart from resource-only topics, up to 3 occurrences per topic in context, the reused passage (<file>#<fragment>) an occurrence comes from -- edit it once and every topic reusing it changes -- and, for a single word, the near spellings that appear in the documentation (one or two letters apart), which the count does not include. It also names the keys that define the text -- whose link text holds it, or whose target URL does -- with the map that defines each: a page showing it through a key changes with the key's definition, not with its own text. The list is complete for this exact text only: other wordings of the same thing need their own search. Paginated by topic (50 by default; pass offset for the next page).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "The text to find, as written (a word, a command, a name or a phrase)" },
+                    "limit": { "type": "integer", "description": "Topics per page (default 50; 0 = counts only)" },
+                    "offset": { "type": "integer", "description": "Index of the first topic to return (default 0)" },
+                },
+                "required": ["text"],
             },
         }),
         json!({
@@ -215,6 +228,7 @@ pub fn call(name: &str, arguments: &Value, cache: &mut BundleCache) -> Result<St
         "query_graph" => query_graph(bundle, arguments),
         "search_topics" => search_topics(bundle, arguments),
         "search_content" => search_content(bundle, arguments, embedder.as_deref()),
+        "find_text" => find_text(bundle, arguments),
         "read_topic" => read_topic(bundle, arguments),
         "find_related_topics" => find_related_topics(bundle, arguments),
         "explain_task" => explain_task(bundle, arguments),
@@ -535,6 +549,488 @@ fn search_content(
         ));
     }
     Ok(out)
+}
+
+/// Topics per page of [`find_text`]. Each shows at most
+/// [`FIND_TEXT_SNIPPETS`] occurrences, so a page stays a few kilobytes.
+const FIND_TEXT_PAGE: usize = 50;
+const FIND_TEXT_SNIPPETS: usize = 3;
+/// Bytes of context on each side of an occurrence in [`find_text`].
+const FIND_TEXT_CONTEXT: usize = 70;
+
+/// Every topic whose text holds `text`, literally, with no cap -- what
+/// `search_content` cannot give: it ranks by keyword and stops at 15. Found
+/// by the relevance checks (dita2graph-demo/bench, 26 November 2026): asked
+/// whether `plugindirs` is spelled the same everywhere, models searched for
+/// it and its likely variants, never met the `pluginsdir` two published
+/// pages show, and answered "the same everywhere"; asked for every page that
+/// shows `dita install`, they read the first 15 hits and missed pages. So
+/// the answer says it is complete, which reused passage an occurrence comes
+/// from (edit it once to change every page reusing it), and for a single
+/// word, the near spellings the documentation has. Matching is literal and
+/// ASCII-case-insensitive (byte offsets stay those of the text), on the
+/// title and on `resolvedText` with its reuse markers taken out, or `text`
+/// for a topic that reuses nothing.
+fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
+    let query = arg_str(arguments, "text")?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if query.chars().count() < 2 {
+        return Err(anyhow!("`text` must have at least 2 characters"));
+    }
+    let needle = query.to_ascii_lowercase();
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map_or(FIND_TEXT_PAGE, |v| v as usize);
+    let offset = arguments
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let chunks = bundle.rag_chunks()?;
+    if chunks.is_empty() {
+        return Ok(
+            "no rag/chunks.jsonl found for this bundle -- run `dita2graph-core build` \
+             (not just `validate`) to produce one (§13.1)"
+                .to_string(),
+        );
+    }
+
+    struct Hit<'a> {
+        chunk: &'a crate::bundle::RagChunk,
+        resource_only: bool,
+        count: usize,
+        snippets: Vec<String>,
+    }
+    let single_word = needle.len() >= 5
+        && needle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    // word -> (occurrences, topics), for the near spellings of a single word.
+    let mut words: std::collections::HashMap<String, (usize, std::collections::HashSet<&str>)> =
+        std::collections::HashMap::new();
+    // reused passage -> topics where an occurrence comes from it.
+    let mut by_source: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    let mut hits: Vec<Hit> = Vec::new();
+    for chunk in chunks.iter() {
+        let plain = PlainText::of(chunk);
+        if single_word {
+            for word in words_of(&plain.text) {
+                let entry = words.entry(word).or_default();
+                entry.0 += 1;
+                entry.1.insert(chunk.id.as_str());
+            }
+        }
+        let title_hit = chunk.title.to_ascii_lowercase().contains(&needle);
+        let haystack = plain.text.to_ascii_lowercase();
+        let starts: Vec<usize> = haystack.match_indices(&needle).map(|(i, _)| i).collect();
+        if starts.is_empty() && !title_hit {
+            continue;
+        }
+        let mut snippets = Vec::new();
+        if title_hit {
+            snippets.push(format!("in the title: {}", chunk.title));
+        }
+        for start in &starts {
+            let end = start + needle.len();
+            let source = plain.reused_source(*start, end);
+            if let Some(source) = source {
+                by_source
+                    .entry(source.to_string())
+                    .or_default()
+                    .insert(chunk.id.as_str());
+            }
+            if snippets.len() < FIND_TEXT_SNIPPETS {
+                let mut line = context(&plain.text, *start, end);
+                if let Some(source) = source {
+                    line.push_str(&format!(" (in a passage reused from {source})"));
+                }
+                snippets.push(line);
+            }
+        }
+        hits.push(Hit {
+            chunk,
+            resource_only: !role_note(bundle, &chunk.id).is_empty(),
+            count: starts.len() + usize::from(title_hit),
+            snippets,
+        });
+    }
+    hits.sort_by(|a, b| {
+        a.resource_only
+            .cmp(&b.resource_only)
+            .then_with(|| {
+                a.chunk
+                    .title
+                    .to_lowercase()
+                    .cmp(&b.chunk.title.to_lowercase())
+            })
+            .then_with(|| a.chunk.id.cmp(&b.chunk.id))
+    });
+
+    let searched = "every topic's text was searched (titles, summaries and bodies, reused \
+                    passages included; ASCII letters case-insensitive)";
+    // "Complete" is about this text, not about the question: a complete
+    // search for TODO and FIXME that found nothing was read as "no page has
+    // a note for its authors", while one did, in other words (R7).
+    let mut out = if hits.is_empty() {
+        format!(
+            "`{query}` appears in no topic: {searched}. This covers this exact text only, not \
+             other wordings: search them before concluding that something is absent."
+        )
+    } else {
+        let occurrences: usize = hits.iter().map(|h| h.count).sum();
+        let published = hits.iter().filter(|h| !h.resource_only).count();
+        format!(
+            "`{query}`: {} in {} -- {published} published, {} resource-only (not pages of \
+             the publication). This list is complete for this exact text, not for other \
+             wordings of the same thing: {searched}.",
+            count_of(occurrences, "occurrence"),
+            count_of(hits.len(), "topic"),
+            hits.len() - published,
+        )
+    };
+    if let Some(keys) = key_definitions(bundle, &needle) {
+        out.push_str(&keys);
+    }
+    if !by_source.is_empty() {
+        let sources: Vec<String> = by_source
+            .iter()
+            .map(|(source, topics)| format!("{source} (in {})", count_of(topics.len(), "topic")))
+            .collect();
+        out.push_str(&format!(
+            "\nReused passages that hold it: {}. Editing a passage changes every topic that reuses it.",
+            sources.join("; ")
+        ));
+    }
+    if single_word {
+        let variants = near_spellings(&needle, &words);
+        if !variants.is_empty() {
+            let listed: Vec<String> = variants
+                .iter()
+                .map(|(word, occurrences, topics)| {
+                    format!(
+                        "{word} ({} in {})",
+                        count_of(*occurrences, "occurrence"),
+                        count_of(*topics, "topic")
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "\nNear spellings in the documentation, not counted above: {}. Search them \
+                 too when the question is about every spelling.",
+                listed.join(", ")
+            ));
+        }
+    }
+    if hits.is_empty() || limit == 0 {
+        return Ok(out);
+    }
+    let end = (offset + limit).min(hits.len());
+    for hit in hits.iter().take(end).skip(offset) {
+        out.push_str(&format!(
+            "\n\n{} ({}) [{}]{}: {}",
+            hit.chunk.title,
+            hit.chunk.topic_type,
+            hit.chunk.id,
+            role_note(bundle, &hit.chunk.id),
+            count_of(hit.count, "occurrence")
+        ));
+        for snippet in &hit.snippets {
+            out.push_str(&format!("\n  {snippet}"));
+        }
+        if hit.count > hit.snippets.len() {
+            out.push_str(&format!(
+                "\n  (+{} more in this topic)",
+                hit.count - hit.snippets.len()
+            ));
+        }
+    }
+    if offset > 0 || end < hits.len() {
+        out.push_str(&format!(
+            "\n\n(showing {}-{end} of {} topics{})",
+            (offset + 1).min(end),
+            hits.len(),
+            if end < hits.len() {
+                format!(": pass offset={end} for the next page")
+            } else {
+                String::new()
+            }
+        ));
+    }
+    Ok(out)
+}
+
+/// At most this many keys named by [`key_definitions`].
+const FIND_TEXT_KEYS: usize = 10;
+
+/// Where keys define `needle` (ASCII-lowercased), for [`find_text`]: the
+/// keys whose link text holds it, and those targeting a URL that holds it,
+/// each with the map that defines it; then the URLs holding it that no key
+/// targets. Found by the relevance checks (R5): a literal search for the
+/// plug-in registry's address listed the passages that show it, and the
+/// agent told the user to edit them by hand, never naming the key in
+/// resources/external-links.ditamap that puts the address in every one.
+fn key_definitions(bundle: &BundleReader, needle: &str) -> Option<String> {
+    use dita2graph_core::graph_view::{EXTERNAL_TYPE, KEY_TYPE};
+    // key name -> (defining map, what of it holds the text)
+    let mut keys: std::collections::BTreeMap<String, (String, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    let mut direct_urls: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut add = |key_id: &str, what: String| {
+        let name = key_id.strip_prefix("key:").unwrap_or(key_id).to_string();
+        let file = bundle
+            .node(key_id)
+            .and_then(|key| key.source_file.clone())
+            .unwrap_or_default();
+        keys.entry(name)
+            .or_insert_with(|| (file, Vec::new()))
+            .1
+            .push(what);
+    };
+    for node in bundle.all_nodes() {
+        if node.type_ == KEY_TYPE {
+            // A key's title is `name = "link text"`, or its name alone.
+            let text = node
+                .title
+                .as_deref()
+                .and_then(|title| title.split_once(" = "))
+                .map(|(_, text)| text.trim_matches('"'));
+            if let Some(text) = text
+                && text.to_ascii_lowercase().contains(needle)
+            {
+                add(&node.id, format!("its link text \"{text}\""));
+            }
+        } else if node.type_ == EXTERNAL_TYPE && node.id.to_ascii_lowercase().contains(needle) {
+            let targeting = bundle.edges_to(&node.id, Some("key-target"));
+            if targeting.is_empty() {
+                direct_urls.insert(&node.id);
+            }
+            for edge in targeting {
+                add(&edge.from, format!("its target {}", node.id));
+            }
+        }
+    }
+    let mut out = String::new();
+    if !keys.is_empty() {
+        let named: Vec<String> = keys
+            .iter()
+            .take(FIND_TEXT_KEYS)
+            .map(|(name, (file, what))| {
+                let file = if file.is_empty() {
+                    String::new()
+                } else {
+                    format!(" in {file}")
+                };
+                format!("`{name}`{file} ({})", what.join("; "))
+            })
+            .collect();
+        let more = keys.len().saturating_sub(FIND_TEXT_KEYS);
+        out.push_str(&format!(
+            "\nKeys define it: {}{}. A page that shows it through a key changes when the key's \
+             definition changes, not its own text; analyze_impact on key:<name> lists those pages.",
+            named.join("; "),
+            if more > 0 {
+                format!(" (+{more} more keys)")
+            } else {
+                String::new()
+            }
+        ));
+    }
+    if !direct_urls.is_empty() {
+        let shown: Vec<&str> = direct_urls.iter().take(FIND_TEXT_KEYS).copied().collect();
+        out.push_str(&format!(
+            "\nURLs that hold it, linked without a key: {}; analyze_impact on a URL lists the \
+             pages linking to it.",
+            shown.join(", ")
+        ));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// `1 topic`, `2 topics`.
+fn count_of(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// A topic's text as [`find_text`] searches it: the reuse markers of
+/// `resolvedText` taken out, whitespace runs made one space, and for each
+/// reused passage the byte range it covers and where it comes from.
+struct PlainText {
+    text: String,
+    /// `(start, end, "<file>#<fragment>")`, a nested passage after the one holding it.
+    reused: Vec<(usize, usize, String)>,
+}
+
+impl PlainText {
+    const OPEN: &'static str = "[reused from ";
+    const CLOSE: &'static str = "[end reused]";
+
+    fn of(chunk: &crate::bundle::RagChunk) -> Self {
+        Self::parse(
+            chunk
+                .resolved_text
+                .as_deref()
+                .or(chunk.text.as_deref())
+                .unwrap_or_default(),
+        )
+    }
+
+    fn parse(source: &str) -> Self {
+        let mut text = String::with_capacity(source.len());
+        let mut reused = Vec::new();
+        let mut open: Vec<(usize, String)> = Vec::new();
+        let mut rest = source;
+        loop {
+            let next_open = rest.find(Self::OPEN);
+            let next_close = rest.find(Self::CLOSE);
+            match (next_open, next_close) {
+                (Some(o), c) if c.is_none_or(|c| o < c) => {
+                    push_collapsed(&mut text, &rest[..o]);
+                    let after = &rest[o + Self::OPEN.len()..];
+                    let Some(end) = after.find(']') else {
+                        push_collapsed(&mut text, &rest[o..]);
+                        break;
+                    };
+                    open.push((text.len(), after[..end].to_string()));
+                    rest = &after[end + 1..];
+                }
+                (_, Some(c)) => {
+                    push_collapsed(&mut text, &rest[..c]);
+                    if let Some((start, source)) = open.pop() {
+                        reused.push((start, text.len(), source));
+                    }
+                    rest = &rest[c + Self::CLOSE.len()..];
+                }
+                _ => {
+                    push_collapsed(&mut text, rest);
+                    break;
+                }
+            }
+        }
+        while let Some((start, source)) = open.pop() {
+            reused.push((start, text.len(), source));
+        }
+        let text = text.trim_end().to_string();
+        PlainText { text, reused }
+    }
+
+    /// The innermost reused passage that holds `start..end`, if any.
+    fn reused_source(&self, start: usize, end: usize) -> Option<&str> {
+        self.reused
+            .iter()
+            .filter(|(s, e, _)| *s <= start && end <= *e)
+            .min_by_key(|(s, e, _)| e - s)
+            .map(|(_, _, source)| source.as_str())
+    }
+}
+
+/// Appends `s` with every run of whitespace made one space, and none at the
+/// start of the text or after a space already there.
+fn push_collapsed(out: &mut String, s: &str) {
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+}
+
+/// `text[start..end]` with up to [`FIND_TEXT_CONTEXT`] bytes on each side,
+/// cut on character boundaries, `…` where the text goes on.
+fn context(text: &str, start: usize, end: usize) -> String {
+    let mut from = start.saturating_sub(FIND_TEXT_CONTEXT);
+    while !text.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut to = (end + FIND_TEXT_CONTEXT).min(text.len());
+    while !text.is_char_boundary(to) {
+        to += 1;
+    }
+    format!(
+        "{}{}{}",
+        if from > 0 { "…" } else { "" },
+        &text[from..to],
+        if to < text.len() { "…" } else { "" }
+    )
+}
+
+/// The words of `text`, ASCII-lowercased: runs of letters, digits, `_`,
+/// `-` and `.`, without the `.`, `-` or `_` they start or end with, three
+/// characters or more.
+fn words_of(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        .map(|w| w.trim_matches(|c| matches!(c, '_' | '-' | '.')))
+        .filter(|w| w.chars().count() >= 3)
+        .map(str::to_ascii_lowercase)
+}
+
+/// The words of the documentation that look like a misspelling of `needle`
+/// (its `-`, `_` and `.` at either end left out, as [`words_of`] does): one
+/// edit away, or two with the same letters moved -- `pluginsdir` for
+/// `plugindirs` -- but not a word that contains it or that it contains
+/// (`installs`, `uninstall` for `install`), nor two letters changed for two
+/// others (`conference` for `confluence`). Closest and most frequent first,
+/// at most ten: `(word, occurrences, topics)`.
+fn near_spellings(
+    needle: &str,
+    words: &std::collections::HashMap<String, (usize, std::collections::HashSet<&str>)>,
+) -> Vec<(String, usize, usize)> {
+    let core = needle.trim_matches(|c| matches!(c, '_' | '-' | '.'));
+    let letters = |w: &str| {
+        let mut chars: Vec<char> = w.chars().collect();
+        chars.sort_unstable();
+        chars
+    };
+    let core_letters = letters(core);
+    let mut found: Vec<(usize, String, usize, usize)> = words
+        .iter()
+        .filter(|(word, _)| !word.contains(core) && !core.contains(word.as_str()))
+        .filter_map(|(word, (occurrences, topics))| {
+            let distance = edit_distance(word, core, 2)?;
+            (distance == 1 || letters(word) == core_letters)
+                .then(|| (distance, word.clone(), *occurrences, topics.len()))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.cmp(&a.2)).then(a.1.cmp(&b.1)));
+    found
+        .into_iter()
+        .take(10)
+        .map(|(_, word, occurrences, topics)| (word, occurrences, topics))
+        .collect()
+}
+
+/// The Levenshtein distance between `a` and `b` (by character), when it is
+/// at most `max`.
+fn edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > max {
+        return None;
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut current = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = previous[j] + usize::from(ca != cb);
+            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        if current.iter().min().is_some_and(|m| *m > max) {
+            return None;
+        }
+        previous = current;
+    }
+    let distance = previous[b.len()];
+    (distance <= max).then_some(distance)
 }
 
 /// Keyword-frequency relevance score across `terms` (already
@@ -1499,6 +1995,72 @@ mod tests {
     #[test]
     fn relevance_score_is_zero_for_no_match() {
         assert_eq!(relevance_score(&["nowhere"], "some title", "some text"), 0);
+    }
+
+    #[test]
+    fn plain_text_drops_the_reuse_markers_and_keeps_where_each_passage_comes_from() {
+        let plain = PlainText::parse(
+            "Run  dita install. [reused from a.dita#outer] Outer [reused from b.dita#inner] inner \
+             text [end reused] after. [end reused] Done.",
+        );
+        assert_eq!(
+            plain.text,
+            "Run dita install. Outer inner text after. Done."
+        );
+        let at = |s: &str| plain.text.find(s).unwrap();
+        let inner = at("inner text");
+        assert_eq!(plain.reused_source(inner, inner + 5), Some("b.dita#inner"));
+        let outer = at("after");
+        assert_eq!(plain.reused_source(outer, outer + 5), Some("a.dita#outer"));
+        let own = at("Done");
+        assert_eq!(plain.reused_source(own, own + 4), None);
+        // A passage left open runs to the end of the text.
+        let open = PlainText::parse("Intro [reused from c.dita#x] tail");
+        assert_eq!(open.text, "Intro tail");
+        assert_eq!(open.reused_source(6, 10), Some("c.dita#x"));
+    }
+
+    #[test]
+    fn edit_distance_stops_past_the_maximum() {
+        assert_eq!(edit_distance("pluginsdir", "plugindirs", 2), Some(2));
+        assert_eq!(edit_distance("install", "instal", 1), Some(1));
+        assert_eq!(edit_distance("plugins", "plugindirs", 2), None);
+        assert_eq!(edit_distance("same", "same", 1), Some(0));
+    }
+
+    #[test]
+    fn near_spellings_keep_misspellings_and_leave_other_words_out() {
+        let words: std::collections::HashMap<String, (usize, std::collections::HashSet<&str>)> = [
+            ("pluginsdir", 3),
+            ("plugindir", 1),
+            ("conference", 1),
+            ("uninstall", 14),
+            ("re-install", 2),
+            ("instal", 1),
+        ]
+        .into_iter()
+        .map(|(w, n)| (w.to_string(), (n, std::collections::HashSet::from(["t"]))))
+        .collect();
+        let names = |needle: &str| -> Vec<String> {
+            near_spellings(needle, &words)
+                .into_iter()
+                .map(|(w, ..)| w)
+                .collect()
+        };
+        assert_eq!(names("plugindirs"), ["pluginsdir"]);
+        assert!(names("confluence").is_empty());
+        // Compared without its leading dashes: `uninstall` and `re-install`
+        // contain `install`, `instal` is contained in it.
+        assert!(names("--install").is_empty());
+    }
+
+    #[test]
+    fn context_cuts_on_character_boundaries() {
+        let text = format!("{}pluginsdir{}", "é".repeat(60), "è".repeat(60));
+        let start = text.find("pluginsdir").unwrap();
+        let line = context(&text, start, start + "pluginsdir".len());
+        assert!(line.starts_with('…') && line.ends_with('…'), "{line}");
+        assert!(line.contains("pluginsdir"), "{line}");
     }
 
     #[test]

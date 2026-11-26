@@ -398,9 +398,11 @@ fn server_instructions(bundle: Option<&bundle::BundleReader>) -> String {
          - If the tools find nothing on the subject, say the documentation does not cover it \
          before suggesting anything else.\n\
          - search_topics and search_content return the best matches, not every one \
-         (search_content stops at 15). When a question asks for every page, search again with \
-         each spelling, older form and synonym, read the candidates with read_topic, and say \
-         how far the search went.\n\
+         (search_content stops at 15). When a question asks for every page that shows a \
+         word, a command or a name, or whether it is spelled the same everywhere, use \
+         find_text: it searches every topic, says which reused passage holds the text, and \
+         lists the near spellings the documentation has. Search each older form and synonym \
+         too, and say how far the search went.\n\
          - A topic's id is often not its file name. If a file path finds nothing, look the \
          topic up by its title or by a phrase it contains before concluding it is missing.\n\
          - A topic's text is its source text: it can hold draft comments or filtered content \
@@ -847,6 +849,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"search_topics"));
         assert!(names.contains(&"search_content"));
+        assert!(names.contains(&"find_text"));
         assert!(names.contains(&"find_related_topics"));
         assert!(names.contains(&"analyze_impact"));
         assert!(names.contains(&"validate_bundle"));
@@ -1766,6 +1769,197 @@ mod tests {
     /// 15-result cap, proves both halves: only the top 15 (by score)
     /// come back, and the response says so rather than silently
     /// dropping the rest.
+    /// The shape of the `plugindirs` inconsistency in dita-ot/docs: the
+    /// configuration reference spells the property `plugindirs`; a passage
+    /// of the conref warehouse says `pluginsdir`, and a task reuses it.
+    fn find_text_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let topic = |id: &str,
+                     topic_type: TopicType,
+                     title: &str,
+                     body: &str,
+                     resolved_body: Option<&str>,
+                     processing_role: Option<&str>| {
+            NormalizedNode::Topic(NormalizedTopic {
+                keyrefs: vec![],
+                external_links: vec![],
+                code_refs: vec![],
+                id: id.into(),
+                topic_type,
+                title: title.into(),
+                shortdesc: None,
+                body: Some(body.into()),
+                resolved_body: resolved_body.map(Into::into),
+                processing_role: processing_role.map(Into::into),
+                dita_class: None,
+                audience: vec![],
+                product: vec![],
+                keys: vec![],
+                uicontrols: vec![],
+                cmd_uicontrols: vec![],
+                authored_file: None,
+                metadata: Default::default(),
+                source_file: format!("topics/{id}.dita"),
+                links: vec![],
+            })
+        };
+        let nodes = vec![
+            topic(
+                "plugins-installing",
+                TopicType::Task,
+                "Installing plug-ins",
+                "Run dita install. With no argument, it reloads the plugins directory \
+                 or any location set with the pluginsdir property.",
+                Some(
+                    "Run dita install. [reused from resources/conref-task.dita#plugin-integrate-all] \
+                     With no argument, it reloads the plugins directory or any location set with the \
+                     pluginsdir property. [end reused]",
+                ),
+                None,
+            ),
+            topic(
+                "configuration",
+                TopicType::Reference,
+                "The configuration.properties file",
+                "plugindirs: a list of plug-in directories. Relative plugindirs entries \
+                 resolve against the base directory.",
+                None,
+                None,
+            ),
+            topic(
+                "ID",
+                TopicType::Task,
+                "Conref file for tasks",
+                "With no argument, it reloads the plugins directory or any location set \
+                 with the pluginsdir property.",
+                None,
+                Some("resource-only"),
+            ),
+        ];
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn find_text_lists_every_topic_and_the_reused_passage_it_comes_from() {
+        let dir = find_text_bundle_root();
+        let text = call_tool(&dir, "find_text", json!({ "text": "PluginsDir" }));
+        assert!(
+            text.starts_with(
+                "`PluginsDir`: 2 occurrences in 2 topics -- 1 published, 1 resource-only \
+                 (not pages of the publication). This list is complete for this exact text, \
+                 not for other wordings of the same thing:"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "Reused passages that hold it: resources/conref-task.dita#plugin-integrate-all (in 1 topic)."
+            ),
+            "{text}"
+        );
+        // Published pages first, then the resource-only warehouse.
+        let installing = text.find("Installing plug-ins (Task) [plugins-installing]: 1 occurrence");
+        let warehouse = text.find(
+            "Conref file for tasks (Task) [ID] [resource-only: not a published page]: 1 occurrence",
+        );
+        assert!(installing.unwrap() < warehouse.unwrap(), "{text}");
+        assert!(
+            text.contains(
+                "set with the pluginsdir property. (in a passage reused from \
+                 resources/conref-task.dita#plugin-integrate-all)"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("[reused from"), "{text}");
+    }
+
+    #[test]
+    fn find_text_names_the_near_spellings_the_documentation_has() {
+        let dir = find_text_bundle_root();
+        let text = call_tool(&dir, "find_text", json!({ "text": "plugindirs" }));
+        assert!(
+            text.starts_with(
+                "`plugindirs`: 2 occurrences in 1 topic -- 1 published, 0 resource-only"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "Near spellings in the documentation, not counted above: pluginsdir \
+                 (2 occurrences in 2 topics)."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "The configuration.properties file (Reference) [configuration]: 2 occurrences"
+            ),
+            "{text}"
+        );
+    }
+
+    /// The registry address in dita-ot/docs: pages show it, but a key in
+    /// resources/external-links.ditamap defines it (relevance check R5).
+    #[test]
+    fn find_text_names_the_key_that_defines_a_text() {
+        let dir = declarations_bundle_root(false);
+        let url = call_tool(&dir, "find_text", json!({ "text": "brew.sh" }));
+        assert!(url.starts_with("`brew.sh` appears in no topic"), "{url}");
+        assert!(
+            url.contains(
+                "Keys define it: `homebrew` in resources/external-links.ditamap (its target \
+                 https://brew.sh). A page that shows it through a key changes when the key's \
+                 definition changes, not its own text; analyze_impact on key:<name> lists those pages."
+            ),
+            "{url}"
+        );
+        let text = call_tool(&dir, "find_text", json!({ "text": "homebrew" }));
+        assert!(
+            text.starts_with("`homebrew`: 1 occurrence in 1 topic -- 1 published"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "Keys define it: `homebrew` in resources/external-links.ditamap (its link text \"Homebrew\")."
+            ),
+            "{text}"
+        );
+        // A text no key holds names none.
+        let none = call_tool(&dir, "find_text", json!({ "text": "Installing via" }));
+        assert!(!none.contains("Keys define it"), "{none}");
+    }
+
+    #[test]
+    fn find_text_says_when_nothing_matches_and_pages_by_topic() {
+        let dir = find_text_bundle_root();
+        let none = call_tool(&dir, "find_text", json!({ "text": "Confluence" }));
+        assert!(
+            none.starts_with("`Confluence` appears in no topic: every topic's text was searched"),
+            "{none}"
+        );
+        assert!(
+            none.contains(
+                "This covers this exact text only, not other wordings: search them before \
+                 concluding that something is absent."
+            ),
+            "{none}"
+        );
+        let page = call_tool(
+            &dir,
+            "find_text",
+            json!({ "text": "reloads the plugins", "limit": 1 }),
+        );
+        assert!(page.contains("2 occurrences in 2 topics"), "{page}");
+        assert!(
+            page.ends_with("(showing 1-1 of 2 topics: pass offset=1 for the next page)"),
+            "{page}"
+        );
+        // A phrase is not a single word: no near spellings.
+        assert!(!page.contains("Near spellings"), "{page}");
+    }
+
     #[test]
     fn search_content_caps_results_and_notes_the_truncation() {
         let dir = tempfile::tempdir().unwrap();
