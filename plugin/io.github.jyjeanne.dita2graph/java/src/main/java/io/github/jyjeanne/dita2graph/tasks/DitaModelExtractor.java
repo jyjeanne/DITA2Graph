@@ -1920,6 +1920,14 @@ final class DitaModelExtractor {
         boolean excludeThisElementText = foreign && !INLINE_ELEMENTS.contains(el.getNodeName());
         boolean textExcluded = textExcludedByAncestor || excludeThisElementText;
         String childForeignSource = foreign ? fromPath : foreignAncestorSource;
+        String note = nowInsideBody ? authorNoteKind(el) : null;
+        if (note != null) {
+            String open = " [" + note + "] ";
+            walk.resolvedText.append(open);
+            if (!textExcluded) {
+                walk.ownText.append(open);
+            }
+        }
 
         NodeList children = el.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
@@ -1935,9 +1943,39 @@ final class DitaModelExtractor {
                 }
             }
         }
+        if (note != null) {
+            String close = " [end " + note + "] ";
+            walk.resolvedText.append(close);
+            if (!textExcluded) {
+                walk.ownText.append(close);
+            }
+        }
         if (marked) {
             walk.resolvedText.append(' ').append(MARK_CLOSE).append(' ');
         }
+    }
+
+    /** The elements that hold notes for the authors, not text for readers. */
+    private static final List<String> AUTHOR_NOTES = List.of("draft-comment", "required-cleanup");
+
+    /**
+     * {@code draft-comment} or {@code required-cleanup} when {@code el} is
+     * one (by {@code @class}, else by name), else {@code null}. Their text
+     * stays in the topic's text between {@code [draft-comment]} and
+     * {@code [end draft-comment]} markers (the same for
+     * {@code required-cleanup}): DITA-OT leaves them out of the output
+     * unless the build sets {@code args.draft}, and unmarked, an agent read
+     * a draft comment of dita-ot/docs as text its readers see (bench
+     * relevance check R7).
+     */
+    private static String authorNoteKind(Element el) {
+        String cls = el.getAttribute("class");
+        for (String kind : AUTHOR_NOTES) {
+            if (cls.isEmpty() ? kind.equals(el.getNodeName()) : (" " + cls + " ").contains(" topic/" + kind + " ")) {
+                return kind;
+            }
+        }
+        return null;
     }
 
     /** Tag names of topic elements, for a topic without {@code @class}. */

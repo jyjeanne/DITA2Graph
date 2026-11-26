@@ -23,7 +23,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "read_topic",
-            "description": "The full text of one topic, as a reader of the published page sees it: summary and body, with every fragment it reuses by conref/conkeyref kept in place between [reused from <file>#<fragment>] and [end reused] markers, then the list of reused fragments by source topic. Use this whenever the answer is in what a topic says -- the other tools only return short excerpts.",
+            "description": "The full text of one topic, as a reader of the published page sees it: summary and body, with every fragment it reuses by conref/conkeyref kept in place between [reused from <file>#<fragment>] and [end reused] markers, then the list of reused fragments by source topic. Text between [draft-comment] and [end draft-comment] (or [required-cleanup] and [end required-cleanup]) is a note for the authors, which the output leaves out unless the build sets args.draft: readers do not see it by default. Use this whenever the answer is in what a topic says -- the other tools only return short excerpts.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -82,7 +82,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "find_text",
-            "description": "Every topic whose text contains the given text, literally (ASCII letters case-insensitive), with no cap: titles, summaries and bodies, reused passages included. Use it when a question asks for every page that shows a command, a name, a property or a phrase, or whether something is spelled the same everywhere -- search_content only returns the 15 best matches. Gives the number of occurrences and of topics, published pages apart from resource-only topics, up to 3 occurrences per topic in context, the reused passage (<file>#<fragment>) an occurrence comes from -- edit it once and every topic reusing it changes -- and, for a single word, the near spellings that appear in the documentation (one or two letters apart), which the count does not include. It also names the keys that define the text -- whose link text holds it, or whose target URL does -- with the map that defines each: a page showing it through a key changes with the key's definition, not with its own text. The list is complete for this exact text only: other wordings of the same thing need their own search. Paginated by topic (50 by default; pass offset for the next page).",
+            "description": "Every topic whose text contains the given text, literally (ASCII letters case-insensitive), with no cap: titles, summaries and bodies, reused passages included. Use it when a question asks for every page that shows a command, a name, a property or a phrase, or whether something is spelled the same everywhere -- search_content only returns the 15 best matches. Gives the number of occurrences and of topics, published pages apart from resource-only topics, up to 3 occurrences per topic in context, the reused passage (<file>#<fragment>) an occurrence comes from -- edit it once and every topic reusing it changes -- and, for a single word, the near spellings that appear in the documentation (one or two letters apart), which the count does not include. It also names the keys that define the text -- whose link text holds it, or whose target URL does -- with the map that defines each: a page showing it through a key changes with the key's definition, not with its own text. An occurrence inside a draft-comment or required-cleanup element is marked as a note for the authors, which the output leaves out unless the build sets args.draft; search draft-comment to list those notes. The list is complete for this exact text only: other wordings of the same thing need their own search. Paginated by topic (50 by default; pass offset for the next page).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -615,6 +615,8 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let mut by_source: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
         std::collections::BTreeMap::new();
     let mut hits: Vec<Hit> = Vec::new();
+    // Occurrences inside a draft-comment or required-cleanup.
+    let mut in_notes = 0usize;
     for chunk in chunks.iter() {
         let plain = PlainText::of(chunk);
         if single_word {
@@ -626,7 +628,11 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         }
         let title_hit = chunk.title.to_ascii_lowercase().contains(&needle);
         let haystack = plain.text.to_ascii_lowercase();
-        let starts: Vec<usize> = haystack.match_indices(&needle).map(|(i, _)| i).collect();
+        let starts: Vec<usize> = haystack
+            .match_indices(&needle)
+            .map(|(i, _)| i)
+            .filter(|i| !plain.in_note_end(*i, i + needle.len()))
+            .collect();
         if starts.is_empty() && !title_hit {
             continue;
         }
@@ -643,10 +649,20 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                     .or_default()
                     .insert(chunk.id.as_str());
             }
+            let note = plain.note_kind(*start, end);
+            if note.is_some() {
+                in_notes += 1;
+            }
             if snippets.len() < FIND_TEXT_SNIPPETS {
                 let mut line = context(&plain.text, *start, end);
                 if let Some(source) = source {
                     line.push_str(&format!(" (in a passage reused from {source})"));
+                }
+                if let Some(kind) = note {
+                    line.push_str(&format!(
+                        " (in a {kind}: a note for the authors, which the output leaves out \
+                         unless the build sets args.draft)"
+                    ));
                 }
                 snippets.push(line);
             }
@@ -692,6 +708,17 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             hits.len() - published,
         )
     };
+    if in_notes > 0 {
+        out.push_str(&format!(
+            "\n{} in draft-comment or required-cleanup elements: notes for the authors, \
+             which the output leaves out unless the build sets args.draft.",
+            if in_notes == 1 {
+                "1 of them is".to_string()
+            } else {
+                format!("{in_notes} of them are")
+            }
+        ));
+    }
     if let Some(keys) = key_definitions(bundle, &needle) {
         out.push_str(&keys);
     }
@@ -866,11 +893,19 @@ struct PlainText {
     text: String,
     /// `(start, end, "<file>#<fragment>")`, a nested passage after the one holding it.
     reused: Vec<(usize, usize, String)>,
+    /// `(start, end, kind)` of each note for the authors, from its
+    /// `[draft-comment]` marker to the end of its `[end draft-comment]` one
+    /// (`required-cleanup` the same way), which the extractor writes.
+    notes: Vec<(usize, usize, &'static str)>,
+    /// The byte ranges of the end markers, so a search for `draft-comment`
+    /// counts each note once.
+    note_ends: Vec<(usize, usize)>,
 }
 
 impl PlainText {
     const OPEN: &'static str = "[reused from ";
     const CLOSE: &'static str = "[end reused]";
+    const NOTE_KINDS: [&'static str; 2] = ["draft-comment", "required-cleanup"];
 
     fn of(chunk: &crate::bundle::RagChunk) -> Self {
         Self::parse(
@@ -918,7 +953,46 @@ impl PlainText {
             reused.push((start, text.len(), source));
         }
         let text = text.trim_end().to_string();
-        PlainText { text, reused }
+        let mut notes = Vec::new();
+        let mut note_ends = Vec::new();
+        for kind in Self::NOTE_KINDS {
+            let open = format!("[{kind}]");
+            let close = format!("[end {kind}]");
+            let mut from = 0;
+            while let Some(start) = text[from..].find(&open).map(|i| i + from) {
+                let after = start + open.len();
+                match text[after..].find(&close).map(|i| i + after) {
+                    Some(end) => {
+                        notes.push((start, end + close.len(), kind));
+                        note_ends.push((end, end + close.len()));
+                        from = end + close.len();
+                    }
+                    None => {
+                        notes.push((start, text.len(), kind));
+                        break;
+                    }
+                }
+            }
+        }
+        PlainText {
+            text,
+            reused,
+            notes,
+            note_ends,
+        }
+    }
+
+    /// The kind of the note for the authors that holds `start..end`, if any.
+    fn note_kind(&self, start: usize, end: usize) -> Option<&'static str> {
+        self.notes
+            .iter()
+            .find(|(s, e, _)| *s <= start && end <= *e)
+            .map(|(_, _, kind)| *kind)
+    }
+
+    /// Whether `start..end` overlaps an end marker of a note.
+    fn in_note_end(&self, start: usize, end: usize) -> bool {
+        self.note_ends.iter().any(|(s, e)| start < *e && *s < end)
     }
 
     /// The innermost reused passage that holds `start..end`, if any.
@@ -2018,6 +2092,31 @@ mod tests {
         let open = PlainText::parse("Intro [reused from c.dita#x] tail");
         assert_eq!(open.text, "Intro tail");
         assert_eq!(open.reused_source(6, 10), Some("c.dita#x"));
+    }
+
+    #[test]
+    fn plain_text_finds_the_notes_for_the_authors() {
+        let plain = PlainText::parse(
+            "Run it. [draft-comment] Check this. [end draft-comment] Then [required-cleanup] old \
+             [end required-cleanup] done. [draft-comment] left open",
+        );
+        let at = |s: &str| plain.text.find(s).unwrap();
+        assert_eq!(
+            plain.note_kind(at("Check"), at("Check") + 5),
+            Some("draft-comment")
+        );
+        assert_eq!(
+            plain.note_kind(at("old"), at("old") + 3),
+            Some("required-cleanup")
+        );
+        assert_eq!(plain.note_kind(at("Then"), at("Then") + 4), None);
+        assert_eq!(
+            plain.note_kind(at("left"), at("left") + 4),
+            Some("draft-comment")
+        );
+        let end = at("[end draft-comment]");
+        assert!(plain.in_note_end(end + 5, end + 18));
+        assert!(!plain.in_note_end(at("[draft-comment]"), at("[draft-comment]") + 15));
     }
 
     #[test]

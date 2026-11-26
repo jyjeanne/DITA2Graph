@@ -1256,6 +1256,19 @@ plugin-integrate-all]` in `find_related_topics` and `analyze_impact`),
 so "which part of this topic is reused, and from where" has a direct
 answer.
 
+A note for the authors keeps its place in a topic's text, marked: the
+extractor writes the text of a `<draft-comment>` between
+`[draft-comment]` and `[end draft-comment]`, and of a
+`<required-cleanup>` between `[required-cleanup]` and
+`[end required-cleanup]`, in both `body` and `resolvedBody`. DITA-OT
+leaves these elements out of the output unless the build sets
+`args.draft`, so readers do not see them by default; `read_topic`'s
+description and the server's instructions say so, and `find_text` marks
+an occurrence inside one and counts the notes it found. Unmarked, the
+text of a draft comment read like any other sentence: in the demo's
+relevance checks, agents said readers of the DITA-OT release notes see a
+template instruction that is a draft comment.
+
 Keys, external URLs and sample files are graph nodes (§4.4), so the
 same tools reach them without a dedicated one: `search_topics` finds
 `key:homebrew`, `https://brew.sh` or `file:samples/Brewfile` by title or

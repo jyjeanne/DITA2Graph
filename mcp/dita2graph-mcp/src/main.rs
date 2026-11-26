@@ -405,8 +405,11 @@ fn server_instructions(bundle: Option<&bundle::BundleReader>) -> String {
          too, and say how far the search went.\n\
          - A topic's id is often not its file name. If a file path finds nothing, look the \
          topic up by its title or by a phrase it contains before concluding it is missing.\n\
-         - A topic's text is its source text: it can hold draft comments or filtered content \
-         that a build leaves out. Do not say readers see a passage unless the tools show it.\n\
+         - A topic's text is its source text. Text between [draft-comment] and \
+         [end draft-comment] (or [required-cleanup] and [end required-cleanup]) is a note for \
+         the authors, which the output leaves out unless the build sets args.draft: readers do \
+         not see it by default, and find_text with draft-comment lists every such note. Do not \
+         say readers see a passage unless the tools show it.\n\
          - Topics marked resource-only are not pages of the publication."
     )
 }
@@ -1835,6 +1838,16 @@ mod tests {
                 None,
                 Some("resource-only"),
             ),
+            // A draft comment, as the extractor marks it (relevance check R7).
+            topic(
+                "plugin-dependencies",
+                TopicType::Concept,
+                "Plug-in dependencies",
+                "The second example. [draft-comment] We need to check this example against \
+                 the toolkit. [end draft-comment] Then run the build.",
+                None,
+                None,
+            ),
         ];
         write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
         write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
@@ -1898,6 +1911,35 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn find_text_counts_each_note_for_the_authors_once_and_says_readers_do_not_see_it() {
+        let dir = find_text_bundle_root();
+        let notes = call_tool(&dir, "find_text", json!({ "text": "draft-comment" }));
+        assert!(
+            notes.starts_with("`draft-comment`: 1 occurrence in 1 topic -- 1 published"),
+            "{notes}"
+        );
+        assert!(
+            notes.contains(
+                "1 of them is in draft-comment or required-cleanup elements: notes for the \
+                 authors, which the output leaves out unless the build sets args.draft."
+            ),
+            "{notes}"
+        );
+        let sentence = call_tool(&dir, "find_text", json!({ "text": "check this example" }));
+        assert!(
+            sentence.contains(
+                "We need to check this example against the toolkit. [end draft-comment] Then run \
+                 the build. (in a draft-comment: a note for the authors, which the output leaves \
+                 out unless the build sets args.draft)"
+            ),
+            "{sentence}"
+        );
+        // Text outside the note is not marked.
+        let after = call_tool(&dir, "find_text", json!({ "text": "run the build" }));
+        assert!(!after.contains("a note for the authors"), "{after}");
     }
 
     /// The registry address in dita-ot/docs: pages show it, but a key in

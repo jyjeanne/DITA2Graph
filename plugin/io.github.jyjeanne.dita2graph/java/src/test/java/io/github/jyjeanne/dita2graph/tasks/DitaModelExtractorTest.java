@@ -257,6 +257,27 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void authorNotesAreMarkedInTheText(@TempDir Path tempDir) throws Exception {
+        // dita-ot/docs' Plug-in dependencies: a draft comment among the
+        // paragraphs, which DITA-OT leaves out of the output by default.
+        write(tempDir, ".job.xml", JOB_XML);
+        write(tempDir, "user-guide.ditamap", MAP_XML);
+        write(tempDir, "topics/configuration.dita", CONFIGURATION_XML.replace(
+                "<p>Configuration overview content goes here.</p>",
+                "<p>Configuration overview content goes here.</p>"
+                        + "<draft-comment author=\"rd\">We need to check this example.</draft-comment>"
+                        + "<p>Done.<required-cleanup>Old wording.</required-cleanup></p>"));
+        write(tempDir, "topics/installing-product-prereqs.dita", PREREQS_XML);
+        write(tempDir, "topics/installing-product.dita", INSTALLING_PRODUCT_XML);
+
+        List<Object> nodes = new DitaModelExtractor(tempDir.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        assertEquals("Configuration overview content goes here. [draft-comment] We need to check this example."
+                        + " [end draft-comment] Done. [required-cleanup] Old wording. [end required-cleanup]",
+                findTopic(nodes, "configuration").body);
+    }
+
+    @Test
     void draftTopicsAreExcludedUnlessIncludeDraftsIsSet(@TempDir Path tempDir) throws Exception {
         write(tempDir, ".job.xml", JOB_XML_DRAFT_ONLY);
         write(tempDir, "user-guide.ditamap", MAP_XML_DRAFT_ONLY);
