@@ -1146,6 +1146,136 @@ class DitaModelExtractorTest {
     }
 
     @Test
+    void conrefPushIsMarkedInThePusherAndAPushIntoAFileTheBuildLacksIsKept(@TempDir Path tempDir)
+            throws Exception {
+        // Shaped after a DITA-OT 4.4.1 run with clean.temp=no: the pushed
+        // elements land in the target with the pusher's xtrf, the pusher's
+        // resolved copy loses @conaction and its mark elements, and a push
+        // into a file the build lacks fails (dita-ot/docs pushes its Ant
+        // parameter details into pages its own build generates first).
+        Path srcDir = tempDir.resolve("src");
+        String pusherSrc = srcDir.resolve("t/pusher.dita").toFile().toURI().toString();
+        String targetSrc = srcDir.resolve("t/target.dita").toFile().toURI().toString();
+        String missingSrc = srcDir.resolve("t/missing.dita").toFile().toURI().toString();
+        Path temp = tempDir.resolve("temp");
+        write(temp, ".job.xml", "<?xml version=\"1.0\" ?><job><files>"
+                + "<file src=\"" + pusherSrc + "\" path=\"t\\pusher.dita\" format=\"dita\" has-conref=\"true\""
+                + " resource-only=\"true\" conrefpush=\"true\" target=\"true\"></file>"
+                + "<file src=\"" + targetSrc + "\" path=\"t\\target.dita\" format=\"dita\" target=\"true\"></file>"
+                + "<file src=\"" + missingSrc + "\" path=\"t\\missing.dita\" target=\"true\"></file>"
+                + "<file src=\"" + srcDir.resolve("t/merged.md").toFile().toURI() + "\" path=\"t\\merged.md\""
+                + " target=\"true\"></file>"
+                + "<file src=\"file:/src/map.ditamap\" path=\"map.ditamap\" format=\"ditamap\" input=\"true\"></file>"
+                + "</files></job>");
+        // A file DITA-OT merged into another topic (chunking) and removed:
+        // its source exists, so it is not missing.
+        write(srcDir, "t/merged.md", "# Merged");
+        write(temp, "map.ditamap", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<map id=\"map\"><title>Push test</title>"
+                + "<keydef keys=\"merged-page\" href=\"t/merged.md\" format=\"dita\" processing-role=\"resource-only\"/>"
+                + "<keydef keys=\"missing-page\" href=\"t/missing.dita\" processing-role=\"resource-only\"/>"
+                + "<topicref href=\"t/target.dita\" type=\"reference\"/>"
+                + "<topicref href=\"t/pusher.dita\" processing-role=\"resource-only\" toc=\"no\"/>"
+                + "</map>");
+        // The last push is filtered out (DITAVAL): DITA-OT pushes nothing.
+        write(srcDir, "t/pusher.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<reference id=\"pusher\"><title>Pusher</title>"
+                + "<reference id=\"inner\"><title>Inner</title>"
+                + "<shortdesc conaction=\"pushreplace\" conref=\"target.dita#target/sd\">Pushed summary.</shortdesc>"
+                + "<refbody><section><parml>"
+                + "<plentry id=\"p1\"><pt>param.one</pt>"
+                + "<pd conaction=\"mark\" conref=\"target.dita#target/p1.desc\"/>"
+                + "<pd conaction=\"pushafter\">Pushed after param.one: deprecated.</pd></plentry>"
+                + "<plentry id=\"p2\"><pt>param.two</pt>"
+                + "<pd conaction=\"pushbefore\">Pushed before param.two.</pd>"
+                + "<pd conaction=\"mark\" conref=\"target.dita#target/p2.desc\"/></plentry>"
+                + "<plentry id=\"m1\"><pt>missing.one</pt>"
+                + "<pd conaction=\"mark\" conref=\"missing.dita#missing/m1.desc\"/>"
+                + "<pd conaction=\"pushafter\">Pushed into a missing page.</pd></plentry>"
+                + "<plentry id=\"f1\"><pt>filtered.one</pt>"
+                + "<pd conaction=\"mark\" conref=\"missing.dita#missing/f1.desc\"/>"
+                + "<pd conaction=\"pushafter\" audience=\"internal\">Filtered out.</pd></plentry>"
+                + "</parml></section></refbody></reference></reference>");
+        String own = " xtrf=\"" + pusherSrc + "\" xtrc=";
+        write(temp, "t/pusher.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<reference id=\"pusher\" class=\"- topic/topic reference/reference \"" + own + "\"reference:1;3:24\">"
+                + "<title class=\"- topic/title \"" + own + "\"title:1;4:10\">Pusher</title>"
+                + "<reference id=\"inner\" class=\"- topic/topic reference/reference \"" + own + "\"reference:2;5:25\">"
+                + "<title class=\"- topic/title \"" + own + "\"title:2;6:12\">Inner</title>"
+                + "<shortdesc class=\"- topic/shortdesc \"" + own + "\"shortdesc:1;7:71\">Pushed summary.</shortdesc>"
+                + "<refbody class=\"- topic/body reference/refbody \"" + own + "\"refbody:1;8:14\">"
+                + "<section class=\"- topic/section \"" + own + "\"section:1;9:16\">"
+                + "<parml class=\"+ topic/dl pr-d/parml \"" + own + "\"parml:1;10:16\">"
+                + "<plentry id=\"p1\" class=\"+ topic/dlentry pr-d/plentry \"" + own + "\"plentry:1;11:28\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + own + "\"pt:1;12:17\">param.one</pt> "
+                + "<pd class=\"+ topic/dd pr-d/pd \"" + own + "\"pd:2;14:39\">Pushed after param.one: deprecated.</pd>"
+                + "</plentry>"
+                + "<plentry id=\"p2\" class=\"+ topic/dlentry pr-d/plentry \"" + own + "\"plentry:2;16:28\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + own + "\"pt:2;17:17\">param.two</pt>"
+                + "<pd class=\"+ topic/dd pr-d/pd \"" + own + "\"pd:3;18:40\">Pushed before param.two.</pd> "
+                + "</plentry>"
+                + "<plentry id=\"m1\" class=\"+ topic/dlentry pr-d/plentry \"" + own + "\"plentry:3;21:28\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + own + "\"pt:3;22:17\">missing.one</pt> "
+                + "<pd class=\"+ topic/dd pr-d/pd \"" + own + "\"pd:6;24:39\">Pushed into a missing page.</pd>"
+                + "</plentry>"
+                + "<plentry id=\"f1\" class=\"+ topic/dlentry pr-d/plentry \"" + own + "\"plentry:4;26:28\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + own + "\"pt:4;27:17\">filtered.one</pt> "
+                + "</plentry>"
+                + "</parml></section></refbody></reference></reference>");
+        String target = " xtrf=\"" + targetSrc + "\" xtrc=";
+        write(temp, "t/target.dita", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<reference id=\"target\" class=\"- topic/topic reference/reference \"" + target + "\"reference:1;3:24\">"
+                + "<title class=\"- topic/title \"" + target + "\"title:1;4:10\">Target page</title>"
+                + "<shortdesc class=\"- topic/shortdesc \" id=\"sd\"" + own + "\"shortdesc:1;7:71\">Pushed summary.</shortdesc>"
+                + "<refbody class=\"- topic/body reference/refbody \"" + target + "\"refbody:1;6:12\">"
+                + "<section class=\"- topic/section \" id=\"s\"" + target + "\"section:1;7:21\">"
+                + "<parml class=\"+ topic/dl pr-d/parml \"" + target + "\"parml:1;8:14\">"
+                + "<plentry class=\"+ topic/dlentry pr-d/plentry \" id=\"p1\"" + target + "\"plentry:1;9:26\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + target + "\"pt:1;10:15\">param.one</pt>"
+                + "<pd class=\"+ topic/dd pr-d/pd \" id=\"p1.desc\"" + target + "\"pd:1;11:28\">Generated one.</pd>"
+                + "<pd class=\"+ topic/dd pr-d/pd \"" + own + "\"pd:2;14:39\">Pushed after param.one: deprecated.</pd>"
+                + "</plentry>"
+                + "<plentry class=\"+ topic/dlentry pr-d/plentry \" id=\"p2\"" + target + "\"plentry:2;13:26\">"
+                + "<pt class=\"+ topic/dt pr-d/pt \"" + target + "\"pt:2;14:15\">param.two</pt>"
+                + "<pd class=\"+ topic/dd pr-d/pd \"" + own + "\"pd:3;18:40\">Pushed before param.two.</pd>"
+                + "<pd class=\"+ topic/dd pr-d/pd \" id=\"p2.desc\"" + target + "\"pd:2;15:28\">Generated two.</pd>"
+                + "</plentry>"
+                + "</parml></section></refbody></reference>");
+
+        List<Object> nodes = new DitaModelExtractor(temp.toFile(), false, msg -> { }, msg -> { }).extract();
+
+        TopicNode pusher = findTopic(nodes, "pusher");
+        assertEquals("Inner [pushed to replace t/target.dita#target/sd] Pushed summary. [end pushed]"
+                        + " param.one [pushed after t/target.dita#target/p1.desc] Pushed after param.one: deprecated."
+                        + " [end pushed] param.two [pushed before t/target.dita#target/p2.desc] Pushed before param.two."
+                        + " [end pushed] missing.one [pushed after t/missing.dita#missing/m1.desc] Pushed into a missing"
+                        + " page. [end pushed] filtered.one",
+                pusher.body);
+        // Only the push into the file the build lacks needs a record of its own.
+        assertEquals(1, pusher.pushedInto.size());
+        assertEquals("t/missing.dita", pusher.pushedInto.get(0).file);
+        assertEquals(List.of("pd@24"), pusher.pushedInto.get(0).fragments);
+        assertTrue(pusher.toJson().contains("\"pushedInto\":[{\"file\":\"t/missing.dita\",\"fragments\":[\"pd@24\"]}]"),
+                pusher.toJson());
+        assertEquals("resource-only", pusher.processingRole);
+
+        TopicNode targetTopic = findTopic(nodes, "target");
+        assertTrue(targetTopic.pushedInto.isEmpty());
+        Link reuse = targetTopic.links.stream().filter(l -> l.relation.equals("generated-from")).findFirst().orElseThrow();
+        assertEquals("pusher", reuse.target);
+        assertEquals(List.of("shortdesc@7", "pd@14", "pd@18"), reuse.fragments);
+
+        MapNode map = (MapNode) nodes.get(0);
+        KeyDef missingPage = map.keyDefs.stream().filter(k -> k.name.equals("missing-page")).findFirst().orElseThrow();
+        assertNull(missingPage.target);
+        assertEquals("t/missing.dita", missingPage.missing);
+        assertTrue(missingPage.toJson().contains("\"missing\":\"t/missing.dita\""), missingPage.toJson());
+        KeyDef merged = map.keyDefs.stream().filter(k -> k.name.equals("merged-page")).findFirst().orElseThrow();
+        assertNull(merged.target);
+        assertNull(merged.missing);
+    }
+
+    @Test
     void topicTypeComesFromClassSoSpecializationsAndTroubleshootingAreRecognized(@TempDir Path tempDir)
             throws Exception {
         write(tempDir, ".job.xml", jobXml("topics/fix.dita", "topics/group.dita"));

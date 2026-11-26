@@ -491,18 +491,45 @@ topic's source file for the two things preprocessing removes:
   `xtrf` and element counter in `xtrc`), so a `coderef` DITAVAL filtered
   out does not count. A source that does not parse on its own (an entity
   its DTD defines) is skipped with `DITA2GRAPH072I`.
+- **Conref push**: DITA-OT drops `@conaction` from the pusher's resolved
+  copy, so the extractor reads the source of the files job.xml marks
+  `conrefpush="true"`: each element with `conaction="pushreplace"` and its
+  own `conref`/`conkeyref`, or `pushafter`/`pushbefore` next to the
+  `conaction="mark"` element that names the target. A pushed element still
+  in the resolved pusher (DITAVAL did not filter it) is written in the
+  pusher's text between `[pushed after <file>#<element>]` (or `pushed
+  before`, `pushed to replace`) and `[end pushed]`. A push into a topic of
+  the build lands in it with the pusher's `xtrf`, so that topic is
+  `generated-from` the pusher like any reuse. A push into a file the build
+  does not have leaves no trace in DITA-OT's output: the DITA-OT
+  documentation pushes its Ant parameter details into the
+  `parameters-*.dita` and `extension-points-in-*.dita` pages its own build
+  generates before running DITA-OT. The pusher keeps it (`pushedInto`: the
+  file, and the fragments pushed there).
+- **Files the build does not have**: a key whose topic file DITA-OT could
+  not load keeps the file's path (`missing`), where it had no target at
+  all: an agent read a link through such a key as an empty link. A file
+  is missing when its source does not exist (`DOTX008E`); one DITA-OT
+  merged into another topic by chunking, and whose temporary copy it
+  removed, is not (the DITA-OT documentation's `Common-syntax.md`). A push
+  is kept in `pushedInto` on the same condition.
 
 These declarations are in every output, not only the RDF export:
 
 - the normalized model: the map's `keyDefs`, each topic's `keyrefs`,
-  `externalLinks` and `codeRefs`, and the `copy-of` link of a `copy-to`
-  copy ([plugin specification §3.2](plugin-specification.md#32-normalized-dita-model-input-to-the-core-engine));
+  `externalLinks`, `codeRefs` and `pushedInto`, and the `copy-of` link of
+  a `copy-to` copy ([plugin specification §3.2](plugin-specification.md#32-normalized-dita-model-input-to-the-core-engine));
 - the OKF concepts: `# Key Definitions` in the map, `# Keys Used`,
-  `# External Links`, `# Code Files` and `# Copy Of` in the topics;
+  `# External Links`, `# Code Files`, `# Pushed Into` and `# Copy Of` in
+  the topics;
 - `graph.json` and `graph.db`: a node per key (`key:<name>`,
   `key:<scope>.<name>` for a scoped key), URL (the URL itself) and sample
   file (`file:<path>`), with its title and defining file, and the edges
-  `defines-key`, `key-target`, `uses-key`, `links-to`, `includes-code`;
+  `defines-key`, `key-target`, `uses-key`, `links-to`, `includes-code`. A
+  file the build does not have is a node of type `Missing File`
+  (`file:<path>`): the `key-target` of the key that names it, and
+  `generated-from` the topic that pushes into it, with the fragments
+  pushed, as a topic of the build would be;
 - the MCP tools: `search_topics` finds these nodes; `find_related_topics`
   on one lists what points at it and, for a key, the file that defines
   it; `analyze_impact` on a URL lists the pages that link to it directly
@@ -594,6 +621,11 @@ titles.
   corpus uses key scopes, so this is tested on fixtures only.
 - A topic left out as a draft (`args.dita2graph.include-drafts=false`)
   leaves no link or key target pointing at it.
+- A file the build does not have is in the RDF export only as the
+  `d2g:SourceFile` a key's `d2g:keyTarget` names, nothing saying it is
+  missing; what a topic pushes into it (`pushedInto`) has no term yet:
+  `d2g:generatedFrom` relates topics. `graph.json`, `graph.db`, the OKF
+  concepts and the MCP tools carry both.
 - Fragments without an `@id` are still named `element@line`, and duplicate
   topic ids are still suffixed in reading order: both IRIs can change when
   a source file changes. The build says so: `DITA2GRAPH073I` lists, once

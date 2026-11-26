@@ -34,8 +34,21 @@ fn the_values_land_in_the_right_fields() {
         panic!("the first node is the map")
     };
     let keys: Vec<_> = map.key_defs.iter().map(|k| k.qualified_name()).collect();
-    assert_eq!(keys, ["install", "tools.brew", "logo", "product-name"]);
+    assert_eq!(
+        keys,
+        [
+            "install",
+            "tools.brew",
+            "logo",
+            "product-name",
+            "parameters-pdf"
+        ]
+    );
     assert_eq!(map.key_defs[2].file.as_deref(), Some("images/logo.png"));
+    assert_eq!(
+        map.key_defs[4].missing.as_deref(),
+        Some("parameters/parameters-pdf.dita")
+    );
 
     let NormalizedNode::Topic(task) = &nodes[1] else {
         panic!("the second node is the task")
@@ -62,6 +75,12 @@ fn the_values_land_in_the_right_fields() {
     assert_eq!(reuse.relation, Relation::GeneratedFrom);
     assert_eq!(reuse.fragments, ["warning", "li@37"]);
     assert_eq!(task.links[3].relation, Relation::CopyOf);
+
+    let NormalizedNode::Topic(shared) = &nodes[3] else {
+        panic!("the fourth node is the shared warnings")
+    };
+    assert_eq!(shared.pushed_into[0].file, "parameters/parameters-pdf.dita");
+    assert_eq!(shared.pushed_into[0].fragments, ["pd@722"]);
 
     let NormalizedNode::Topic(heading) = &nodes[4] else {
         panic!("the fifth node is the heading")

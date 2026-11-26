@@ -6,6 +6,7 @@
 use crate::bundle::{BundleCache, BundleReader};
 use crate::live::{self, LiveValidationConfig};
 use anyhow::{Result, anyhow};
+use dita2graph_core::graph_view::MISSING_TYPE;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -14,7 +15,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "search_topics",
-            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Titles and ids that contain the query as a phrase come first. For a query of several words, those that have every word (each at the start of a word, in any order, stop words such as 'how', 'to', 'the' left out) follow under 'Title or id with every word of': 'rename id' finds 'Search and Rename Actions for IDs'. Then the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query, or every word of it, is listed under 'Indexed under or tagged with', with the entries that matched. A query that looks like a file (topics/x.dita) also lists, under 'Source file matching', the topics whose source file it names, and the copies the map publishes of one. Use this first to find an id before calling the other tools; every tool that takes a topicId also takes a topic's source file path or a key name, and says which topic that resolved to. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication.",
+            "description": "Free-text search over the titles and ids of topics and maps, and of the keys (id key:<name>), external URLs (id = the URL) and sample files (id file:<path>) they declare. Titles and ids that contain the query as a phrase come first. For a query of several words, those that have every word (each at the start of a word, in any order, stop words such as 'how', 'to', 'the' left out) follow under 'Title or id with every word of': 'rename id' finds 'Search and Rename Actions for IDs'. Then the authors' keywords and index entries: a topic whose title does not match but whose keyword or index entry has a word starting with the query, or every word of it, is listed under 'Indexed under or tagged with', with the entries that matched. A query that looks like a file (topics/x.dita) also lists, under 'Source file matching', the topics whose source file it names, and the copies the map publishes of one. Use this first to find an id before calling the other tools; every tool that takes a topicId also takes a topic's source file path or a key name, and says which topic that resolved to. Every tool marks a topic the map uses only as a resource (a reuse warehouse, a key target) with [resource-only: not a published page]: its content may appear elsewhere, but it is not a page of the publication. A file a key names or a topic pushes content into that DITA-OT could not load (id file:<path>) is marked [not in this build]: often a page the documentation's own build generates before publishing.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "query": { "type": "string", "description": "Search text" } },
@@ -23,7 +24,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "read_topic",
-            "description": "The full text of one topic, as a reader of the published page sees it: summary and body, with every fragment it reuses by conref/conkeyref kept in place between [reused from <file>#<fragment>] and [end reused] markers, then the list of reused fragments by source topic. Text between [draft-comment] and [end draft-comment] (or [required-cleanup] and [end required-cleanup]) is a note for the authors, which the output leaves out unless the build sets args.draft: readers do not see it by default. Use this whenever the answer is in what a topic says -- the other tools only return short excerpts.",
+            "description": "The full text of one topic, as a reader of the published page sees it: summary and body, with every fragment it reuses by conref/conkeyref kept in place between [reused from <file>#<fragment>] and [end reused] markers, then the list of reused fragments by source topic. Text between [draft-comment] and [end draft-comment] (or [required-cleanup] and [end required-cleanup]) is a note for the authors, which the output leaves out unless the build sets args.draft: readers do not see it by default. Text between [pushed after <file>#<element>] (or pushed before, pushed to replace) and [end pushed] is pushed into that other page with conref push: readers see it there, even when this topic is resource-only; the pushed passages are listed by page after the text. A file:<path> id marked [not in this build] is a page DITA-OT could not load (one the documentation's own build generates, or a missing one): read_topic on it says which keys name it and what is pushed into it. Use this whenever the answer is in what a topic says -- the other tools only return short excerpts.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -82,7 +83,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "find_text",
-            "description": "Every topic whose text contains the given text, literally (ASCII letters case-insensitive), with no cap: titles, summaries and bodies, reused passages included. Use it when a question asks for every page that shows a command, a name, a property or a phrase, or whether something is spelled the same everywhere -- search_content only returns the 15 best matches. Gives the number of occurrences and of topics, published pages apart from resource-only topics, up to 3 occurrences per topic in context, the reused passage (<file>#<fragment>) an occurrence comes from -- edit it once and every topic reusing it changes -- and, for a single word, the near spellings that appear in the documentation (one or two letters apart), which the count does not include. It also names the keys that define the text -- whose link text holds it, or whose target URL does -- with the map that defines each: a page showing it through a key changes with the key's definition, not with its own text. An occurrence inside a draft-comment or required-cleanup element is marked as a note for the authors, which the output leaves out unless the build sets args.draft; search draft-comment to list those notes. The list is complete for this exact text only: other wordings of the same thing need their own search. Paginated by topic (50 by default; pass offset for the next page).",
+            "description": "Every topic whose text contains the given text, literally (ASCII letters case-insensitive), with no cap: titles, summaries and bodies, reused passages included. Use it when a question asks for every page that shows a command, a name, a property or a phrase, or whether something is spelled the same everywhere -- search_content only returns the 15 best matches. Gives the number of occurrences and of topics, published pages apart from resource-only topics, up to 3 occurrences per topic in context, the reused passage (<file>#<fragment>) an occurrence comes from -- edit it once and every topic reusing it changes -- and, for a single word, the near spellings that appear in the documentation (one or two letters apart), which the count does not include. It also names the keys that define the text -- whose link text holds it, or whose target URL does -- with the map that defines each: a page showing it through a key changes with the key's definition, not with its own text. An occurrence inside a draft-comment or required-cleanup element is marked as a note for the authors, which the output leaves out unless the build sets args.draft; search draft-comment to list those notes. An occurrence in a passage the topic pushes into another page with conref push says so, with that page: readers see it there, even when the topic holding it is resource-only. The list is complete for this exact text only: other wordings of the same thing need their own search. Paginated by topic (50 by default; pass offset for the next page).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -95,7 +96,7 @@ pub fn list(sparql: bool) -> Vec<Value> {
         }),
         json!({
             "name": "analyze_impact",
-            "description": "Find the concepts that changing a topic id may affect -- or a key (key:<name>), an external URL or a sample file (file:<path>): everything that points at it directly (containing maps, referrers and prerequisites, topics using a key, linking to a URL directly or through a key, or including a file), and the topics whose content reuses it (a topic reusing a passage that holds some of it reuses it too, directly). A concept that only links to, contains or uses a key to one of those, or reuses another part of one, keeps its own content: the first line counts these apart, and cascade=true lists them after the others. Closest first, with a text excerpt under each affected concept. The first line gives the total count, by relation and by level, so 'how many' needs no paging. Results are paginated (40 entries by default: pass offset for the next page). To find the topics that reuse one fragment of a conref source, pass fragment=<fragment id> with depth=1.",
+            "description": "Find the concepts that changing a topic id may affect -- or a key (key:<name>), an external URL or a sample file (file:<path>): everything that points at it directly (containing maps, referrers and prerequisites, topics using a key, linking to a URL directly or through a key, or including a file), and the topics whose content reuses it (a topic reusing a passage that holds some of it reuses it too, directly; a page it pushes content into with conref push reuses it too, even one marked [not in this build]). A concept that only links to, contains or uses a key to one of those, or reuses another part of one, keeps its own content: the first line counts these apart, and cascade=true lists them after the others. Closest first, with a text excerpt under each affected concept. The first line gives the total count, by relation and by level, so 'how many' needs no paging. Results are paginated (40 entries by default: pass offset for the next page). To find the topics that reuse one fragment of a conref source, pass fragment=<fragment id> with depth=1.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -291,18 +292,36 @@ fn resolve_topic_id(bundle: &BundleReader, raw: &str) -> Result<Option<Resolved>
             .map(|edge| edge.to.as_str())
             .filter(|target| bundle.node(target).is_some_and(|n| !n.is_declared()))
             .collect();
+        let defined = key
+            .source_file
+            .as_deref()
+            .map(|file| format!(", defined in {file},"))
+            .unwrap_or_default();
         if let [target] = targets.as_slice() {
-            let defined = key
-                .source_file
-                .as_deref()
-                .map(|file| format!(", defined in {file},"))
-                .unwrap_or_default();
             return Ok(Some(Resolved {
                 id: target.to_string(),
                 note: format!(
                     "`{raw}` is the key `{name}`{defined} which names {}.{}",
                     describe_node(bundle, target),
                     copies_note(bundle, target)
+                ),
+            }));
+        }
+        // A key naming a topic file the build does not have.
+        if let Some(edge) = bundle
+            .edges_from(&key_id, Some("key-target"))
+            .into_iter()
+            .find(|edge| {
+                bundle
+                    .node(&edge.to)
+                    .is_some_and(|n| n.type_ == MISSING_TYPE)
+            })
+        {
+            return Ok(Some(Resolved {
+                id: edge.to.clone(),
+                note: format!(
+                    "`{raw}` is the key `{name}`{defined} which names {}{MISSING_NOTE}.",
+                    edge.to
                 ),
             }));
         }
@@ -342,7 +361,17 @@ fn resolve_topic_id(bundle: &BundleReader, raw: &str) -> Result<Option<Resolved>
         .map(|f| f.id.as_str())
         .collect();
     match copies.as_slice() {
-        [] => Ok(None),
+        // A topic file the build does not have, named by a key or a push.
+        [] => Ok(bundle
+            .all_nodes()
+            .find(|n| {
+                n.type_ == MISSING_TYPE
+                    && n.title.as_deref().is_some_and(|path| names_file(raw, path))
+            })
+            .map(|n| Resolved {
+                id: n.id.clone(),
+                note: format!("`{raw}` is {}{MISSING_NOTE}.", n.id),
+            })),
         [id] => Ok(Some(Resolved {
             id: id.to_string(),
             note: format!(
@@ -810,6 +839,8 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         resource_only: bool,
         count: usize,
         snippets: Vec<String>,
+        /// The pages the topic pushes passages into (conref push), and how many.
+        pushes: std::collections::BTreeMap<String, usize>,
     }
     let single_word = needle.len() >= 5
         && needle
@@ -824,6 +855,9 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     let mut hits: Vec<Hit> = Vec::new();
     // Occurrences inside a draft-comment or required-cleanup.
     let mut in_notes = 0usize;
+    // Occurrences in passages pushed into another page, and those pages.
+    let mut in_pushes = 0usize;
+    let mut pushed_into: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for chunk in chunks.iter() {
         let plain = PlainText::of(chunk);
         if single_word {
@@ -860,10 +894,21 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             if note.is_some() {
                 in_notes += 1;
             }
+            let push = plain.pushed_label(*start, end);
+            if let Some(label) = push {
+                in_pushes += 1;
+                pushed_into.insert(split_push_label(label).0.to_string());
+            }
             if snippets.len() < FIND_TEXT_SNIPPETS {
                 let mut line = context(&plain.text, *start, end);
                 if let Some(source) = source {
                     line.push_str(&format!(" (in a passage reused from {source})"));
+                }
+                if let Some(label) = push {
+                    line.push_str(&format!(
+                        " (in a passage this topic pushes {label} with conref push: readers see \
+                         it on that page)"
+                    ));
                 }
                 if let Some(kind) = note {
                     line.push_str(&format!(
@@ -874,11 +919,18 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                 snippets.push(line);
             }
         }
+        let mut pushes = std::collections::BTreeMap::new();
+        for (_, _, label) in &plain.pushed {
+            *pushes
+                .entry(split_push_label(label).0.to_string())
+                .or_default() += 1;
+        }
         hits.push(Hit {
             chunk,
             resource_only: !role_note(bundle, &chunk.id).is_empty(),
             count: starts.len() + usize::from(title_hit),
             snippets,
+            pushes,
         });
     }
     hits.sort_by(|a, b| {
@@ -925,6 +977,34 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
                 format!("{in_notes} of them are")
             }
         ));
+    }
+    if in_pushes > 0 {
+        let pages: Vec<String> = pushed_into
+            .iter()
+            .map(|file| format!("{file}{}", push_target_note(bundle, file)))
+            .collect();
+        out.push_str(&format!(
+            "\n{} in passages pushed into another page with conref push: readers see them on \
+             that page, even when the topic holding them is resource-only. Pushed into: {}.",
+            if in_pushes == 1 {
+                "1 of them is".to_string()
+            } else {
+                format!("{in_pushes} of them are")
+            },
+            pages.join("; ")
+        ));
+    }
+    let missing_shown = pushed_into
+        .iter()
+        .chain(
+            hits.iter()
+                .skip(offset)
+                .take(limit)
+                .flat_map(|h| h.pushes.keys()),
+        )
+        .any(|file| push_target_note(bundle, file).ends_with(MISSING_NOTE));
+    if missing_shown {
+        out.push_str(&format!("\n{MISSING_EXPLAINED}"));
     }
     if let Some(keys) = key_definitions(bundle, &needle) {
         out.push_str(&keys);
@@ -979,6 +1059,20 @@ fn find_text(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             out.push_str(&format!(
                 "\n  (+{} more in this topic)",
                 hit.count - hit.snippets.len()
+            ));
+        }
+        // A warehouse whose entries are pushed into other pages: the text
+        // next to an occurrence may reach readers there (bench r-d6).
+        if !hit.pushes.is_empty() {
+            let pages: Vec<String> = hit
+                .pushes
+                .iter()
+                .map(|(file, n)| format!("{n} into {file}{}", push_target_note(bundle, file)))
+                .collect();
+            out.push_str(&format!(
+                "\n  This topic pushes passages into other pages with conref push, where readers \
+                 see them: {}. read_topic shows each one between [pushed ...] and [end pushed].",
+                pages.join("; ")
             ));
         }
     }
@@ -1093,25 +1187,33 @@ fn count_of(n: usize, noun: &str) -> String {
     }
 }
 
-/// A topic's text as [`find_text`] searches it: the reuse markers of
-/// `resolvedText` taken out, whitespace runs made one space, and for each
-/// reused passage the byte range it covers and where it comes from.
+/// A topic's text as [`find_text`] searches it: the reuse and push markers
+/// of `resolvedText` taken out, whitespace runs made one space, and for
+/// each reused or pushed passage the byte range it covers and where it
+/// comes from or goes.
 struct PlainText {
     text: String,
     /// `(start, end, "<file>#<fragment>")`, a nested passage after the one holding it.
     reused: Vec<(usize, usize, String)>,
+    /// `(start, end, "after <file>#<element>")` of each passage the topic
+    /// pushes into another with conref push, from its `[pushed ...]` marker
+    /// to the end of its `[end pushed]` one, which the extractor writes.
+    pushed: Vec<(usize, usize, String)>,
     /// `(start, end, kind)` of each note for the authors, from its
     /// `[draft-comment]` marker to the end of its `[end draft-comment]` one
     /// (`required-cleanup` the same way), which the extractor writes.
     notes: Vec<(usize, usize, &'static str)>,
     /// The byte ranges of the end markers, so a search for `draft-comment`
-    /// counts each note once.
+    /// counts each note once, and of the push markers, whose file and
+    /// element names are no occurrence either.
     note_ends: Vec<(usize, usize)>,
 }
 
 impl PlainText {
     const OPEN: &'static str = "[reused from ";
     const CLOSE: &'static str = "[end reused]";
+    const PUSH_OPEN: &'static str = "[pushed ";
+    const PUSH_CLOSE: &'static str = "[end pushed]";
     const NOTE_KINDS: [&'static str; 2] = ["draft-comment", "required-cleanup"];
 
     fn of(chunk: &crate::bundle::RagChunk) -> Self {
@@ -1181,12 +1283,51 @@ impl PlainText {
                 }
             }
         }
+        // A pushed passage keeps its markers, as the notes do: an excerpt
+        // then shows where the text next to an occurrence goes. A match
+        // inside a marker is no occurrence.
+        let mut pushed = Vec::new();
+        let mut from = 0;
+        while let Some(start) = text[from..].find(Self::PUSH_OPEN).map(|i| i + from) {
+            let label_start = start + Self::PUSH_OPEN.len();
+            let Some(label_end) = text[label_start..].find(']').map(|i| i + label_start) else {
+                break;
+            };
+            note_ends.push((start, label_end + 1));
+            let label = text[label_start..label_end].to_string();
+            match text[label_end..]
+                .find(Self::PUSH_CLOSE)
+                .map(|i| i + label_end)
+            {
+                Some(end) => {
+                    let close_end = end + Self::PUSH_CLOSE.len();
+                    pushed.push((start, close_end, label));
+                    note_ends.push((end, close_end));
+                    from = close_end;
+                }
+                None => {
+                    pushed.push((start, text.len(), label));
+                    break;
+                }
+            }
+        }
         PlainText {
             text,
             reused,
+            pushed,
             notes,
             note_ends,
         }
+    }
+
+    /// The label (`after <file>#<element>`) of the innermost passage the
+    /// topic pushes into another that holds `start..end`, if any.
+    fn pushed_label(&self, start: usize, end: usize) -> Option<&str> {
+        self.pushed
+            .iter()
+            .filter(|(s, e, _)| *s <= start && end <= *e)
+            .min_by_key(|(s, e, _)| e - s)
+            .map(|(_, _, label)| label.as_str())
     }
 
     /// The kind of the note for the authors that holds `start..end`, if any.
@@ -1470,6 +1611,12 @@ fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         .get("maxChars")
         .and_then(|v| v.as_u64())
         .map_or(READ_TOPIC_MAX_CHARS, |v| v as usize);
+    if bundle
+        .node(topic_id)
+        .is_some_and(|n| n.type_ == MISSING_TYPE)
+    {
+        return Ok(missing_file(bundle, topic_id));
+    }
     let (frontmatter, _) = bundle.read_concept(topic_id)?;
     let field = |key: &str| {
         frontmatter
@@ -1506,9 +1653,49 @@ fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         None => out.push_str("\n(no body text for this topic)\n"),
     }
 
+    // The passages pushed into other pages, by page: a resource-only
+    // warehouse's text reaches readers there (bench r-d6).
+    let mut pushes: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (_, _, label) in text
+        .map(PlainText::parse)
+        .map(|p| p.pushed)
+        .unwrap_or_default()
+    {
+        let (file, how) = split_push_label(&label);
+        pushes.entry(file.to_string()).or_default().push(how);
+    }
+    if !pushes.is_empty() {
+        out.push_str(
+            "\nPushed into other pages with conref push (readers see these passages there), by \
+             page:\n",
+        );
+        let mut missing = false;
+        for (file, hows) in &pushes {
+            let shown: Vec<&str> = hows.iter().take(PUSHES_SHOWN).map(String::as_str).collect();
+            let note = push_target_note(bundle, file);
+            missing |= note.ends_with(MISSING_NOTE);
+            out.push_str(&format!(
+                "  - {file}{note}: {} passage(s), {}{}\n",
+                hows.len(),
+                shown.join(", "),
+                if hows.len() > PUSHES_SHOWN {
+                    format!(" (+{} more)", hows.len() - PUSHES_SHOWN)
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        if missing {
+            out.push_str(&format!("{MISSING_EXPLAINED}\n"));
+        }
+    }
+
     let reused = bundle.edges_from(topic_id, Some("generated-from"));
     if !reused.is_empty() {
-        out.push_str("\nReused content (conref/conkeyref), by source topic:\n");
+        out.push_str(
+            "\nReused content (conref/conkeyref, or pushed into this topic with conref push), by \
+             source topic:\n",
+        );
         for edge in reused {
             let source_title = bundle.title(&edge.to).unwrap_or_else(|_| edge.to.clone());
             let resource = bundle
@@ -1571,16 +1758,129 @@ fn read_topic(bundle: &BundleReader, arguments: &Value) -> Result<String> {
     Ok(out)
 }
 
+/// At most this many pushed passages listed per page by [`read_topic`].
+const PUSHES_SHOWN: usize = 12;
+
+/// [`read_topic`] for a topic file the build does not have: what the graph
+/// knows of it -- the keys that name it and who links through them, and
+/// what other topics push into it. Without this, a link through such a key
+/// read as an empty link, and a passage pushed into the page as one no
+/// reader sees (bench r-d6).
+fn missing_file(bundle: &BundleReader, id: &str) -> String {
+    let path = bundle.title(id).unwrap_or_else(|_| id.to_string());
+    let mut out = format!(
+        "{path} [{id}]: not in this build. DITA-OT could not load this file: it is a page the \
+         documentation's own build generates before running DITA-OT, or a missing file. The \
+         graph has no text of its own for it. If the publication's build does generate it, \
+         readers see it, with what other topics push into it.\n"
+    );
+    let keys = bundle.edges_to(id, Some("key-target"));
+    if !keys.is_empty() {
+        out.push_str("\nKeys that name it (and the topics that use each key):\n");
+        for edge in keys {
+            let file = bundle
+                .node(&edge.from)
+                .and_then(|n| n.source_file.clone())
+                .map(|file| format!(", defined in {file}"))
+                .unwrap_or_default();
+            let mut users: Vec<String> = bundle
+                .edges_to(&edge.from, Some("uses-key"))
+                .iter()
+                .map(|use_| describe_node(bundle, &use_.from))
+                .collect();
+            users.sort();
+            out.push_str(&format!(
+                "  - {}{file}: {}\n",
+                edge.from,
+                if users.is_empty() {
+                    "no topic uses it".to_string()
+                } else {
+                    users.join("; ")
+                }
+            ));
+        }
+    }
+    let pushers = bundle.edges_from(id, Some("generated-from"));
+    if !pushers.is_empty() {
+        out.push_str("\nPushed into it with conref push, by topic (the fragments it pushes):\n");
+        for edge in pushers {
+            out.push_str(&format!(
+                "  - {}{}\n",
+                describe_node(bundle, &edge.to),
+                fragments_suffix(edge)
+            ));
+        }
+        out.push_str(
+            "read_topic on a pushing topic shows each pushed passage between [pushed ...] and \
+             [end pushed], and where it goes.\n",
+        );
+    }
+    out
+}
+
 /// ` [resource-only: not a published page]` after a topic the map uses
 /// only as a resource -- a reuse warehouse, a key target -- empty for any
 /// other node. Without it, an agent listing the topics that link to a URL
 /// counted the warehouse holding a reused link as one more published page
 /// (dita2graph-demo/bench, campaign 4 replay, question r-o8).
+///
+/// A topic file the build does not have gets [`MISSING_NOTE`] instead:
+/// without it, an agent read a link through a key naming such a file --
+/// a page the documentation's own build generates -- as an empty link
+/// (bench r-d6).
 fn role_note(bundle: &BundleReader, id: &str) -> &'static str {
-    match bundle.node(id).and_then(|n| n.processing_role.as_deref()) {
-        Some("resource-only") => " [resource-only: not a published page]",
+    match bundle.node(id) {
+        Some(node) if node.processing_role.as_deref() == Some("resource-only") => {
+            " [resource-only: not a published page]"
+        }
+        Some(node) if node.type_ == MISSING_TYPE => MISSING_NOTE,
         _ => "",
     }
+}
+
+/// [`role_note`] of a topic file the build does not have; a list that
+/// shows it adds [`MISSING_EXPLAINED`] once.
+const MISSING_NOTE: &str = " [not in this build]";
+
+/// What [`MISSING_NOTE`] means.
+const MISSING_EXPLAINED: &str = "A file marked [not in this build] is one DITA-OT could not \
+                                 load: a page the documentation's own build generates before \
+                                 running DITA-OT, or a missing file. The graph has no text of its \
+                                 own for it; read_topic on it says which keys name it and what is \
+                                 pushed into it.";
+
+/// What `[pushed <label>]` names: the file a passage is pushed into, and
+/// how (`after <element>`, `before <element>`, `to replace <element>`).
+fn split_push_label(label: &str) -> (&str, String) {
+    let (action, target) = ["after ", "before ", "to replace "]
+        .iter()
+        .find_map(|action| label.strip_prefix(action).map(|t| (action.trim_end(), t)))
+        .unwrap_or(("into", label));
+    match target.split_once('#') {
+        Some((file, element)) => (file, format!("{action} {element}")),
+        None => (target, action.to_string()),
+    }
+}
+
+/// `, <topic>` for a file a topic is pushed into that is a topic of the
+/// build, [`MISSING_NOTE`] for one it does not have, empty otherwise.
+fn push_target_note(bundle: &BundleReader, file: &str) -> String {
+    let wanted = normalize_path(file);
+    if let Some(topic) = bundle
+        .source_files()
+        .iter()
+        .find(|f| normalize_path(&f.path) == wanted)
+    {
+        return format!(", {}", describe_node(bundle, &topic.id));
+    }
+    let missing = dita2graph_core::graph_view::file_id(file);
+    if bundle
+        .node(&missing)
+        .is_some_and(|n| n.type_ == MISSING_TYPE)
+    {
+        return format!(" ({missing}){MISSING_NOTE}");
+    }
+    String::new()
 }
 
 /// ` [fragments: a, b]` for an edge that names the reused elements
@@ -1614,7 +1914,9 @@ fn find_related_topics(bundle: &BundleReader, arguments: &Value) -> Result<Strin
     // A key, URL or sample file has few edges of its own: what matters is
     // who points at it, and for a key, the file that defines it.
     if let Some(node) = bundle.node(topic_id).filter(|n| n.is_declared()) {
-        if let Some(file) = &node.source_file {
+        if node.type_ == MISSING_TYPE {
+            lines.insert(0, format!("{topic_id}{MISSING_NOTE}. {MISSING_EXPLAINED}"));
+        } else if let Some(file) = &node.source_file {
             lines.insert(0, format!("{} {topic_id}, in {file}", node.type_));
         }
         for e in bundle.edges_to(topic_id, relation) {
@@ -1833,6 +2135,21 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
             " {declared} key, URL or file node(s) on the way are listed too, not counted."
         ));
     }
+    let missing = affected
+        .iter()
+        .filter(|(_, edge, _)| {
+            bundle
+                .node(&edge.from)
+                .is_some_and(|n| n.type_ == MISSING_TYPE)
+        })
+        .count();
+    if missing > 0 {
+        out.push_str(&format!(
+            " {missing} of them are pages this build does not have (marked [not in this build]), \
+             which content is pushed into or a key names: when the publication's own build \
+             generates them, their readers see the change too."
+        ));
+    }
     let pointing_concepts = pointing
         .iter()
         .filter(|(_, edge, _)| is_concept(&edge.from))
@@ -1898,7 +2215,7 @@ fn analyze_impact(bundle: &BundleReader, arguments: &Value) -> Result<String> {
         // A key: the file to edit to change it.
         if let Some(file) = bundle
             .node(&edge.from)
-            .filter(|n| n.is_declared())
+            .filter(|n| n.is_declared() && n.type_ != MISSING_TYPE)
             .and_then(|n| n.source_file.as_deref())
         {
             out.push_str(&format!(" [defined in {file}]"));

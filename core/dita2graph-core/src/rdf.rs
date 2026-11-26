@@ -330,7 +330,8 @@ fn add_key(
         let resource = url_iri(url);
         graph.add(&resource, "a", "d2g:ExternalResource".into());
         graph.add(&subject, "d2g:keyTarget", resource);
-    } else if let Some(path) = &key.file {
+    } else if let Some(path) = key.file.as_ref().or(key.missing.as_ref()) {
+        // A topic file the build lacks is still a file the key names.
         let file = add_file(graph, base, path);
         graph.add(&subject, "d2g:keyTarget", file);
     }
@@ -603,6 +604,7 @@ mod tests {
             keyrefs: vec![],
             external_links: vec![],
             code_refs: vec![],
+            pushed_into: vec![],
             id: id.into(),
             topic_type,
             title: format!("Title of {id}"),
@@ -713,6 +715,7 @@ mod tests {
                 url: None,
                 file: None,
                 text: None,
+                missing: None,
                 source_file: "keys.ditamap".into(),
             };
             map.key_defs = vec![

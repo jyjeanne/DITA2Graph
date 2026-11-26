@@ -389,7 +389,7 @@ plugin output in a normal `dita` build log:
   | `DITA2GRAPH060W` | Warning | A `<navref>` map-composition element was found but isn't resolved by DITA-OT for this transtype and isn't independently parsed by this plugin either (§3.3) — its content is excluded from the graph, surfaced as a warning rather than silently dropped (finding 16). |
   | `DITA2GRAPH070W` | Warning | Two topics share the same authored `id` (an unfilled authoring-template placeholder like `id="ID"` is a common real cause) — without disambiguation both would collapse onto the same OKF concept file path and the second one written would silently overwrite the first. The later topic gets a disambiguated graph node id instead (its own id plus a source-path-derived suffix); neither topic is dropped. |
   | `DITA2GRAPH071I` | Info | A copy DITA-OT writes under another name carries its source topic's id — expected, not a warning: a `copy-to` copy, or a branch-filtering copy (a `<ditavalref>` with `<dvrResourcePrefix>` or `<dvrResourceSuffix>`). The source keeps its id, the copy's node gets the suffixed one, is the node its topicref contains, and derives from the source through `copy-of` and `generated-from` (finding 19). |
-  | `DITA2GRAPH072I` | Info | A topic's source file could not be parsed on its own (typically an entity its DTD defines) while looking for the `coderef` and `conkeyref` elements DITA-OT's preprocessing removes: that topic's `includes-code` edges and conkeyref key uses are missing, nothing else ([semantic-model.md](semantic-model.md)). |
+  | `DITA2GRAPH072I` | Info | A topic's source file could not be parsed on its own (typically an entity its DTD defines) while looking for the `coderef` and `conkeyref` elements and the `@conaction` pushes DITA-OT's preprocessing removes: that topic's `includes-code` edges, conkeyref key uses and pushes into files the build does not have are missing, nothing else ([semantic-model.md](semantic-model.md)). |
   | `DITA2GRAPH073I` | Info | Elements other topics reuse have no `@id`: the graph names their fragments `element@line`, a name (and an RDF IRI) that changes as soon as a line is added above them. One note per source file, listing them: give them an `@id` ([semantic-model.md](semantic-model.md)). |
   | `DITA2GRAPH080E` | Error | The RDF export breaks a `sh:Violation` rule of the d2g SHACL shapes (a loop in the table of contents, a used key no map defines...) — build fails. The build checks the shapes right after writing `rdf/` ([semantic-model.md](semantic-model.md)). |
   | `DITA2GRAPH081W` | Warning | The RDF export breaks a `sh:Warning` rule of the shapes, such as a published topic without a parent in the table of contents — reported only. |
@@ -536,10 +536,14 @@ any element, `@conkeyref` when the topic really reuses the key's target,
 and the key of a relationship-table link, found back through the link's
 `xtrf`/`xtrc`; not the keys in the title and shortdesc DITA-OT copies
 from a linked topic into a generated link); `externalLinks`, the `http(s)` URLs it links to, each once, as
-`{"url": ..., "key": ...}` with the key the link went through; and
-`codeRefs`, the paths of the sample files it shows with `coderef`. The
-map node carries the effective key definitions of the map and its
-submaps, the first definition of a key in its scope winning:
+`{"url": ..., "key": ...}` with the key the link went through;
+`codeRefs`, the paths of the sample files it shows with `coderef`; and
+`pushedInto`, the files the build does not have that the topic pushes
+content into with conref push (`@conaction`), each as `{"file": ...,
+"fragments": [...]}` with the topic's elements pushed there (a push into
+a topic of the build needs none: that topic is `generated-from` the
+pusher). The map node carries the effective key definitions of the map
+and its submaps, the first definition of a key in its scope winning:
 
 ```json
 "keyDefs": [
@@ -550,11 +554,13 @@ submaps, the first definition of a key in its scope winning:
 ```
 
 A key names a topic (`target`, its id), a URL (`url`), a local file
-(`file`), or nothing: a text key, whose value is `text`. `sourceFile` is
-the map file that writes the definition, a submap when it is one. How
-each field is read from DITA-OT's output, including `coderef` and
-`@conkeyref`, which preprocessing removes and the extractor reads from
-the topic's source file: [semantic-model.md](semantic-model.md#keys-external-links-and-sample-files).
+(`file`), a topic file the build does not have (`missing`, its path: a
+page the documentation's own build generates before running DITA-OT, or
+a missing file), or nothing: a text key, whose value is `text`.
+`sourceFile` is the map file that writes the definition, a submap when it
+is one. How each field is read from DITA-OT's output, including `coderef`,
+`@conkeyref` and `@conaction`, which preprocessing removes and the
+extractor reads from the topic's source file: [semantic-model.md](semantic-model.md#keys-external-links-and-sample-files).
 
 A topic's prolog, and the map's `topicmeta` or `bookmeta`, give the
 optional `metadata` object, omitted when the node has none, as is each of
@@ -805,7 +811,7 @@ topic
  |
  +-- requires              (prerequisite: a task's prereq link, or its link marked importance="required")
  |
- +-- generated-from          (topic -> conref/conkeyref source fragment)
+ +-- generated-from          (topic -> conref/conkeyref source fragment, or the topic that pushes into it)
  |
  +-- copy-of                   (copy-to copy -> the topic it copies)
 ```
@@ -822,7 +828,10 @@ relations between concepts: they are declared on the nodes (§3.2),
 rendered as their own sections of the OKF concepts, and become nodes of
 `graph.json`/`graph.db` with the edges `defines-key` (map -> key),
 `key-target` (key -> topic, URL or file), `uses-key` (topic -> key),
-`links-to` (topic -> URL) and `includes-code` (topic -> file).
+`links-to` (topic -> URL) and `includes-code` (topic -> file). A topic
+file the build does not have is a `Missing File` node (`file:<path>`):
+the `key-target` of a key that names it, and `generated-from` each topic
+that pushes content into it, as a page of the build would be.
 
 ### 4.4 OKF concept examples
 
@@ -1284,6 +1293,24 @@ an occurrence inside one and counts the notes it found. Unmarked, the
 text of a draft comment read like any other sentence: in the demo's
 relevance checks, agents said readers of the DITA-OT release notes see a
 template instruction that is a draft comment.
+
+A passage a topic pushes into another page with conref push keeps its
+place in the pusher's text too, between `[pushed after <file>#<element>]`
+(or `pushed before`, `pushed to replace`) and `[end pushed]`: readers see
+it on the page it is pushed into, even when the pusher is resource-only.
+`read_topic` lists the pushed passages by page after the text;
+`find_text` says when an occurrence is in one, and which pages a topic it
+lists pushes passages into; the server's instructions say that a
+resource-only topic's text reaches readers this way too. A file a key
+names, or a topic pushes into, that DITA-OT could not load is marked
+`[not in this build]` wherever a tool lists it: often a page the
+documentation's own build generates before publishing. `read_topic` on
+it (by id, path or key) says which keys name it, who uses them, and what
+is pushed into it. Found by the real-question benchmark (question r-d6,
+`dita2graph-demo/bench`): every model said the deprecated
+`outputFile.base` entry of the resource-only Ant parameter details
+reaches no reader, while it is pushed into the generated PDF parameters
+page, and some called the link through the key `parameters-pdf` empty.
 
 Keys, external URLs and sample files are graph nodes (§4.4), so the
 same tools reach them without a dedicated one: `search_topics` finds

@@ -19,6 +19,13 @@ final class KeyDef {
     String file;
     /** The key's text (keyword, link text or navtitle), kept when it names no topic. */
     String text;
+    /**
+     * Temp-relative path of the topic file the key names when the build
+     * has no such file (DITA-OT could not load it): a page the
+     * documentation's own build generates before running DITA-OT, or a
+     * missing file. Null otherwise.
+     */
+    String missing;
     /** The map file that defines the key (the submap, not the root map, when they differ). */
     String sourceFile;
 
@@ -30,6 +37,7 @@ final class KeyDef {
         optional(sb, "url", url);
         optional(sb, "file", file);
         optional(sb, "text", text);
+        optional(sb, "missing", missing);
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
         return sb.append('}').toString();
     }

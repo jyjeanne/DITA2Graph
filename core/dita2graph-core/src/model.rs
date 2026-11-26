@@ -146,6 +146,14 @@ pub struct NormalizedTopic {
     /// as DITA-OT's job lists them (relative to the source root).
     #[serde(default, rename = "codeRefs", skip_serializing_if = "Vec::is_empty")]
     pub code_refs: Vec<String>,
+    /// The files the topic pushes content into with conref push
+    /// (`@conaction`) that the build does not have -- a page the
+    /// documentation's own build generates before running DITA-OT, or a
+    /// missing file -- each with the topic's fragments pushed there. A push
+    /// into a topic of the build needs no entry: that topic is
+    /// `generated-from` this one, like any reuse.
+    #[serde(default, rename = "pushedInto", skip_serializing_if = "Vec::is_empty")]
+    pub pushed_into: Vec<PushTarget>,
     #[serde(rename = "sourceFile")]
     pub source_file: String,
     /// The file the author edits, when DITA-OT wrote the topic under
@@ -239,6 +247,17 @@ pub struct Audience {
     pub experience_level: Option<String>,
 }
 
+/// A file the build does not have that a topic pushes content into.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PushTarget {
+    /// Path of the file, as the pusher's reference names it (relative to
+    /// the source root, like a topic's `sourceFile`).
+    pub file: String,
+    /// The pushed elements of the topic: their `@id`, or `element@line`.
+    #[serde(default)]
+    pub fragments: Vec<String>,
+}
+
 /// A link from a topic to a URL outside the corpus.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalLink {
@@ -265,9 +284,9 @@ pub struct NormalizedMap {
     pub links: Vec<Link>,
 }
 
-/// One key definition. At most one of `target`, `url` and `file` is set;
-/// a key with none of them is a text key (a variable) whose value is
-/// `text`.
+/// One key definition. At most one of `target`, `url`, `file` and
+/// `missing` is set; a key with none of them is a text key (a variable)
+/// whose value is `text`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyDef {
     pub name: String,
@@ -286,6 +305,11 @@ pub struct KeyDef {
     /// The key's text (keyword, link text or navtitle) when it names no topic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Path of the topic file the key names when the build has no such
+    /// file (DITA-OT could not load it): a page the documentation's own
+    /// build generates before running DITA-OT, or a missing file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
     /// The map file that declares the key: the submap, when it is one.
     #[serde(rename = "sourceFile")]
     pub source_file: String,

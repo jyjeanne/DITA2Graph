@@ -332,6 +332,8 @@ fn render_declarations(node: &NormalizedNode, body: &mut String) {
                     body.push_str(&format!(" -> <{url}>"));
                 } else if let Some(file) = &key.file {
                     body.push_str(&format!(" -> file `{file}`"));
+                } else if let Some(file) = &key.missing {
+                    body.push_str(&format!(" -> missing file `{file}`"));
                 }
                 if let Some(text) = &key.text {
                     body.push_str(&format!(" \"{}\"", escape_link_syntax(text)));
@@ -363,6 +365,17 @@ fn render_declarations(node: &NormalizedNode, body: &mut String) {
                 body.push_str("# Code Files\n\n");
                 for path in &topic.code_refs {
                     body.push_str(&format!("- `{path}`\n"));
+                }
+                body.push('\n');
+            }
+            if !topic.pushed_into.is_empty() {
+                body.push_str("# Pushed Into\n\n");
+                for push in &topic.pushed_into {
+                    body.push_str(&format!("- `{}` (missing file)", push.file));
+                    if !push.fragments.is_empty() {
+                        body.push_str(&format!(" (fragments: {})", push.fragments.join(", ")));
+                    }
+                    body.push('\n');
                 }
                 body.push('\n');
             }
@@ -502,6 +515,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -537,6 +551,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "installing-product-prereqs".into(),
                 topic_type: TopicType::Topic,
                 title: "Installing Product: Prerequisites".into(),
@@ -563,6 +578,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -714,6 +730,7 @@ mod tests {
                 url: None,
                 file: None,
                 text: Some("[a link](topic.md)".into()),
+                missing: None,
                 source_file: "keys.ditamap".into(),
             }];
         }

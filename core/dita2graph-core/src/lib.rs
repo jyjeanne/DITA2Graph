@@ -45,7 +45,7 @@ pub use graph_view::{GraphView, graph_view};
 pub use mcp_config::write_mcp_config;
 pub use model::{
     Audience, Author, Link, Metadata, NormalizedMap, NormalizedNode, NormalizedTopic, Product,
-    Relation, TopicType,
+    PushTarget, Relation, TopicType,
 };
 pub use okf::{BundleOptions, BundleSummary, write_bundle, write_bundle_with};
 pub use rag::{RagSummary, write_rag_index};

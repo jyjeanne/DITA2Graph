@@ -191,7 +191,10 @@ the wrong one is a classic way DITA content sets drift out of sync.
 The reused text itself is stored once, in its source topic
 (`docs/dev/canonical-node-dedup-spec.md`), and `read_topic` shows a
 topic as published, each reused fragment marked with where it comes
-from.
+from. Conref push counts too: a page a topic pushes content into is
+`generated-from` it, and the pushed passages are marked in the pusher's
+text with the page they go to, even when that page is one the
+documentation's own build generates and this build does not have.
 
 ### 2. Safe restructuring — what references this before you rename, merge, or delete it
 
@@ -405,8 +408,8 @@ Once registered, an agent can call:
 |---|---|
 | `search_topics(query)` | Plain text match against topic/map titles and ids, the query as a phrase first, then, for several words, the titles and ids with every word in any order (`rename id` finds "Search and Rename Actions for IDs"); then against the topics' keywords and index entries (listed after, with the entries that matched); a query that looks like a file (`topics/x.dita`) also finds the topics whose source file it names, and the copies the map publishes of one |
 | `search_content(query, topicId?, relation?, depth?)` | Ranked full-text search over `rag/` content, each hit with a text excerpt; scope it to a topic's graph neighborhood for hybrid graph+content queries (§13.1). Ranking blends in cosine similarity against `rag/embeddings.jsonl` when `dita2graph-mcp` was started with an embedding model configured -- see the optional embeddings step above |
-| `find_text(text, limit?, offset?)` | Every topic whose text contains `text`, literally, with no cap: the counts (published pages apart from resource-only topics), each occurrence in context, the reused passage (`<file>#<fragment>`) it comes from, and for a single word the near spellings the documentation has (`pluginsdir` for `plugindirs`); also the keys whose link text or target URL holds the text, with the map defining each. Complete for this exact text, not for other wordings. For "every page that shows…" and "is it spelled the same everywhere?" |
-| `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, notes for the authors (`<draft-comment>`, `<required-cleanup>`) between `[draft-comment]` and `[end draft-comment]` markers, then the reused fragments by source topic, and the topic's external links, keys and sample files |
+| `find_text(text, limit?, offset?)` | Every topic whose text contains `text`, literally, with no cap: the counts (published pages apart from resource-only topics), each occurrence in context, the reused passage (`<file>#<fragment>`) it comes from, and for a single word the near spellings the documentation has (`pluginsdir` for `plugindirs`); also the keys whose link text or target URL holds the text, with the map defining each, and the passages pushed into another page with conref push (readers see them there). Complete for this exact text, not for other wordings. For "every page that shows…" and "is it spelled the same everywhere?" |
+| `read_topic(topicId, maxChars?)` | The topic's full text as published, reused fragments kept in place between `[reused from <file>#<fragment>]` markers, notes for the authors (`<draft-comment>`, `<required-cleanup>`) between `[draft-comment]` and `[end draft-comment]` markers, passages pushed into another page with conref push between `[pushed after <file>#<element>]` and `[end pushed]`, then the pushed passages by page, the reused fragments by source topic, and the topic's external links, keys and sample files. On a file the build does not have (`[not in this build]`: a page the documentation's own build generates, or a missing one), the keys that name it and what is pushed into it |
 | `find_related_topics(topicId, relation?)` | Direct relations from a topic; a `generated-from` relation names its reused fragments. On a key, URL or file node (`key:<name>`, the URL, `file:<path>`), the topics pointing to it |
 | `explain_task(topicId)` | Title, description, a body excerpt, and key relations for a topic |
 | `trace_dependencies(topicId, depth?)` | Forward `requires` chain from a topic |

@@ -54,6 +54,9 @@ class ModelJsonContractTest {
         map.keyDefs.add(keyDef("brew", "tools", null, "https://brew.sh", null, "Homebrew", "keys.ditamap"));
         map.keyDefs.add(keyDef("logo", null, null, null, "images/logo.png", null, "keys.ditamap"));
         map.keyDefs.add(keyDef("product-name", null, null, null, null, "Widget Pro", "keys.ditamap"));
+        KeyDef generated = keyDef("parameters-pdf", null, null, null, null, null, "keys.ditamap");
+        generated.missing = "parameters/parameters-pdf.dita";
+        map.keyDefs.add(generated);
         map.metadata = new Metadata();
         map.metadata.created = "2026-01-15";
         map.metadata.products.add(new String[] {"Widget Pro", "4.2"});
@@ -110,6 +113,9 @@ class ModelJsonContractTest {
         shared.title = "Shared warnings";
         shared.processingRole = "resource-only";
         shared.sourceFile = "topics/shared.dita";
+        TopicNode.PushTarget pushed = new TopicNode.PushTarget("parameters/parameters-pdf.dita");
+        pushed.fragments.add("pd@722");
+        shared.pushedInto.add(pushed);
 
         TopicNode heading = new TopicNode();
         heading.id = "topichead--reference";

@@ -76,7 +76,15 @@ import java.util.function.Consumer;
  * kept only when the resolved topic confirms it survived DITAVAL
  * filtering: the coderef's parent element is still there (same {@code
  * xtrc}), the conkeyref's key names a topic this topic reuses content
- * from ({@code generated-from}).
+ * from ({@code generated-from}). A third, conref push ({@code @conaction}),
+ * is read from the source of the files job.xml marks {@code
+ * conrefpush="true"}: a push into a topic of the build lands in it with the
+ * pusher's {@code xtrf}, so that topic is {@code generated-from} the pusher
+ * like any reuse; a push into a file the build does not have (dita-ot/docs
+ * pushes its Ant parameter details into pages its own build generates
+ * before running DITA-OT) is kept on the pusher ({@code pushedInto}). Either
+ * way the pushed elements are marked in the pusher's text, and a key whose
+ * topic file the build does not have keeps its path ({@code missing}).
  * <ul>
  *   <li>a {@code <link>} in {@code <related-links>} that is not map
  *       hierarchy navigation -&gt; {@code references}. DITA-OT's maplink
@@ -216,6 +224,8 @@ final class DitaModelExtractor {
     private final Map<String, Integer> headingIdCounts = new HashMap<>();
     /** {@code src} URI -> temp path of every job.xml file, to place a heading in its own map. */
     private Map<String, String> srcToPath = Map.of();
+    /** Temp path -> {@code src} URI of every job.xml file, to tell a file DITA-OT could not load. */
+    private final Map<String, String> pathToSrc = new HashMap<>();
     /**
      * The directory job.xml's paths are relative to, as a {@code file:}
      * URI: the input map's {@code src} minus its {@code path}. Null when
@@ -260,6 +270,8 @@ final class DitaModelExtractor {
         boolean input;
         /** DITA-OT's own {@code resource-only="true"}, when it writes one. */
         boolean resourceOnly;
+        /** DITA-OT's {@code conrefpush="true"}: the file pushes content into others with {@code @conaction}. */
+        boolean conrefpush;
         /** The {@code src} attribute (an absolute {@code file:} URI) -- matches resolved elements' own {@code xtrf} values verbatim (finding 15). */
         String src;
     }
@@ -359,12 +371,37 @@ final class DitaModelExtractor {
         /** {fromPath, xtrc} per marker, indexed by the number in its placeholder. */
         final List<String[]> markers = new ArrayList<>();
         final Map<String, RawGeneratedFrom> bySource = new LinkedHashMap<>();
+        /** {@code xtrc} of each element the topic pushes into another -&gt; its marker label ({@link RawPush#label}). */
+        final Map<String, String> pushLabels = new HashMap<>();
 
         BodyWalk(String ownPath, Map<String, String> ditaSrcToPath, Set<Element> bodyRoots, Element topicRoot) {
             this.ownPath = ownPath;
             this.ditaSrcToPath = ditaSrcToPath;
             this.bodyRoots = bodyRoots;
             this.topicRoot = topicRoot;
+        }
+    }
+
+    /**
+     * One element a topic's source pushes into another topic with conref
+     * push: {@code conaction="pushreplace"} with its own {@code
+     * conref}/{@code conkeyref}, or {@code pushbefore}/{@code pushafter}
+     * next to the {@code conaction="mark"} element that names the target.
+     * DITA-OT drops {@code @conaction} from the pusher's resolved copy, so
+     * it is read from the source.
+     *
+     * @param xtrc          the pushed element's trace in the pusher's resolved copy
+     * @param action        {@code after}, {@code before} or {@code replace}
+     * @param targetPath    temp-relative path of the file pushed into
+     * @param anchor        the target element ({@code topic/element}, the
+     *                      conref's fragment), empty when the reference has none
+     * @param targetMissing whether the file pushed into does not exist ({@link #missingSource})
+     */
+    private record RawPush(String xtrc, String action, String targetPath, String anchor, boolean targetMissing) {
+        /** {@code after <file>#<anchor>}: the text of the {@code [pushed ...]} marker after {@code "pushed "}. */
+        String label() {
+            String where = anchor.isEmpty() ? targetPath : targetPath + "#" + anchor;
+            return ("replace".equals(action) ? "to replace" : action) + " " + where;
         }
     }
 
@@ -438,9 +475,13 @@ final class DitaModelExtractor {
         scopesByPath.clear();
         mapKeyrefsByTrace.clear();
         jobDitaPaths = new HashSet<>();
+        pathToSrc.clear();
         for (JobFile file : files) {
             if ("dita".equals(file.format)) {
                 jobDitaPaths.add(file.path);
+            }
+            if (!file.src.isEmpty()) {
+                pathToSrc.putIfAbsent(file.path, file.src);
             }
         }
         List<RawContainment> containments = new ArrayList<>();
@@ -499,6 +540,9 @@ final class DitaModelExtractor {
         // Topics whose body holds reused fragments, kept until pass 3 can
         // name those fragments in resolvedBody.
         Map<String, BodyWalk> bodyWalksWithReuse = new LinkedHashMap<>();
+        // path -> what the topic's source pushes into other files (conref
+        // push), the files the build lacks recorded in pass 3.
+        Map<String, List<RawPush>> pushesByPath = new LinkedHashMap<>();
         // Duplicate-topic-id guard (confirmed against a real, large
         // third-party corpus, dita-ot/docs: 33 separate topics sharing
         // the literal id "ID" -- an unfilled authoring-template
@@ -622,7 +666,13 @@ final class DitaModelExtractor {
             // full-topic scans -- both need the same xtrf-mismatch check
             // at every element, so they share a single traversal rather
             // than paying for it twice per topic.
-            BodyWalk walk = extractBodyAndGeneratedFrom(root, topic.topicType, file.path, ditaSrcToPath);
+            // What the topic pushes into others is marked in its text, as
+            // the readers of the pages it lands in see it.
+            List<RawPush> pushes = file.conrefpush ? scanPushes(builder, file, root) : List.of();
+            if (!pushes.isEmpty()) {
+                pushesByPath.put(file.path, pushes);
+            }
+            BodyWalk walk = extractBodyAndGeneratedFrom(root, topic.topicType, file.path, ditaSrcToPath, pushes);
             rawGeneratedFrom.addAll(walk.bySource.values());
             // The source can only add something when the job includes
             // sample files and the topic has a preformatted element their
@@ -817,10 +867,35 @@ final class DitaModelExtractor {
                 topicsByPath.get(entry.getKey()).resolvedBody = resolved;
             }
         }
+        // A push into a topic of the build lands in that topic, which
+        // DITA-OT's traces already tie to the pusher (generated-from). One
+        // into a file the build lacks (dita-ot/docs pushes its parameter
+        // details into pages its own build generates first) would leave no
+        // trace at all: the pusher records it, with the fragments it pushes.
+        for (Map.Entry<String, List<RawPush>> entry : pushesByPath.entrySet()) {
+            TopicNode pusher = topicsByPath.get(entry.getKey());
+            Map<String, TopicNode.PushTarget> byFile = new LinkedHashMap<>();
+            for (RawPush push : entry.getValue()) {
+                if (!push.targetMissing() || topicsByPath.containsKey(push.targetPath())) {
+                    continue;
+                }
+                TopicNode.PushTarget target = byFile.computeIfAbsent(push.targetPath(), TopicNode.PushTarget::new);
+                String fragment = fragmentId(entry.getKey(), push.xtrc(), fragmentIdsByPath);
+                if (!target.fragments.contains(fragment)) {
+                    target.fragments.add(fragment);
+                }
+            }
+            pusher.pushedInto.addAll(byFile.values());
+        }
         for (RawKeyDef raw : keyDefs.values()) {
             TopicNode target = raw.targetPath == null ? null : topicsByPath.get(raw.targetPath);
             if (target != null) {
                 raw.def.target = target.id;
+            } else if (raw.targetPath != null && missingSource(pathToSrc.get(raw.targetPath))) {
+                // DITA-OT kept the href but found no such file: a page the
+                // documentation's build generates, or a missing one. Without
+                // it, an agent read a link through the key as an empty link.
+                raw.def.missing = raw.targetPath;
             }
             mapNode.keyDefs.add(raw.def);
         }
@@ -1008,6 +1083,7 @@ final class DitaModelExtractor {
             f.src = el.getAttribute("src");
             f.input = "true".equals(el.getAttribute("input"));
             f.resourceOnly = "true".equals(el.getAttribute("resource-only"));
+            f.conrefpush = "true".equals(el.getAttribute("conrefpush"));
             files.add(f);
         }
         return files;
@@ -1527,6 +1603,14 @@ final class DitaModelExtractor {
      * rank among the source file's elements of that name.
      */
     private static boolean survived(Element el, Document source, String src, Element resolvedRoot) {
+        return resolvedTrace(el, source, src, resolvedRoot) != null;
+    }
+
+    /**
+     * The {@code xtrc} of the source element {@code el} in the resolved
+     * topic, or null when DITAVAL filtering removed it (see {@link #survived}).
+     */
+    private static String resolvedTrace(Element el, Document source, String src, Element resolvedRoot) {
         String tag = el.getNodeName();
         NodeList same = source.getElementsByTagName(tag);
         int rank = 0;
@@ -1541,10 +1625,131 @@ final class DitaModelExtractor {
         candidates.add(resolvedRoot);
         for (Element candidate : candidates) {
             if (src.equals(candidate.getAttribute("xtrf")) && candidate.getAttribute("xtrc").startsWith(prefix)) {
-                return true;
+                return candidate.getAttribute("xtrc");
             }
         }
-        return false;
+        return null;
+    }
+
+    /**
+     * What the topic's source pushes into other topics with conref push
+     * ({@code @conaction}), which DITA-OT drops from the topic's resolved
+     * copy: each element with {@code conaction="pushreplace"} and its own
+     * {@code conref}/{@code conkeyref}, or {@code pushafter}/{@code
+     * pushbefore} after/before the {@code conaction="mark"} element that
+     * names the target. A push DITAVAL filtered out, or one into the topic
+     * itself, is not recorded. A source that does not parse on its own is
+     * skipped with {@code DITA2GRAPH072I}.
+     */
+    private List<RawPush> scanPushes(DocumentBuilder builder, JobFile file, Element resolvedRoot) {
+        List<RawPush> pushes = new ArrayList<>();
+        if (!file.src.startsWith("file:")) {
+            return pushes;
+        }
+        Document doc;
+        try {
+            File source = new File(new URI(file.src));
+            if (!source.isFile()) {
+                return pushes;
+            }
+            doc = parse(builder, source);
+        } catch (Exception e) {
+            info.accept("DITA2GRAPH072I: could not read the source of " + file.path
+                    + " for conref push (" + e.getMessage() + "); none recorded for it");
+            return pushes;
+        }
+        NodeList all = doc.getElementsByTagName("*");
+        for (int i = 0; i < all.getLength(); i++) {
+            Element el = (Element) all.item(i);
+            String action = el.getAttribute("conaction");
+            Element reference = switch (action) {
+                case "pushreplace" -> el;
+                case "pushafter" -> siblingElement(el, false);
+                case "pushbefore" -> siblingElement(el, true);
+                default -> null;
+            };
+            if (reference == null || (reference != el && !"mark".equals(reference.getAttribute("conaction")))) {
+                continue;
+            }
+            String[] target = pushTarget(file, reference);
+            String xtrc = target == null ? null : resolvedTrace(el, doc, file.src, resolvedRoot);
+            if (xtrc != null && !target[0].equals(file.path)) {
+                pushes.add(new RawPush(xtrc, action.substring("push".length()), target[0], target[1],
+                        missingSource(target[2])));
+            }
+        }
+        return pushes;
+    }
+
+    /** The element sibling just before ({@code next} false) or after {@code el}, or null. */
+    private static Element siblingElement(Element el, boolean next) {
+        for (Node n = next ? el.getNextSibling() : el.getPreviousSibling(); n != null;
+                n = next ? n.getNextSibling() : n.getPreviousSibling()) {
+            if (n.getNodeType() == Node.ELEMENT_NODE) {
+                return (Element) n;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {temp-relative path, element, src URI} of what {@code reference}'s
+     * {@code conref} (resolved against the pusher's source) or {@code
+     * conkeyref} (through the key, in the pusher's key scopes) names; null
+     * when it names nothing outside the topic. A file job.xml does not list
+     * keeps the path the reference gives it, relative to the pusher.
+     */
+    private String[] pushTarget(JobFile file, Element reference) {
+        String conref = reference.getAttribute("conref").trim();
+        if (!conref.isEmpty()) {
+            int hash = conref.indexOf('#');
+            String local = hash >= 0 ? conref.substring(0, hash) : conref;
+            if (local.isEmpty()) {
+                return null;
+            }
+            String src;
+            try {
+                src = URI.create(file.src).resolve(local.replace(" ", "%20")).toString();
+            } catch (IllegalArgumentException e) {
+                return null;
+            }
+            String path = srcToPath.get(src);
+            return new String[] {path != null ? path : resolve(file.path, local),
+                hash >= 0 ? conref.substring(hash + 1) : "", src};
+        }
+        String conkeyref = reference.getAttribute("conkeyref").trim();
+        String key = keyName(conkeyref);
+        if (key.isEmpty()) {
+            return null;
+        }
+        String element = conkeyref.length() > key.length() ? conkeyref.substring(key.length() + 1) : "";
+        for (String qualified : resolveKeyNames(key, scopesByPath.getOrDefault(file.path, Set.of("")))) {
+            RawKeyDef def = findKeyDef(qualified);
+            if (def != null && def.targetPath != null) {
+                return new String[] {def.targetPath, element, pathToSrc.get(def.targetPath)};
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether {@code src} is a local file that does not exist: one DITA-OT
+     * could not load ({@code DOTX008E}), such as a page the documentation's
+     * own build generates before running DITA-OT. A file that exists but
+     * has no topic of its own in the build -- merged into another by
+     * chunking, its temporary copy removed (dita-ot/docs'
+     * {@code Common-syntax.md}) -- is not missing; neither is one whose
+     * {@code src} is unknown or not local.
+     */
+    private static boolean missingSource(String src) {
+        if (src == null || !src.startsWith("file:")) {
+            return false;
+        }
+        try {
+            return !new File(new URI(src)).exists();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** A topicref or one of its specializations (chapter, glossref, topichead...), by {@code @class}. */
@@ -1754,10 +1959,18 @@ final class DitaModelExtractor {
      * <p>(3) is the resolved body: every text node of the body, reused or
      * not, with placeholder markers around each outermost reused fragment
      * that {@link #renderResolvedBody} turns into readable ones in pass 3.
+     *
+     * <p>Each element of {@code pushes} stays in both texts between
+     * {@code [pushed after <file>#<target>]} (or {@code pushed before},
+     * {@code pushed to replace}) and {@code [end pushed]}: readers see it on
+     * the page it is pushed into, even when this topic is resource-only.
      */
     private static BodyWalk extractBodyAndGeneratedFrom(Element root, String topicType, String ownPath,
-            Map<String, String> ditaSrcToPath) {
+            Map<String, String> ditaSrcToPath, List<RawPush> pushes) {
         BodyWalk walk = new BodyWalk(ownPath, ditaSrcToPath, bodyElements(root, topicType), root);
+        for (RawPush push : pushes) {
+            walk.pushLabels.putIfAbsent(push.xtrc(), push.label());
+        }
         walkGeneratedFromAndBodyText(walk, root, false, false, null);
         return walk;
     }
@@ -1928,6 +2141,14 @@ final class DitaModelExtractor {
                 walk.ownText.append(open);
             }
         }
+        String pushed = nowInsideBody && !foreign ? walk.pushLabels.get(el.getAttribute("xtrc")) : null;
+        if (pushed != null) {
+            String open = " [pushed " + pushed + "] ";
+            walk.resolvedText.append(open);
+            if (!textExcluded) {
+                walk.ownText.append(open);
+            }
+        }
 
         NodeList children = el.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
@@ -1941,6 +2162,12 @@ final class DitaModelExtractor {
                 if (!textExcluded) {
                     walk.ownText.append(text);
                 }
+            }
+        }
+        if (pushed != null) {
+            walk.resolvedText.append(" [end pushed] ");
+            if (!textExcluded) {
+                walk.ownText.append(" [end pushed] ");
             }
         }
         if (note != null) {

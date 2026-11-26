@@ -6,6 +6,12 @@
 //! `scope.name` for a scoped key), the URLs topics link to (the URL itself)
 //! and the sample files they include (`file:<path>`). These nodes have no
 //! concept file; they carry their title and source file instead.
+//!
+//! A topic file the build does not have -- one a key names, or one a topic
+//! pushes content into with conref push -- is a node too (`file:<path>`, of
+//! type [`MISSING_TYPE`]): the key's `key-target` points at it, and it is
+//! `generated-from` the topic that pushes into it, with the fragments
+//! pushed, as a page of the build would be.
 
 use crate::model::NormalizedNode;
 use serde::Serialize;
@@ -17,6 +23,10 @@ pub const KEY_TYPE: &str = "Key";
 pub const EXTERNAL_TYPE: &str = "External Resource";
 /// Node type of a sample file a topic includes, or a local file a key names.
 pub const FILE_TYPE: &str = "File";
+/// Node type of a topic file the build does not have (DITA-OT could not
+/// load it): a page the documentation's own build generates before running
+/// DITA-OT, or a missing file. A key may name it, a topic push content into it.
+pub const MISSING_TYPE: &str = "Missing File";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ViewNode {
@@ -55,7 +65,7 @@ pub struct GraphView {
 /// Whether a node of this type is one the graph declares without a
 /// concept file: a key, an external URL, a file.
 pub fn is_declared_type(type_: &str) -> bool {
-    matches!(type_, KEY_TYPE | EXTERNAL_TYPE | FILE_TYPE)
+    matches!(type_, KEY_TYPE | EXTERNAL_TYPE | FILE_TYPE | MISSING_TYPE)
 }
 
 /// The graph id of a key, as a topic's `@keyref` names it.
@@ -103,6 +113,10 @@ pub fn graph_view(nodes: &[NormalizedNode]) -> GraphView {
                     let file = file_id(path);
                     view.node(&file, FILE_TYPE, Some(path.clone()), Some(path.clone()));
                     Some(file)
+                } else if let Some(path) = &key.missing {
+                    let file = file_id(path);
+                    view.node(&file, MISSING_TYPE, Some(path.clone()), Some(path.clone()));
+                    Some(file)
                 } else {
                     None
                 };
@@ -138,6 +152,23 @@ pub fn graph_view(nodes: &[NormalizedNode]) -> GraphView {
                     let file = file_id(path);
                     view.node(&file, FILE_TYPE, Some(path.clone()), Some(path.clone()));
                     view.edge(&topic.id, &file, "includes-code");
+                }
+                // The page the content is pushed into reuses it, as a
+                // topic of the build that content landed in would.
+                for push in &topic.pushed_into {
+                    let file = file_id(&push.file);
+                    view.node(
+                        &file,
+                        MISSING_TYPE,
+                        Some(push.file.clone()),
+                        Some(push.file.clone()),
+                    );
+                    view.edges.push(ViewEdge {
+                        from: file,
+                        to: topic.id.clone(),
+                        relation: "generated-from".to_string(),
+                        fragments: push.fragments.clone(),
+                    });
                 }
             }
         }
@@ -223,6 +254,7 @@ mod tests {
             url: None,
             file: None,
             text: None,
+            missing: None,
             source_file: "keys.ditamap".into(),
         };
         vec![
@@ -268,6 +300,7 @@ mod tests {
                     key: Some("brew".into()),
                 }],
                 code_refs: vec!["samples/build.xml".into()],
+                pushed_into: vec![],
                 authored_file: None,
                 metadata: Default::default(),
                 source_file: "topics/install.dita".into(),
@@ -353,5 +386,56 @@ mod tests {
                 "install -includes-code-> file:samples/build.xml",
             ]
         );
+    }
+
+    /// dita-ot/docs: `ant-parameters-details` (resource-only) pushes its
+    /// parameter details into `parameters-pdf.dita`, a page the docs build
+    /// generates before running DITA-OT, which a key also names.
+    #[test]
+    fn a_file_the_build_lacks_is_one_node_the_key_names_and_the_push_reuses() {
+        let mut nodes = nodes();
+        let NormalizedNode::Map(map) = &mut nodes[0] else {
+            panic!("a map")
+        };
+        map.key_defs.push(KeyDef {
+            name: "parameters-pdf".into(),
+            scope: None,
+            target: None,
+            url: None,
+            file: None,
+            text: None,
+            missing: Some("parameters/parameters-pdf.dita".into()),
+            source_file: "resources/source-files.ditamap".into(),
+        });
+        let NormalizedNode::Topic(topic) = &mut nodes[1] else {
+            panic!("a topic")
+        };
+        topic.pushed_into = vec![crate::model::PushTarget {
+            file: "parameters/parameters-pdf.dita".into(),
+            fragments: vec!["pd@722".into()],
+        }];
+        let GraphView { nodes, edges } = graph_view(&nodes);
+        let missing: Vec<&ViewNode> = nodes
+            .iter()
+            .filter(|n| n.id == "file:parameters/parameters-pdf.dita")
+            .collect();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].type_, MISSING_TYPE);
+        assert_eq!(
+            missing[0].title.as_deref(),
+            Some("parameters/parameters-pdf.dita")
+        );
+        assert!(is_declared_type(MISSING_TYPE));
+        assert!(edges.iter().any(|e| e.from == "key:parameters-pdf"
+            && e.relation == "key-target"
+            && e.to == "file:parameters/parameters-pdf.dita"));
+        let pushed = edges
+            .iter()
+            .find(|e| {
+                e.from == "file:parameters/parameters-pdf.dita" && e.relation == "generated-from"
+            })
+            .unwrap();
+        assert_eq!(pushed.to, "install");
+        assert_eq!(pushed.fragments, ["pd@722"]);
     }
 }

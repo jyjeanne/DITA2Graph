@@ -217,6 +217,7 @@ mod tests {
             keyrefs: vec![],
             external_links: vec![],
             code_refs: vec![],
+            pushed_into: vec![],
             id: id.into(),
             topic_type: TopicType::Concept,
             title: title.into(),

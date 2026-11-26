@@ -65,6 +65,24 @@ final class TopicNode {
     final Map<String, String> externalLinks = new LinkedHashMap<>();
     /** Temp-relative paths of the sample files the topic includes with coderef. */
     final Set<String> codeRefs = new LinkedHashSet<>();
+    /**
+     * The files the topic pushes content into with conref push ({@code
+     * @conaction}) that the build does not have (a page the
+     * documentation's own build generates, or a missing file), each with
+     * the pushed elements of this topic. A push into a topic of the build
+     * needs no entry: that topic's {@code generated-from} edge records it.
+     */
+    final List<PushTarget> pushedInto = new ArrayList<>();
+
+    /** One file a topic pushes content into, and the topic's fragments it pushes there. */
+    static final class PushTarget {
+        final String file;
+        final List<String> fragments = new ArrayList<>();
+
+        PushTarget(String file) {
+            this.file = file;
+        }
+    }
     String sourceFile;
     /**
      * The file the author edits, when DITA-OT wrote the topic under
@@ -122,6 +140,15 @@ final class TopicNode {
         }
         if (!codeRefs.isEmpty()) {
             sb.append(",\"codeRefs\":").append(Json.stringArray(new ArrayList<>(codeRefs)));
+        }
+        if (!pushedInto.isEmpty()) {
+            sb.append(",\"pushedInto\":[");
+            for (int i = 0; i < pushedInto.size(); i++) {
+                PushTarget push = pushedInto.get(i);
+                sb.append(i > 0 ? "," : "").append("{\"file\":").append(Json.string(push.file))
+                        .append(",\"fragments\":").append(Json.stringArray(push.fragments)).append('}');
+            }
+            sb.append(']');
         }
         sb.append(",\"sourceFile\":").append(Json.string(sourceFile));
         if (authoredFile != null) {

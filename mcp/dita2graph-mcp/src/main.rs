@@ -412,7 +412,13 @@ fn server_instructions(bundle: Option<&bundle::BundleReader>) -> String {
          the authors, which the output leaves out unless the build sets args.draft: readers do \
          not see it by default, and find_text with draft-comment lists every such note. Do not \
          say readers see a passage unless the tools show it.\n\
-         - Topics marked resource-only are not pages of the publication."
+         - Topics marked resource-only are not pages of the publication, but their text can \
+         reach readers on other pages: where a page reuses it (generated-from), and where it is \
+         pushed with conref push, between [pushed after|before|to replace <file>#<element>] and \
+         [end pushed]. A file marked [not in this build] is a page DITA-OT could not load, \
+         often one the documentation's own build generates before publishing: read_topic on it \
+         says which keys name it and what is pushed into it; do not call a link through such a \
+         key empty."
     )
 }
 
@@ -637,6 +643,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -663,6 +670,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -717,6 +725,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "installing-product".into(),
                 topic_type: TopicType::Task,
                 title: "Installing Product".into(),
@@ -743,6 +752,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "configuration".into(),
                 topic_type: TopicType::Concept,
                 title: "Configuration Overview".into(),
@@ -765,6 +775,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "unrelated-topic".into(),
                 topic_type: TopicType::Concept,
                 title: "Unrelated Topic".into(),
@@ -872,6 +883,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "plugins-installing".into(),
                 topic_type: TopicType::Task,
                 title: "Installing plug-ins".into(),
@@ -903,6 +915,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "ID".into(),
                 topic_type: TopicType::Task,
                 title: "Conref file for tasks".into(),
@@ -1336,6 +1349,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: id.into(),
                 topic_type: TopicType::Task,
                 title: "Using the dita command".into(),
@@ -1789,6 +1803,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: id.into(),
                 topic_type,
                 title: title.into(),
@@ -1942,6 +1957,167 @@ mod tests {
         // Text outside the note is not marked.
         let after = call_tool(&dir, "find_text", json!({ "text": "run the build" }));
         assert!(!after.contains("a note for the authors"), "{after}");
+    }
+
+    /// dita-ot/docs (bench r-d6): `ant-parameters-details`, a resource-only
+    /// warehouse, pushes its PDF parameter details with conref push into
+    /// `parameters/parameters-pdf.dita`, a page the docs build generates
+    /// before running DITA-OT, which the key `parameters-pdf` also names.
+    /// The parameter's name is in the entry's term, which stays in the
+    /// warehouse; its description is pushed after the generated one.
+    fn push_bundle_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
+            { "type": "map", "id": "userguide", "title": "User Guide", "sourceFile": "userguide.ditamap",
+              "keyDefs": [{ "name": "parameters-pdf", "missing": "parameters/parameters-pdf.dita",
+                            "sourceFile": "resources/source-files.ditamap" }],
+              "links": [{ "relation": "contains", "target": "customizing-pdf-output" }] },
+            { "type": "topic", "id": "ant-parameters-details", "topicType": "reference",
+              "title": "Ant parameter details", "processingRole": "resource-only",
+              "body": concat!(
+                  "outputFile.base [pushed after parameters/parameters-pdf.dita#pdf/outputFile.base.desc] ",
+                  "This parameter is deprecated since DITA-OT 3.0; use args.output.base instead. ",
+                  "[end pushed] pdf.formatter [pushed after parameters/parameters-pdf.dita#pdf/pdf.formatter.desc] ",
+                  "The formatter. [end pushed]"),
+              "sourceFile": "parameters/ant-parameters-details.dita",
+              "pushedInto": [{ "file": "parameters/parameters-pdf.dita",
+                               "fragments": ["pd@722", "pd@740"] }],
+              "links": [] },
+            { "type": "topic", "id": "customizing-pdf-output", "topicType": "concept",
+              "title": "Customizing PDF output",
+              "body": "Set outputFile.base to the file name. For the full list, see .",
+              "keyrefs": ["parameters-pdf"],
+              "sourceFile": "topics/pdf-customization.dita", "links": [] }
+        ]))
+        .unwrap();
+        write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
+        write_rag_index(&nodes, dir.path(), chrono::Utc::now()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_passage_pushed_into_a_page_the_build_lacks_reaches_its_readers() {
+        let dir = push_bundle_root();
+        let missing = "parameters/parameters-pdf.dita (file:parameters/parameters-pdf.dita) \
+                       [not in this build]";
+        // The excerpt shows where the text next to the name goes; the
+        // element named in a marker is no occurrence.
+        let found = call_tool(&dir, "find_text", json!({ "text": "outputFile.base" }));
+        assert!(
+            found.starts_with(
+                "`outputFile.base`: 2 occurrences in 2 topics -- 1 published, 1 resource-only"
+            ),
+            "{found}"
+        );
+        assert!(
+            found.contains(
+                "outputFile.base [pushed after parameters/parameters-pdf.dita#pdf/outputFile.base.desc"
+            ),
+            "{found}"
+        );
+        assert!(
+            found.contains(&format!(
+                "\n  This topic pushes passages into other pages with conref push, where readers \
+                 see them: 2 into {missing}"
+            )),
+            "{found}"
+        );
+        let deprecated = call_tool(&dir, "find_text", json!({ "text": "deprecated" }));
+        assert!(
+            deprecated.contains(&format!(
+                "\n1 of them is in passages pushed into another page with conref push: readers \
+                 see them on that page, even when the topic holding them is resource-only. \
+                 Pushed into: {missing}"
+            )),
+            "{deprecated}"
+        );
+        assert!(
+            deprecated.contains(
+                "(in a passage this topic pushes after \
+                 parameters/parameters-pdf.dita#pdf/outputFile.base.desc with conref push: \
+                 readers see it on that page)"
+            ),
+            "{deprecated}"
+        );
+
+        let read = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "ant-parameters-details" }),
+        );
+        assert!(
+            read.contains(&format!(
+                "\nPushed into other pages with conref push (readers see these passages there), \
+                 by page:\n  - {missing}"
+            )),
+            "{read}"
+        );
+        assert!(
+            read.contains(
+                "2 passage(s), after pdf/outputFile.base.desc, after pdf/pdf.formatter.desc\n"
+            ),
+            "{read}"
+        );
+
+        // The key: not an empty link, a page this build does not have.
+        let page = call_tool(&dir, "read_topic", json!({ "topicId": "parameters-pdf" }));
+        assert!(
+            page.starts_with(
+                "`parameters-pdf` is the key `parameters-pdf`, defined in \
+                 resources/source-files.ditamap, which names file:parameters/parameters-pdf.dita \
+                 [not in this build]."
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains(
+                "  - key:parameters-pdf, defined in resources/source-files.ditamap: Customizing \
+                 PDF output [customizing-pdf-output]\n"
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains(
+                "  - Ant parameter details [ant-parameters-details] [resource-only: not a \
+                 published page] [fragments: pd@722, pd@740]\n"
+            ),
+            "{page}"
+        );
+        // Its path names it too.
+        let by_path = call_tool(
+            &dir,
+            "read_topic",
+            json!({ "topicId": "parameters/parameters-pdf.dita" }),
+        );
+        assert!(
+            by_path.starts_with(
+                "`parameters/parameters-pdf.dita` is file:parameters/parameters-pdf.dita \
+                 [not in this build]."
+            ),
+            "{by_path}"
+        );
+
+        let impact = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "ant-parameters-details", "excerpts": false }),
+        );
+        assert!(
+            impact.contains(
+                "1 of them are pages this build does not have (marked [not in this build])"
+            ),
+            "{impact}"
+        );
+        assert!(impact.contains(&format!("\n{missing}")), "{impact}");
+        assert!(
+            impact
+                .contains("--generated-from--> ant-parameters-details [fragments: pd@722, pd@740]"),
+            "{impact}"
+        );
+        assert!(
+            !impact.contains("[defined in parameters/parameters-pdf.dita]"),
+            "{impact}"
+        );
     }
 
     /// dita-ot/docs' topics/using-dita-command.dita: a resource-only topic
@@ -2144,6 +2320,7 @@ mod tests {
                     keyrefs: vec![],
                     external_links: vec![],
                     code_refs: vec![],
+                    pushed_into: vec![],
                     id: format!("topic-{i}"),
                     topic_type: TopicType::Concept,
                     title: format!("Topic {i}"),
@@ -2231,6 +2408,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "install-notes".into(),
                 topic_type: TopicType::Task,
                 title: "Install Notes".into(),
@@ -2253,6 +2431,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: "weather-notes".into(),
                 topic_type: TopicType::Concept,
                 title: "Weather Notes".into(),
@@ -2421,6 +2600,7 @@ mod tests {
                 keyrefs: vec![],
                 external_links: vec![],
                 code_refs: vec![],
+                pushed_into: vec![],
                 id: id.clone(),
                 topic_type: TopicType::Task,
                 title: format!("Title of {id}"),
