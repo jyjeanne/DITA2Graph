@@ -1911,8 +1911,9 @@ mod tests {
         assert!(
             text.starts_with(
                 "changing `configuration` may affect 1 concept(s) (depth 5). By relation: requires 1. \
-                 By level: 1: 1. 1 more concept(s) only link to, contain or use a key to these, \
-                 their own content unchanged: pass cascade=true to list them."
+                 By level: 1: 1. 1 more concept(s) are only connected to these (links, maps, keys \
+                 or reuse of their other parts), their own content unchanged: pass cascade=true to \
+                 list them."
             ),
             "{text}"
         );
@@ -1926,8 +1927,8 @@ mod tests {
         );
         assert!(
             text.contains(
-                "\n\nOnly linking to, containing or using a key to the concepts above:\n  \
-                 User Guide (user-guide) --contains--> installing-product"
+                "\n\nOnly connected to the concepts above (links, maps, keys or reuse of their \
+                 other parts):\n  User Guide (user-guide) --contains--> installing-product"
             ),
             "{text}"
         );
@@ -2074,17 +2075,23 @@ mod tests {
     }
 
     /// The DITA-OT docs' shape: `install` is linked from a conref
-    /// warehouse fragment that `task` reuses (and so links itself), while
+    /// warehouse fragment that `task` reuses (and so links itself, and
+    /// shows the link's preview text, reused from `install`), while
     /// `html5` reuses an unrelated fragment of the same warehouse.
-    /// `reuser` reuses `install`'s own content, `reuser-2` reuses
-    /// `reuser`'s, and `copy` is a `copy-to` copy of `install`. The rest
-    /// only link to or contain one of those.
+    /// `reuser` reuses `install`'s own content; `reuser-2` reuses another
+    /// passage of `reuser`, `reuser-3` the passage holding `install`'s
+    /// content, which the extractor records as reuse of `install` too.
+    /// `copy` is a `copy-to` copy of `install`. The rest only link to or
+    /// contain one of those. Apart: `sample` includes a sample file that
+    /// `sample-reuser` reuses through it.
     fn impact_bundle_root() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let topic = |id: &str, title: &str, links: Value| {
             json!({ "type": "topic", "id": id, "topicType": "task", "title": title,
                     "sourceFile": format!("topics/{id}.dita"), "links": links })
         };
+        let mut sample = topic("sample", "Sample", json!([]));
+        sample["codeRefs"] = json!(["samples/run.sh"]);
         let nodes: Vec<NormalizedNode> = serde_json::from_value(json!([
             { "type": "map", "id": "root", "title": "Root", "sourceFile": "root.ditamap",
               "links": [{ "relation": "contains", "target": "guide" }] },
@@ -2095,18 +2102,26 @@ mod tests {
             topic("warehouse", "Conref file", json!([{ "relation": "references", "target": "install" }])),
             topic("task", "A task", json!([
                 { "relation": "references", "target": "install" },
-                { "relation": "generated-from", "target": "warehouse", "fragments": ["install-step"] }])),
+                { "relation": "generated-from", "target": "warehouse", "fragments": ["install-step"] },
+                { "relation": "generated-from", "target": "install", "fragments": ["cmdname@6"] }])),
             topic("html5", "HTML5", json!([
                 { "relation": "generated-from", "target": "warehouse", "fragments": ["dita-cmd"] }])),
             topic("migration", "Migration", json!([{ "relation": "references", "target": "task" }])),
             topic("reuser", "Reuser", json!([
                 { "relation": "generated-from", "target": "install", "fragments": ["plug-in"] }])),
-            topic("reuser-2", "Reuser of the reuser", json!([
-                { "relation": "generated-from", "target": "reuser", "fragments": ["step"] }])),
+            topic("reuser-2", "Reuser of another passage", json!([
+                { "relation": "generated-from", "target": "reuser", "fragments": ["intro"] }])),
+            topic("reuser-3", "Reuser of the passage", json!([
+                { "relation": "generated-from", "target": "reuser", "fragments": ["step"] },
+                { "relation": "generated-from", "target": "install", "fragments": ["plug-in"] }])),
             topic("to-reuser", "Links to the reuser", json!([{ "relation": "references", "target": "reuser" }])),
             topic("copy", "Copy", json!([{ "relation": "copy-of", "target": "install" }])),
             topic("to-copy", "Novice title\n    Expert title",
-                  json!([{ "relation": "references", "target": "copy" }]))
+                  json!([{ "relation": "references", "target": "copy" }])),
+            sample,
+            topic("sample-reuser", "Reuses the sample", json!([
+                { "relation": "generated-from", "target": "sample", "fragments": ["codeblock@3"] }])),
+            topic("sample-linker", "Links to the sample", json!([{ "relation": "references", "target": "sample" }]))
         ]))
         .unwrap();
         write_bundle(&nodes, dir.path(), chrono::Utc::now(), true).unwrap();
@@ -2114,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn analyze_impact_follows_reuse_further_but_not_links_or_maps() {
+    fn analyze_impact_keeps_direct_dependents_and_counts_the_rest_apart() {
         let dir = impact_bundle_root();
         let text = call_tool(
             &dir,
@@ -2124,27 +2139,31 @@ mod tests {
         assert!(
             text.starts_with(
                 "changing `install` may affect 7 concept(s) (depth 5). By relation: contains 1, \
-                 copy-of 1, generated-from 2, references 3. By level: 1: 5, 2: 2. 4 more concept(s) \
-                 only link to, contain or use a key to these, their own content unchanged: \
-                 pass cascade=true to list them."
+                 copy-of 1, generated-from 3, references 2. By level: 1: 6, 2: 1. 5 more concept(s) \
+                 are only connected to these (links, maps, keys or reuse of their other parts), \
+                 their own content unchanged: pass cascade=true to list them.\n\
+                 Guide (guide) --contains--> install\n\
+                 Copy (copy) --copy-of--> install\n"
             ),
+            "sorted by relation and id: {text}"
+        );
+        // A link and reuse of the same page: the reuse. The copy's own
+        // referrers count, and titles stay on one line.
+        assert!(
+            text.contains("\nA task (task) --generated-from--> install [fragments: cmdname@6]"),
             "{text}"
         );
-        // Reuse chains and the copy's own referrers are followed, titles
-        // stay on one line.
         assert!(
-            text.contains(
-                "\n  Reuser of the reuser (reuser-2) --generated-from--> reuser [fragments: step]"
-            ),
+            text.contains("\nReuser of the passage (reuser-3) --generated-from--> install [fragments: plug-in]"),
             "{text}"
         );
         assert!(
             text.contains("\n  Novice title Expert title (to-copy) --references--> copy"),
             "{text}"
         );
-        // Neither the warehouse's other reusers, nor what links to or
-        // contains a dependent.
-        for id in ["html5", "migration", "to-reuser", "root"] {
+        // Not the warehouse's other reusers, not what reuses another part
+        // of a reuser, not what links to or contains a dependent.
+        for id in ["html5", "reuser-2", "migration", "to-reuser", "root"] {
             assert!(!text.contains(&format!("({id})")), "{id}: {text}");
         }
 
@@ -2154,14 +2173,20 @@ mod tests {
             json!({ "topicId": "install", "cascade": true, "excerpts": false }),
         );
         assert!(
-            text.contains("4 more concept(s) only link to, contain or use a key to these, their own content unchanged: listed after them."),
+            text.contains(
+                "5 more concept(s) are only connected to these (links, maps, keys or reuse of \
+                 their other parts), their own content unchanged: listed after them."
+            ),
             "{text}"
         );
         let (affected, pointing) = text
-            .split_once("\n\nOnly linking to, containing or using a key to the concepts above:")
+            .split_once(
+                "\n\nOnly connected to the concepts above (links, maps, keys or reuse of their \
+                 other parts):",
+            )
             .expect(&text);
-        assert!(affected.contains("(reuser-2)"), "{text}");
-        for id in ["html5", "migration", "to-reuser", "root"] {
+        assert!(affected.contains("(reuser-3)"), "{text}");
+        for id in ["html5", "reuser-2", "migration", "to-reuser", "root"] {
             assert!(pointing.contains(&format!("({id})")), "{id}: {text}");
         }
 
@@ -2172,12 +2197,29 @@ mod tests {
             json!({ "topicId": "install", "cascade": true, "offset": 8, "limit": 2, "excerpts": false }),
         );
         assert!(
-            text.contains(
-                "\n\nOnly linking to, containing or using a key to the concepts above:\n"
+            text.contains("\n\nOnly connected to the concepts above"),
+            "{text}"
+        );
+        assert!(text.contains("(showing 9-10 of 12"), "{text}");
+
+        // A sample file's text carries no trace of where it came from:
+        // what reuses the topic that includes it is followed.
+        let text = call_tool(
+            &dir,
+            "analyze_impact",
+            json!({ "topicId": "file:samples/run.sh", "excerpts": false }),
+        );
+        assert!(
+            text.starts_with(
+                "changing `file:samples/run.sh` may affect 2 concept(s) (depth 5). By relation: \
+                 generated-from 1, includes-code 1. By level: 1: 1, 2: 1. 1 more concept(s)"
             ),
             "{text}"
         );
-        assert!(text.contains("(showing 9-10 of 11"), "{text}");
+        assert!(
+            text.contains("(sample-reuser)") && !text.contains("(sample-linker)"),
+            "{text}"
+        );
     }
 
     #[test]

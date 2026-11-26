@@ -109,7 +109,7 @@ verifiable examples — not hypothetical:
 | "What topics mention installing?" | Calls `search_topics`, returns `installing-product` (and `installing-product-prereqs`) |
 | "What does installing the product require?" | Calls `find_related_topics` or `explain_task` on `installing-product`, returns `requires -> Configuration Overview (configuration)` |
 | "What's the full dependency chain for installing-product?" | Calls `trace_dependencies(topicId: "installing-product")`, walks the forward `requires` chain |
-| "If I change the Configuration Overview topic, what's affected?" | Calls `analyze_impact(topicId: "configuration")` — a reverse traversal (transitive through reuse only) that should surface `installing-product` as a dependent, with a text excerpt |
+| "If I change the Configuration Overview topic, what's affected?" | Calls `analyze_impact(topicId: "configuration")` — a reverse traversal of what depends on it directly, its content or a link to it, that should surface `installing-product` as a dependent, with a text excerpt |
 | "Summarize the configuration topic" | Calls `generate_summary` or `explain_task` on `configuration` |
 
 The signal that the integration is actually working end to end: Claude

@@ -1156,19 +1156,26 @@ answering "if I change this topic, what breaks?" (§13.1): every edge
 that points *at* `topicId` — dependents via `requires`, containing maps
 via `contains`, referrers, the users of a key that names it, and any
 other relation a topic participates in, not just declared prerequisites
-the way `trace_dependencies` (forward, `requires`-only) does. Only a
-change of content goes further, up to `depth` (default 5): the topics
-reusing a topic that reuses `topicId` (`generated-from`), and whatever
-points at a `copy-to` copy of it. A page that links to, contains or uses
-a key to a dependent keeps its own content, so it is not affected: the
-first line counts these apart, and `cascade=true` lists them after the
-others. Following every edge transitively counted 112 concepts for the
-DITA-OT docs' "Installing plug-ins" page, where about twenty needed
-rewriting: each page reusing any fragment of the conref warehouse that
-holds the link to it came in, though a page reusing the fragment with
-the link gets that link itself, and is a direct referrer. It now counts
-17, and 95 apart; on the Oxygen XML user guide's most reused warehouse,
-488 instead of 1,667. Each affected concept that has a `rag/chunks.jsonl` entry also
+the way `trace_dependencies` (forward, `requires`-only) does. Only three
+things go further, up to `depth` (default 5): what points at a
+`copy-to` copy of `topicId`, the users of a key that names it, and the
+topics that reuse a topic including a changed sample file (a file's
+text carries no trace of where it came from). Reuse needs no more:
+every element DITA-OT pulls in keeps the file it comes from, so a topic
+reusing a passage that holds `topicId`'s content, or a link to it, has
+its own `generated-from` or `references` edge to `topicId`. A page that
+links to, contains or uses a key to a dependent, or reuses another part
+of one, keeps its own content: the first line counts these apart, and
+`cascade=true` lists them after the others. When a concept has several
+edges to the same one (a link and the link's preview text reused from
+its target), the strongest counts, and each level is sorted by relation
+and id, so the edge order of `graph.json` or `graph.db` changes nothing.
+Following every edge transitively counted 112 concepts for the DITA-OT
+docs' "Installing plug-ins" page, where about twenty needed rewriting:
+each page reusing any fragment of the conref warehouse that holds the
+link to it came in. It now counts 17, 13 of them reusing its content,
+and 95 apart; on the Oxygen XML user guide's most reused warehouse, 314
+instead of 1,667. Each affected concept that has a `rag/chunks.jsonl` entry also
 gets a short text excerpt under it (truncated to 140 characters,
 newlines flattened) — a raw excerpt handed to the calling agent, not a
 server-generated summary (this tool doesn't call an LLM); the agent's
@@ -2535,12 +2542,13 @@ embedding-based ranking to already exist to pay off, and still doesn't.
 **Impact analysis — implemented, both halves.** "If I change
 `engine.dita`, what breaks?" is a graph query — dependents, containing
 maps, `requires`/keyref referrers (§4.3) — and `analyze_impact(topicId,
-depth?)` (§5.2) answers exactly that: a reverse traversal over every
-incoming edge, then over reuse alone up to `depth` hops (default 5),
-returning every concept that depends on the one that changed directly
-or through the content it reuses. What only links to or contains one
-of those is counted apart (`cascade=true` lists it): its own content
-does not change.
+depth?)` (§5.2) answers exactly that: every concept with an edge to
+the one that changed (a link, a map, reused content, a key's users, a
+copy's referrers), reuse included in one hop, since a topic reusing a
+passage that holds the changed content gets its own edge to it. What
+only links to, contains or reuses another part of one of those is
+counted apart (`cascade=true` lists it): its own content does not
+change.
 
 The content half is implemented too, in a specific and honestly-scoped
 form: each affected concept with a `rag/chunks.jsonl` entry gets a
