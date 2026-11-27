@@ -18,6 +18,9 @@ project and your own existing DITA project:
 **[`docs/tutorial.md`](docs/tutorial.md)**.
 The optional RDF export, its `d2g` ontology and SHACL shapes:
 **[`docs/semantic-model.md`](docs/semantic-model.md)**.
+How well Claude Haiku, Sonnet and Opus answer with the MCP server, and
+what each improvement to it changed:
+**[`docs/model-benchmark.md`](docs/model-benchmark.md)**.
 
 ## Status
 
@@ -297,6 +300,35 @@ answer it and a feature to the tasks that document it, with each fact
 traced to the build that produced it (`prov:wasGeneratedBy`). Because
 IRIs are stable, comparing the exports of two releases with any RDF
 diff tool shows which topics, links and keys appeared or went away.
+
+## Results by model
+
+Measured with Claude Code and the three Claude 5.5 models. In each run, the
+agent's only source was `dita2graph-mcp`: no file, shell or web tool. Full
+results, method and limits:
+[`docs/model-benchmark.md`](docs/model-benchmark.md).
+
+| | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| 9 relevance checks (DITA-OT docs), server as of v0.2.0 | 41.7 % | 50.6 % | 95.0 % |
+| The same, with the four changes below | 97.2 % | 98.9 % | 100 % |
+| 12 real questions (DITA-OT docs and Oxygen user guide, 3 repetitions, graded blind) | 94.0 % | 95.7 % | 95.7 % |
+| Cost of those 36 runs | $0.31 | $2.09 | $5.42 |
+
+On the 12 real questions, Opus with the v0.2.0 server scored 88.2 %, for
+$7.65. The four changes came from the relevance checks' failures:
+
+- the server tells the client which documentation the graph holds;
+- `find_text` searches every topic exhaustively;
+- notes for the authors are marked in the text;
+- every tool takes a topic's source file path or a key name.
+
+With them, a small model answers almost as well as a large one: Haiku comes
+within 2 points of Sonnet and Opus on the real questions, for a seventh of
+Sonnet's cost. The changes also make every model faster and cheaper.
+
+A later change, conref push modeled, took the one question that had regressed
+(r-d6) from 90 to 100 for all three models.
 
 ## Toolchain requirements
 
